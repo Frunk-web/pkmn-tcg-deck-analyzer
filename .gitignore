@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
+pokemon_opening_hand_cache.json
+.ipynb_checkpoints/
+.DS_Store
