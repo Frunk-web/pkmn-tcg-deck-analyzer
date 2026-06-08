@@ -97,6 +97,7 @@ def card_matches(card: dict, set_code: Optional[str], collector_number: Optional
     api_set = card.get("set", {}) or {}
     api_set_code = (api_set.get("ptcgoCode") or "").lower()
     api_set_id = (api_set.get("id") or "").lower()
+    api_set_name = (api_set.get("name") or "").lower()
     api_number = (card.get("number") or "").lower()
 
     wanted_set = (set_code or "").lower()
@@ -106,7 +107,9 @@ def card_matches(card: dict, set_code: Optional[str], collector_number: Optional
     number_ok = True
 
     if wanted_set and wanted_set != "energy":
-        set_ok = wanted_set == api_set_code or wanted_set == api_set_id
+        set_ok = (
+            wanted_set == api_set_code or wanted_set == api_set_id or wanted_set in api_set_name
+        )
 
     if wanted_number:
         number_ok = wanted_number == api_number
