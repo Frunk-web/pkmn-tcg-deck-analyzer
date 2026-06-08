@@ -128,7 +128,7 @@ def parse_card_name_set_number(raw_name: str) -> Tuple[str, Optional[str], Optio
     text = re.sub(r"\s+\[[^\]]+\]$", "", raw_name).strip()
 
     match = re.match(
-        r"^(.*?)\s+([A-Z]{2,6})\s+([0-9]+[a-zA-Z]?(/[0-9]+[a-zA-Z]?)?)$",
+        r"^(.*?)\s+([A-Z]{2,6}(?:-[A-Z]{2,6})?)\s+([0-9]+[a-zA-Z]?(/[0-9]+[a-zA-Z]?)?)$",
         text,
     )
 
