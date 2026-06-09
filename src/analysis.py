@@ -17,6 +17,7 @@ Main responsibilities:
   - hand after drawing for turn
 - Calculate prize-card probabilities.
 - Calculate still-prized probabilities after prizes are taken.
+- Include card image URLs in the output DataFrames.
 - Build clean pandas DataFrames for the Streamlit app to display.
 """
 
@@ -134,9 +135,13 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
                 "card": card.label,
                 "name": card.name,
                 "count": card.count,
+                "section": card.section,
+                "api_id": card.api_id,
                 "supertype": card.supertype,
                 "subtypes": ", ".join(card.subtypes or []),
                 "is_basic_pokemon": card.is_basic_pokemon,
+                "image_url": card.image_url,
+                "image_large_url": card.image_large_url,
 
                 "P_in_random_7_unconditioned": naive_p_opening_7,
                 "P_in_legal_opening_7": p_opening_7,
@@ -161,7 +166,10 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
         "card",
         "name",
         "count",
+        "section",
         "supertype",
+        "image_url",
+        "image_large_url",
         "P_at_least_1_prized",
         "E_prized",
         "P_all_copies_prized",
@@ -194,6 +202,8 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
                 "supertype": card.supertype,
                 "subtypes": ", ".join(card.subtypes or []),
                 "is_basic_pokemon": card.is_basic_pokemon,
+                "image_url": card.image_url,
+                "image_large_url": card.image_large_url,
             }
             for card in deck
         ]

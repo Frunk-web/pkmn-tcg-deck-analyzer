@@ -8,12 +8,15 @@ and converts it into structured DeckCard objects.
 
 Main responsibilities:
 - Read each line of the decklist.
+- Track whether each card came from the Pokémon, Trainer, or Energy section.
 - Extract the card count.
 - Extract the card name.
 - Extract the set code and collector number when available.
 - Handle special energy formatting such as:
   "Basic {G} Energy Energy 1" -> "Basic Grass Energy"
+  "Basic {L} Energy SVE 12" -> "Basic Lightning Energy"
 - Combine duplicate identical printings.
+- Store API metadata fields such as card images once they are attached later.
 """
 
 import re
@@ -31,6 +34,8 @@ class DeckCard:
     api_id: Optional[str] = None
     supertype: Optional[str] = None
     subtypes: Optional[List[str]] = None
+    image_url: Optional[str] = None
+    image_large_url: Optional[str] = None
 
     @property
     def key(self) -> str:
@@ -47,7 +52,9 @@ class DeckCard:
     @property
     def is_basic_pokemon(self) -> bool:
         return (
-            self.supertype == "Pokémon" and self.subtypes is not None and "Basic" in self.subtypes
+            self.supertype == "Pokémon"
+            and self.subtypes is not None
+            and "Basic" in self.subtypes
         )
 
 
@@ -127,6 +134,8 @@ def parse_card_name_set_number(raw_name: str) -> Tuple[str, Optional[str], Optio
 
     text = re.sub(r"\s+\[[^\]]+\]$", "", raw_name).strip()
 
+    # Supports normal set codes like TWM, SSP, TEF
+    # and promo-style set codes like PR-SV.
     match = re.match(
         r"^(.*?)\s+([A-Z]{2,6}(?:-[A-Z]{2,6})?)\s+([0-9]+[a-zA-Z]?(/[0-9]+[a-zA-Z]?)?)$",
         text,
@@ -198,7 +207,6 @@ def parse_decklist(decklist_text: str) -> List[DeckCard]:
         else:
             combined[key].count += card.count
 
-            # Preserve section if one of the combined cards had it.
             if combined[key].section is None:
                 combined[key].section = card.section
 

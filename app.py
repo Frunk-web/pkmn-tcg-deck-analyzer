@@ -15,13 +15,14 @@ Main responsibilities:
   - mulligan probabilities
   - opening-hand and turn-draw odds
   - prize-card probabilities
-  - all-copies-prized probabilities
-  - prize-after-X-prizes heatmap
+  - image-based card probability gallery
+  - prize-after-X-prizes controls
   - parsed card matching diagnostics
 
 Most of the actual probability and parsing logic is imported from the src/ folder.
 """
 
+import html
 import pandas as pd
 import streamlit as st
 
@@ -74,9 +75,11 @@ DISPLAY_COLUMN_NAMES = {
     "supertype": "Card type",
     "subtypes": "Subtypes",
     "is_basic_pokemon": "Basic Pokémon?",
+    "image_url": "Image",
+    "image_large_url": "Large image",
     "P_in_random_7_unconditioned": "P(in random 7)",
     "P_in_legal_opening_7": "P(in legal opening 7)",
-    "P_in_hand_after_turn_draw": "P(after turn draw)",
+    "P_in_hand_after_turn_draw": "Turn 1 raw access",
     "increase_from_turn_draw": "Turn draw gain",
     "P_at_least_1_prized": "P(at least 1 prized)",
     "E_prized": "Expected prized",
@@ -92,6 +95,9 @@ DISPLAY_COLUMN_NAMES = {
     "P_all_copies_still_prized_after_4_prizes_taken": "P(all still prized after 4 prizes taken)",
     "P_all_copies_still_prized_after_5_prizes_taken": "P(all still prized after 5 prizes taken)",
 }
+
+
+CACHE_VERSION = "card-gallery-v1"
 
 
 def apply_custom_css():
@@ -118,7 +124,7 @@ def apply_custom_css():
     .block-container {
         padding-top: 2rem;
         padding-bottom: 3rem;
-        max-width: 1450px;
+        max-width: 1500px;
     }
 
     h1, h2, h3 {
@@ -129,10 +135,6 @@ def apply_custom_css():
         font-size: 3.3rem !important;
         line-height: 1.05 !important;
         margin-bottom: 0.35rem !important;
-    }
-
-    h2 {
-        margin-top: 1.6rem !important;
     }
 
     .hero-card {
@@ -158,7 +160,7 @@ def apply_custom_css():
     .hero-subtitle {
         color: #CBD5E1;
         font-size: 1.08rem;
-        max-width: 860px;
+        max-width: 920px;
         line-height: 1.65;
         margin-top: 0.5rem;
     }
@@ -257,6 +259,126 @@ def apply_custom_css():
         transform: translateY(-1px);
     }
 
+    .gallery-card {
+        position: relative;
+        border-radius: 18px;
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.24);
+        background: rgba(15, 23, 42, 0.78);
+        box-shadow: 0 20px 48px rgba(0, 0, 0, 0.38);
+        margin-bottom: 1rem;
+        transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+
+    .gallery-card:hover {
+        transform: translateY(-3px);
+        border-color: rgba(96, 165, 250, 0.68);
+        box-shadow: 0 28px 70px rgba(37, 99, 235, 0.22);
+    }
+
+    .gallery-image-wrap {
+        position: relative;
+        background:
+            radial-gradient(circle at top, rgba(96, 165, 250, 0.22), transparent 16rem),
+            linear-gradient(180deg, #111827, #020617);
+    }
+
+    .gallery-image {
+        width: 100%;
+        display: block;
+        border-radius: 16px;
+    }
+
+    .gallery-placeholder {
+        height: 320px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+        text-align: center;
+        color: #CBD5E1;
+        font-weight: 800;
+        background:
+            radial-gradient(circle at top, rgba(96, 165, 250, 0.22), transparent 16rem),
+            linear-gradient(180deg, #111827, #020617);
+    }
+
+    .count-pill {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        background: rgba(2, 6, 23, 0.82);
+        border: 1px solid rgba(248, 250, 252, 0.25);
+        color: #F8FAFC;
+        border-radius: 999px;
+        padding: 0.28rem 0.55rem;
+        font-size: 0.78rem;
+        font-weight: 900;
+        backdrop-filter: blur(10px);
+    }
+
+    .gallery-overlay {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 0.7rem;
+        background: linear-gradient(180deg, rgba(2, 6, 23, 0), rgba(2, 6, 23, 0.94) 38%, rgba(2, 6, 23, 0.98));
+    }
+
+    .gallery-title {
+        color: #FFFFFF;
+        font-weight: 900;
+        font-size: 0.95rem;
+        line-height: 1.18;
+        margin-bottom: 0.45rem;
+        text-shadow: 0 2px 12px rgba(0,0,0,0.65);
+    }
+
+    .prob-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 0.38rem;
+    }
+
+    .prob-box {
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 12px;
+        padding: 0.42rem 0.35rem;
+        background: rgba(15, 23, 42, 0.74);
+        backdrop-filter: blur(10px);
+        min-height: 54px;
+    }
+
+    .prob-label {
+        color: #94A3B8;
+        font-size: 0.62rem;
+        line-height: 1.1;
+        text-transform: uppercase;
+        font-weight: 900;
+        letter-spacing: 0.04em;
+        margin-bottom: 0.18rem;
+    }
+
+    .prob-value {
+        color: #F8FAFC;
+        font-size: 0.92rem;
+        font-weight: 950;
+        line-height: 1.05;
+    }
+
+    .prob-value-hot {
+        color: #FBBF24;
+    }
+
+    .prob-value-danger {
+        color: #FB7185;
+    }
+
+    .prob-value-good {
+        color: #60A5FA;
+    }
+
     .small-muted {
         color: #94A3B8;
         font-size: 0.9rem;
@@ -276,13 +398,19 @@ def apply_custom_css():
     )
 
 
+def pct(value, decimals=2):
+    if pd.isna(value):
+        return "—"
+    return f"{value:.{decimals}%}"
+
+
 def metric_card(label: str, value: str, note: str = ""):
     st.markdown(
         f"""
 <div class="metric-card">
-    <div class="metric-label">{label}</div>
-    <div class="metric-value">{value}</div>
-    <div class="metric-note">{note}</div>
+    <div class="metric-label">{html.escape(label)}</div>
+    <div class="metric-value">{html.escape(value)}</div>
+    <div class="metric-note">{html.escape(note)}</div>
 </div>
         """,
         unsafe_allow_html=True,
@@ -293,8 +421,114 @@ def pretty_table(df: pd.DataFrame) -> pd.DataFrame:
     return format_probability_table(df).rename(columns=DISPLAY_COLUMN_NAMES)
 
 
+def prize_column_names(prizes_taken: int):
+    if prizes_taken == 0:
+        return (
+            "P_at_least_1_prized",
+            "P_all_copies_prized",
+            "Initial prizes",
+        )
+
+    suffix = "prize_taken" if prizes_taken == 1 else "prizes_taken"
+
+    return (
+        f"P_still_prized_after_{prizes_taken}_{suffix}",
+        f"P_all_copies_still_prized_after_{prizes_taken}_{suffix}",
+        f"After {prizes_taken} prize{'s' if prizes_taken != 1 else ''} taken",
+    )
+
+
+def render_card_tile(row: pd.Series, prizes_taken: int):
+    at_least_col, all_col, context_label = prize_column_names(prizes_taken)
+
+    image_url = row.get("image_large_url") or row.get("image_url")
+    card_label = str(row.get("card", "Unknown card"))
+    count = int(row.get("count", 0))
+    turn_access = row.get("P_in_hand_after_turn_draw", float("nan"))
+    at_least_prized = row.get(at_least_col, float("nan"))
+    all_prized = row.get(all_col, float("nan"))
+
+    safe_card_label = html.escape(card_label)
+    safe_context_label = html.escape(context_label)
+
+    if image_url:
+        image_html = f'<img class="gallery-image" src="{html.escape(str(image_url))}" alt="{safe_card_label}">'
+    else:
+        image_html = f'<div class="gallery-placeholder">{safe_card_label}<br><span class="small-muted">No image found</span></div>'
+
+    st.markdown(
+        f"""
+<div class="gallery-card">
+    <div class="gallery-image-wrap">
+        {image_html}
+        <div class="count-pill">x{count}</div>
+        <div class="gallery-overlay">
+            <div class="gallery-title">{safe_card_label}</div>
+            <div class="prob-grid">
+                <div class="prob-box">
+                    <div class="prob-label">Turn 1 raw</div>
+                    <div class="prob-value prob-value-good">{pct(turn_access, 2)}</div>
+                </div>
+                <div class="prob-box">
+                    <div class="prob-label">≥1 prized<br>{safe_context_label}</div>
+                    <div class="prob-value prob-value-hot">{pct(at_least_prized, 2)}</div>
+                </div>
+                <div class="prob-box">
+                    <div class="prob-label">All prized<br>{safe_context_label}</div>
+                    <div class="prob-value prob-value-danger">{pct(all_prized, 4)}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_card_gallery(
+    card_df: pd.DataFrame,
+    prizes_taken: int,
+    card_type_filter: str,
+    sort_mode: str,
+    columns_per_row: int,
+):
+    gallery_df = card_df.copy()
+
+    if card_type_filter != "All":
+        gallery_df = gallery_df[gallery_df["supertype"].fillna("Unknown") == card_type_filter].copy()
+
+    at_least_col, all_col, _ = prize_column_names(prizes_taken)
+
+    sort_map = {
+        "Turn 1 raw access": "P_in_hand_after_turn_draw",
+        "At least 1 prized": at_least_col,
+        "All copies prized": all_col,
+        "Deck order / parsed order": None,
+        "Card count": "count",
+    }
+
+    sort_col = sort_map.get(sort_mode)
+
+    if sort_col and sort_col in gallery_df.columns:
+        gallery_df = gallery_df.sort_values(sort_col, ascending=False)
+
+    if gallery_df.empty:
+        st.info("No cards match the selected gallery filters.")
+        return
+
+    rows = gallery_df.to_dict("records")
+
+    for start in range(0, len(rows), columns_per_row):
+        cols = st.columns(columns_per_row)
+
+        for col, row_dict in zip(cols, rows[start:start + columns_per_row]):
+            with col:
+                render_card_tile(pd.Series(row_dict), prizes_taken)
+
+
 @st.cache_data(show_spinner=False)
-def cached_analysis(decklist_text: str, max_mulligans: int):
+def cached_analysis(decklist_text: str, max_mulligans: int, cache_version: str):
     return analyze_deck_opening_hand(
         decklist_text=decklist_text,
         max_mulligans=max_mulligans,
@@ -349,13 +583,13 @@ st.markdown(
     <h1>PKMN TCG Deck Analyzer</h1>
     <div class="hero-subtitle">
         Analyze mulligans, opening hands, turn-draw consistency, and prize-card risk from a pasted decklist.
-        Built for competitive deck tuning, consistency testing, and future full-deck optimization.
+        Built for competitive deck tuning, prize mapping, and future full-deck optimization.
     </div>
     <div class="feature-row">
         <div class="feature-pill">Exact mulligan odds</div>
         <div class="feature-pill">Legal opening-hand conditioning</div>
+        <div class="feature-pill">Visual card gallery</div>
         <div class="feature-pill">Prize mapping</div>
-        <div class="feature-pill">Card-level diagnostics</div>
     </div>
 </div>
     """,
@@ -373,7 +607,7 @@ if not analyze:
         metric_card("Step 2", "Analyze", "Run exact opening-hand and prize-card probability calculations.")
 
     with col3:
-        metric_card("Step 3", "Tune", "Use the results to identify consistency and prize-liability issues.")
+        metric_card("Step 3", "Tune", "Use visual card overlays to spot consistency and prize-liability issues.")
 
     st.markdown(
         """
@@ -386,6 +620,7 @@ if not analyze:
 <li>Probability of at least one copy being prized</li>
 <li>Probability of all copies being prized</li>
 <li>Probability of cards still being prized after taking prizes</li>
+<li>Visual card-image gallery with probability overlays</li>
 </ul>
 </div>
         """,
@@ -394,10 +629,11 @@ if not analyze:
 
 else:
     try:
-        with st.spinner("Analyzing deck..."):
+        with st.spinner("Analyzing deck and fetching card images..."):
             summary, mulligan_df, card_odds_df, prize_df, parsed_df, deck = cached_analysis(
                 decklist_text,
                 max_mulligans,
+                CACHE_VERSION,
             )
 
         top_n_cards = len(card_odds_df)
@@ -420,8 +656,8 @@ else:
                 "Average mulligans before a legal hand",
             )
 
-        overview_tab, hand_tab, prize_tab, diagnostics_tab = st.tabs(
-            ["Overview", "Opening hands", "Prize map", "Diagnostics"]
+        overview_tab, gallery_tab, hand_tab, prize_tab, diagnostics_tab = st.tabs(
+            ["Overview", "Card gallery", "Opening hands", "Prize map", "Diagnostics"]
         )
 
         with overview_tab:
@@ -446,6 +682,63 @@ else:
                 hide_index=True,
             )
 
+        with gallery_tab:
+            st.subheader("Visual card probability gallery")
+            st.caption(
+                "Each card image shows Turn 1 raw access, at least 1 prized copy, and all copies prized. "
+                "Use the controls to view probabilities after prizes have been taken."
+            )
+
+            controls = st.columns([1, 1, 1, 1])
+
+            with controls[0]:
+                prizes_taken = st.slider(
+                    "Prizes taken",
+                    min_value=0,
+                    max_value=5,
+                    value=0,
+                    help="Updates the prized-card overlays to show what remains after taking X random prizes.",
+                )
+
+            card_types = ["All"] + sorted(
+                [x for x in card_odds_df["supertype"].dropna().unique().tolist()]
+            )
+
+            with controls[1]:
+                card_type_filter = st.selectbox(
+                    "Card type",
+                    options=card_types,
+                    index=0,
+                )
+
+            with controls[2]:
+                sort_mode = st.selectbox(
+                    "Sort cards by",
+                    options=[
+                        "Turn 1 raw access",
+                        "At least 1 prized",
+                        "All copies prized",
+                        "Card count",
+                        "Deck order / parsed order",
+                    ],
+                    index=1,
+                )
+
+            with controls[3]:
+                columns_per_row = st.selectbox(
+                    "Cards per row",
+                    options=[3, 4, 5, 6],
+                    index=1,
+                )
+
+            render_card_gallery(
+                card_df=card_odds_df,
+                prizes_taken=prizes_taken,
+                card_type_filter=card_type_filter,
+                sort_mode=sort_mode,
+                columns_per_row=columns_per_row,
+            )
+
         with hand_tab:
             st.plotly_chart(
                 make_card_odds_chart(card_odds_df, top_n_cards=top_n_cards),
@@ -455,7 +748,7 @@ else:
             st.subheader("Opening-hand probability table")
             st.caption(
                 "Legal opening 7 means the hand contains at least one Basic Pokémon. "
-                "The turn-draw column assumes you draw one card after keeping a legal opening hand."
+                "Turn 1 raw access means opening hand plus drawing for turn, without search effects."
             )
             hand_cols = [
                 "card",
@@ -494,7 +787,7 @@ else:
                 "The 'after X prizes taken' columns assume prizes taken are random with respect to the target card."
             )
             st.dataframe(
-                pretty_table(prize_df),
+                pretty_table(prize_df.drop(columns=["image_url", "image_large_url"], errors="ignore")),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -507,8 +800,7 @@ else:
 
             st.subheader("Parsed card matching")
             st.caption(
-                "This table shows how the app classified each parsed decklist entry. "
-                "Only Pokémon cards require API metadata in this version."
+                "This table shows how the app classified each parsed decklist entry and whether an API image was found."
             )
             st.dataframe(
                 parsed_df.rename(columns=DISPLAY_COLUMN_NAMES),
