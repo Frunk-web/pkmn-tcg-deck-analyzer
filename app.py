@@ -22,9 +22,9 @@ Main responsibilities:
   - parsed card matching diagnostics
 
 Mobile fixes:
-- Keeps full charts and tables visible.
-- Makes charts horizontally scrollable on mobile instead of squishing them.
-- Makes tables horizontally scrollable on mobile.
+- Keeps the original charts and tables visible.
+- Makes Plotly charts horizontally scrollable on mobile instead of squeezing them.
+- Makes dataframe tables horizontally scrollable on mobile.
 - Uses a custom CSS grid for the image gallery so mobile shows 2 compact cards per row.
 - Makes the section tabs larger, brighter, and easier to tap on mobile.
 """
@@ -104,7 +104,7 @@ DISPLAY_COLUMN_NAMES = {
 }
 
 
-CACHE_VERSION = "mobile-visible-charts-v2"
+CACHE_VERSION = "restore-charts-mobile-polish-v1"
 
 PLOTLY_CONFIG = {
     "displayModeBar": False,
@@ -325,20 +325,22 @@ def apply_custom_css():
     }
 
     div[data-testid="stPlotlyChart"] {
+        width: 100%;
         border: 1px solid rgba(148, 163, 184, 0.18);
         border-radius: 18px;
         background: rgba(15, 23, 42, 0.38);
         padding: 0.35rem;
+        margin-bottom: 1rem;
         overflow-x: auto;
         overflow-y: hidden;
-        margin-bottom: 1rem;
     }
 
     div[data-testid="stPlotlyChart"] > div {
-        min-width: 620px;
+        min-width: 720px;
     }
 
     div[data-testid="stDataFrame"] {
+        width: 100%;
         border: 1px solid rgba(148, 163, 184, 0.18);
         border-radius: 18px;
         overflow: auto;
@@ -601,17 +603,21 @@ def apply_custom_css():
         div[data-testid="stPlotlyChart"] {
             padding: 0.25rem;
             border-radius: 14px;
-            margin-left: -0.1rem;
-            margin-right: -0.1rem;
+            margin-left: 0;
+            margin-right: 0;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
 
         div[data-testid="stPlotlyChart"] > div {
-            min-width: 660px;
+            min-width: 860px;
         }
 
         div[data-testid="stDataFrame"] {
             font-size: 0.78rem;
             border-radius: 14px;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
 
         .chart-help {
@@ -1047,7 +1053,7 @@ else:
             st.markdown(
                 """
 <div class="chart-help">
-On smaller screens, charts and tables can be swiped horizontally instead of being squeezed.
+On mobile, swipe charts and tables horizontally if needed.
 </div>
                 """,
                 unsafe_allow_html=True,
