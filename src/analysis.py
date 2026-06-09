@@ -15,8 +15,9 @@ Main responsibilities:
   - random 7-card hand
   - legal opening 7-card hand
   - hand after drawing for turn
-- Calculate prize-card probabilities.
+- Calculate true game-start prize-card probabilities conditioned on keeping a legal opening hand.
 - Calculate still-prized probabilities after prizes are taken.
+- Include card image URLs in the output DataFrames.
 - Build clean pandas DataFrames for the Streamlit app to display.
 """
 
@@ -30,11 +31,11 @@ from src.probability import (
     p_card_in_legal_opening_7,
     p_card_in_hand_after_turn_draw_given_legal_opening,
     mulligan_distribution_exact,
-    p_at_least_one_prized,
-    expected_prized,
-    p_all_copies_prized,
-    p_still_prized_after_x_prizes_taken,
-    p_all_copies_still_prized_after_x_prizes_taken,
+    p_at_least_one_prized_after_legal_hand,
+    expected_prized_after_legal_hand,
+    p_all_copies_prized_after_legal_hand,
+    p_still_prized_after_x_prizes_taken_after_legal_hand,
+    p_all_copies_still_prized_after_x_prizes_taken_after_legal_hand,
 )
 
 
@@ -89,21 +90,29 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
 
         naive_p_opening_7 = p_card_in_random_7(deck_size, card.count)
 
-        p_prized = p_at_least_one_prized(
+        # True game-start prize probabilities.
+        # These are conditioned on first keeping a legal opening hand.
+        p_prized = p_at_least_one_prized_after_legal_hand(
             deck_size=deck_size,
+            basic_count=basic_count,
             card_count=card.count,
+            card_is_basic=card.is_basic_pokemon,
             prize_count=6,
         )
 
-        e_prized = expected_prized(
+        e_prized = expected_prized_after_legal_hand(
             deck_size=deck_size,
+            basic_count=basic_count,
             card_count=card.count,
+            card_is_basic=card.is_basic_pokemon,
             prize_count=6,
         )
 
-        p_all_prized = p_all_copies_prized(
+        p_all_prized = p_all_copies_prized_after_legal_hand(
             deck_size=deck_size,
+            basic_count=basic_count,
             card_count=card.count,
+            card_is_basic=card.is_basic_pokemon,
             prize_count=6,
         )
 
@@ -114,19 +123,25 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
             suffix = "prize_taken" if prizes_taken == 1 else "prizes_taken"
 
             still_prized_values[f"P_still_prized_after_{prizes_taken}_{suffix}"] = (
-                p_still_prized_after_x_prizes_taken(
+                p_still_prized_after_x_prizes_taken_after_legal_hand(
                     deck_size=deck_size,
+                    basic_count=basic_count,
                     card_count=card.count,
+                    card_is_basic=card.is_basic_pokemon,
                     prizes_taken=prizes_taken,
+                    starting_prize_count=6,
                 )
             )
 
             all_copies_still_prized_values[
                 f"P_all_copies_still_prized_after_{prizes_taken}_{suffix}"
-            ] = p_all_copies_still_prized_after_x_prizes_taken(
+            ] = p_all_copies_still_prized_after_x_prizes_taken_after_legal_hand(
                 deck_size=deck_size,
+                basic_count=basic_count,
                 card_count=card.count,
+                card_is_basic=card.is_basic_pokemon,
                 prizes_taken=prizes_taken,
+                starting_prize_count=6,
             )
 
         rows.append(
@@ -134,9 +149,13 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
                 "card": card.label,
                 "name": card.name,
                 "count": card.count,
+                "section": card.section,
+                "api_id": card.api_id,
                 "supertype": card.supertype,
                 "subtypes": ", ".join(card.subtypes or []),
                 "is_basic_pokemon": card.is_basic_pokemon,
+                "image_url": card.image_url,
+                "image_large_url": card.image_large_url,
 
                 "P_in_random_7_unconditioned": naive_p_opening_7,
                 "P_in_legal_opening_7": p_opening_7,
@@ -161,7 +180,10 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
         "card",
         "name",
         "count",
+        "section",
         "supertype",
+        "image_url",
+        "image_large_url",
         "P_at_least_1_prized",
         "E_prized",
         "P_all_copies_prized",
@@ -194,6 +216,8 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
                 "supertype": card.supertype,
                 "subtypes": ", ".join(card.subtypes or []),
                 "is_basic_pokemon": card.is_basic_pokemon,
+                "image_url": card.image_url,
+                "image_large_url": card.image_large_url,
             }
             for card in deck
         ]

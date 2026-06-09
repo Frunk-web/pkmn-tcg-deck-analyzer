@@ -11,13 +11,14 @@ Main responsibilities:
 - Search the Pokémon TCG API.
 - Match cards by name, set code, and collector number.
 - Cache API responses locally so repeated analyses are faster.
-- Add metadata to DeckCard objects, especially:
+- Add metadata to DeckCard objects:
   - api_id
   - supertype
   - subtypes
+  - image_url
+  - image_large_url
 
-The most important metadata for version 0.1 is whether a card is a Basic Pokémon,
-because mulligan probabilities depend on the number of Basic Pokémon in the deck.
+The app now uses API image URLs to display a visual card gallery with probability overlays.
 """
 
 import os
@@ -55,6 +56,22 @@ def save_cache(cache: Dict[str, dict]) -> None:
 def make_cache_key(name: str, set_code: Optional[str], collector_number: Optional[str]) -> str:
     raw = f"{name}|{set_code or ''}|{collector_number or ''}".lower()
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def normalize_set_aliases(set_code: Optional[str]) -> set:
+    if not set_code:
+        return set()
+
+    wanted = set_code.lower().strip()
+    aliases = {wanted, wanted.replace("-", "")}
+
+    # Common promo export pattern:
+    # PR-SV should match Pokémon TCG API set id "svp".
+    if wanted.startswith("pr-"):
+        promo_part = wanted.replace("pr-", "")
+        aliases.add(f"{promo_part}p")
+
+    return aliases
 
 
 def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
@@ -100,15 +117,17 @@ def card_matches(card: dict, set_code: Optional[str], collector_number: Optional
     api_set_name = (api_set.get("name") or "").lower()
     api_number = (card.get("number") or "").lower()
 
-    wanted_set = (set_code or "").lower()
+    wanted_aliases = normalize_set_aliases(set_code)
     wanted_number = (collector_number or "").lower()
 
     set_ok = True
     number_ok = True
 
-    if wanted_set and wanted_set != "energy":
+    if wanted_aliases and (set_code or "").lower() != "energy":
         set_ok = (
-            wanted_set == api_set_code or wanted_set == api_set_id or wanted_set in api_set_name
+            api_set_code in wanted_aliases
+            or api_set_id in wanted_aliases
+            or any(alias in api_set_name for alias in wanted_aliases)
         )
 
     if wanted_number:
@@ -117,80 +136,103 @@ def card_matches(card: dict, set_code: Optional[str], collector_number: Optional
     return set_ok and number_ok
 
 
-def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
-    # Version 0.1 only needs API metadata to identify Basic Pokémon.
-    # Trainer and Energy cards can never be Basic Pokémon, so we skip API calls for them.
+def fallback_classify_card(card: DeckCard) -> DeckCard:
+    """
+    If the API cannot match a card, classify it from the decklist section.
+    This keeps the probability calculations safe even if an image is unavailable.
+    """
+
+    card.api_id = None
+    card.image_url = None
+    card.image_large_url = None
+
     if card.section == "Trainer":
-        card.api_id = None
         card.supertype = "Trainer"
         card.subtypes = []
         return card
 
     if card.section == "Energy":
-        card.api_id = None
         card.supertype = "Energy"
-
         if card.name.lower().startswith("basic ") and card.name.lower().endswith(" energy"):
             card.subtypes = ["Basic"]
         else:
             card.subtypes = []
-
         return card
 
-    key = make_cache_key(card.name, card.set_code, card.collector_number)
+    return card
 
-    if key in cache:
-        api_card = cache[key]
-    else:
-        safe_name = card.name.replace('"', '\\"')
-        queries = []
 
-        if card.set_code and card.collector_number and card.set_code.lower() != "energy":
-            queries.append(
-                f'name:"{safe_name}" set.ptcgoCode:{card.set_code} number:{card.collector_number}'
-            )
-
-        if card.collector_number:
-            queries.append(f'name:"{safe_name}" number:{card.collector_number}')
-
-        queries.append(f'name:"{safe_name}"')
-
-        api_card = None
-
-        for query in queries:
-            results = pokemon_tcg_search(query)
-
-            exact_name_results = [
-                r for r in results if r.get("name", "").lower().strip() == card.name.lower().strip()
-            ]
-
-            exact_name_results = exact_name_results or results
-
-            filtered = [
-                r
-                for r in exact_name_results
-                if card_matches(r, card.set_code, card.collector_number)
-            ]
-
-            if filtered:
-                api_card = filtered[0]
-                break
-
-            if exact_name_results and api_card is None:
-                api_card = exact_name_results[0]
-
-        if api_card is None:
-            st.warning(f"No API match found for {card.label}")
-            return card
-
-        cache[key] = api_card
-        time.sleep(0.03)
-
+def attach_api_card_to_deck_card(card: DeckCard, api_card: dict) -> DeckCard:
     card.api_id = api_card.get("id")
     card.supertype = api_card.get("supertype")
     card.subtypes = api_card.get("subtypes", [])
 
+    images = api_card.get("images", {}) or {}
+    card.image_url = images.get("small")
+    card.image_large_url = images.get("large") or images.get("small")
+
     return card
+
+
+def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
+    key = make_cache_key(card.name, card.set_code, card.collector_number)
+
+    if key in cache:
+        api_card = cache[key]
+        return attach_api_card_to_deck_card(card, api_card)
+
+    safe_name = card.name.replace('"', '\\"')
+    queries = []
+
+    # Avoid strict set-code query for hyphenated promo codes like PR-SV,
+    # because those often do not match ptcgoCode directly.
+    if (
+        card.set_code
+        and card.collector_number
+        and card.set_code.lower() != "energy"
+        and "-" not in card.set_code
+    ):
+        queries.append(
+            f'name:"{safe_name}" set.ptcgoCode:{card.set_code} number:{card.collector_number}'
+        )
+
+    if card.collector_number:
+        queries.append(f'name:"{safe_name}" number:{card.collector_number}')
+
+    queries.append(f'name:"{safe_name}"')
+
+    api_card = None
+
+    for query in queries:
+        results = pokemon_tcg_search(query)
+
+        exact_name_results = [
+            r for r in results
+            if r.get("name", "").lower().strip() == card.name.lower().strip()
+        ]
+
+        exact_name_results = exact_name_results or results
+
+        filtered = [
+            r for r in exact_name_results
+            if card_matches(r, card.set_code, card.collector_number)
+        ]
+
+        if filtered:
+            api_card = filtered[0]
+            break
+
+        if exact_name_results and api_card is None:
+            api_card = exact_name_results[0]
+
+    if api_card is None:
+        st.warning(f"No API match found for {card.label}")
+        return fallback_classify_card(card)
+
+    cache[key] = api_card
+    time.sleep(0.03)
+
+    return attach_api_card_to_deck_card(card, api_card)
 
 
 def attach_metadata(deck):
