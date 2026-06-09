@@ -397,6 +397,11 @@ def apply_custom_css():
         unsafe_allow_html=True,
     )
 
+if "analysis_results" not in st.session_state:
+    st.session_state.analysis_results = None
+
+if "has_analyzed" not in st.session_state:
+    st.session_state.has_analyzed = False
 
 def pct(value, decimals=2):
     if pd.isna(value):
@@ -597,7 +602,30 @@ st.markdown(
 )
 
 
-if not analyze:
+if "analysis_results" not in st.session_state:
+    st.session_state.analysis_results = None
+
+if "has_analyzed" not in st.session_state:
+    st.session_state.has_analyzed = False
+
+
+if analyze:
+    try:
+        with st.spinner("Analyzing deck and fetching card images..."):
+            st.session_state.analysis_results = cached_analysis(
+                decklist_text,
+                max_mulligans,
+                CACHE_VERSION,
+            )
+            st.session_state.has_analyzed = True
+
+    except Exception as e:
+        st.session_state.analysis_results = None
+        st.session_state.has_analyzed = False
+        st.error(str(e))
+
+
+if not st.session_state.has_analyzed or st.session_state.analysis_results is None:
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -617,8 +645,8 @@ if not analyze:
 <li>Probability of mulliganing 0, 1, 2, 3, ... times</li>
 <li>Probability of seeing each card in a legal opening 7-card hand</li>
 <li>Probability of seeing each card after drawing for turn</li>
-<li>Probability of at least one copy being prized</li>
-<li>Probability of all copies being prized</li>
+<li>True game-start probability of at least one copy being prized</li>
+<li>True game-start probability of all copies being prized</li>
 <li>Probability of cards still being prized after taking prizes</li>
 <li>Visual card-image gallery with probability overlays</li>
 </ul>
@@ -629,12 +657,9 @@ if not analyze:
 
 else:
     try:
-        with st.spinner("Analyzing deck and fetching card images..."):
-            summary, mulligan_df, card_odds_df, prize_df, parsed_df, deck = cached_analysis(
-                decklist_text,
-                max_mulligans,
-                CACHE_VERSION,
-            )
+        summary, mulligan_df, card_odds_df, prize_df, parsed_df, deck = (
+            st.session_state.analysis_results
+        )
 
         top_n_cards = len(card_odds_df)
 
@@ -645,10 +670,21 @@ else:
 
         with c1:
             metric_card("Deck size", str(summary["deck_size"]), "Total parsed cards")
+
         with c2:
-            metric_card("Basic Pokémon", str(summary["basic_count"]), "Cards that make an opening hand legal")
+            metric_card(
+                "Basic Pokémon",
+                str(summary["basic_count"]),
+                "Cards that make an opening hand legal",
+            )
+
         with c3:
-            metric_card("Mulligan chance", f"{summary['p_mulligan_one_hand']:.2%}", "Chance one opening attempt has no Basic")
+            metric_card(
+                "Mulligan chance",
+                f"{summary['p_mulligan_one_hand']:.2%}",
+                "Chance one opening attempt has no Basic",
+            )
+
         with c4:
             metric_card(
                 "Expected mulligans",
@@ -697,6 +733,7 @@ else:
                     min_value=0,
                     max_value=5,
                     value=0,
+                    key="gallery_prizes_taken",
                     help="Updates the prized-card overlays to show what remains after taking X random prizes.",
                 )
 
@@ -709,6 +746,7 @@ else:
                     "Card type",
                     options=card_types,
                     index=0,
+                    key="gallery_card_type_filter",
                 )
 
             with controls[2]:
@@ -722,6 +760,7 @@ else:
                         "Deck order / parsed order",
                     ],
                     index=1,
+                    key="gallery_sort_mode",
                 )
 
             with controls[3]:
@@ -729,6 +768,7 @@ else:
                     "Cards per row",
                     options=[3, 4, 5, 6],
                     index=1,
+                    key="gallery_columns_per_row",
                 )
 
             render_card_gallery(
@@ -750,6 +790,7 @@ else:
                 "Legal opening 7 means the hand contains at least one Basic Pokémon. "
                 "Turn 1 raw access means opening hand plus drawing for turn, without search effects."
             )
+
             hand_cols = [
                 "card",
                 "count",
@@ -760,6 +801,7 @@ else:
                 "P_in_hand_after_turn_draw",
                 "increase_from_turn_draw",
             ]
+
             st.dataframe(
                 pretty_table(card_odds_df[hand_cols]),
                 use_container_width=True,
@@ -784,10 +826,17 @@ else:
 
             st.subheader("Prize probability table")
             st.caption(
+                "Prize probabilities are conditioned on keeping a legal opening hand. "
                 "The 'after X prizes taken' columns assume prizes taken are random with respect to the target card."
             )
+
             st.dataframe(
-                pretty_table(prize_df.drop(columns=["image_url", "image_large_url"], errors="ignore")),
+                pretty_table(
+                    prize_df.drop(
+                        columns=["image_url", "image_large_url"],
+                        errors="ignore",
+                    )
+                ),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -802,6 +851,7 @@ else:
             st.caption(
                 "This table shows how the app classified each parsed decklist entry and whether an API image was found."
             )
+
             st.dataframe(
                 parsed_df.rename(columns=DISPLAY_COLUMN_NAMES),
                 use_container_width=True,
