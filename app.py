@@ -43,7 +43,7 @@ EXAMPLE_DECKLIST = """Pokémon: 5
 4 Teal Mask Ogerpon ex TWM 25
 1 Latias ex SSP 76
 4 Raging Bolt ex TEF 123
-1 Fezindipity ex SFA 38
+1 Fezandipiti ex SFA 38
 1 Raging Bolt SCR 111
 
 Trainer: 10
