@@ -361,9 +361,11 @@ def make_prize_survival_heatmap(prize_df: pd.DataFrame):
                 [1.0, "#F59E0B"],
             ],
             colorbar=dict(
-                title="Probability (%)",
+                title=dict(
+                    text="Probability (%)",
+                    font=dict(color="#CBD5E1"),
+                ),
                 tickfont=dict(color="#CBD5E1"),
-                titlefont=dict(color="#CBD5E1"),
             ),
             hovertemplate="<b>%{y}</b><br>%{x} prizes taken<br>Still prized: %{z:.2f}%<extra></extra>",
         )
