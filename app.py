@@ -7,7 +7,8 @@ It controls the website interface and overall user experience.
 
 Main responsibilities:
 - Apply custom dark-mode styling.
-- Provide a sidebar where the user pastes a decklist.
+- Provide a responsive main-page decklist input.
+- Keep the sidebar lightweight instead of relying on it for critical input.
 - Run the deck analysis when the user clicks the Analyze button.
 - Persist analysis results across gallery-control changes.
 - Display a professional dashboard with:
@@ -98,7 +99,7 @@ DISPLAY_COLUMN_NAMES = {
 }
 
 
-CACHE_VERSION = "card-gallery-v2"
+CACHE_VERSION = "mobile-layout-v2"
 
 
 st.set_page_config(
@@ -189,6 +190,22 @@ def apply_custom_css():
         font-size: 0.9rem;
     }
 
+    .deck-input-card {
+        padding: 1.2rem;
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 20px;
+        background: rgba(15, 23, 42, 0.66);
+        margin-bottom: 1.2rem;
+        box-shadow: 0 16px 42px rgba(0, 0, 0, 0.22);
+    }
+
+    .input-help {
+        color: #94A3B8;
+        font-size: 0.9rem;
+        line-height: 1.5;
+        margin-bottom: 0.8rem;
+    }
+
     .metric-card {
         padding: 1.15rem 1.2rem;
         border: 1px solid rgba(148, 163, 184, 0.18);
@@ -230,6 +247,8 @@ def apply_custom_css():
 
     .stTabs [data-baseweb="tab-list"] {
         gap: 0.5rem;
+        overflow-x: auto;
+        flex-wrap: nowrap;
     }
 
     .stTabs [data-baseweb="tab"] {
@@ -238,6 +257,7 @@ def apply_custom_css():
         border-radius: 999px;
         color: #CBD5E1;
         padding: 0.4rem 1rem;
+        white-space: nowrap;
     }
 
     .stTabs [aria-selected="true"] {
@@ -400,6 +420,91 @@ def apply_custom_css():
         border-top: 1px solid rgba(148, 163, 184, 0.14);
         padding-top: 1rem;
     }
+
+    @media (max-width: 768px) {
+        .block-container {
+            padding-top: 1rem;
+            padding-left: 0.85rem;
+            padding-right: 0.85rem;
+        }
+
+        h1 {
+            font-size: 2.15rem !important;
+        }
+
+        .hero-card {
+            padding: 1.2rem 1.1rem;
+            border-radius: 18px;
+        }
+
+        .hero-kicker {
+            font-size: 0.72rem;
+        }
+
+        .hero-subtitle {
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        .feature-row {
+            gap: 0.45rem;
+        }
+
+        .feature-pill {
+            font-size: 0.78rem;
+            padding: 0.36rem 0.55rem;
+        }
+
+        .deck-input-card {
+            padding: 1rem;
+            border-radius: 16px;
+        }
+
+        .metric-card {
+            padding: 0.95rem;
+            border-radius: 16px;
+            margin-bottom: 0.55rem;
+        }
+
+        .metric-value {
+            font-size: 1.55rem;
+        }
+
+        .metric-note {
+            font-size: 0.78rem;
+        }
+
+        .gallery-placeholder {
+            height: 245px;
+        }
+
+        .gallery-title {
+            font-size: 0.82rem;
+        }
+
+        .prob-grid {
+            grid-template-columns: 1fr;
+            gap: 0.28rem;
+        }
+
+        .prob-box {
+            min-height: auto;
+            padding: 0.34rem;
+        }
+
+        .prob-label {
+            font-size: 0.56rem;
+        }
+
+        .prob-value {
+            font-size: 0.85rem;
+        }
+
+        .count-pill {
+            font-size: 0.72rem;
+            padding: 0.22rem 0.48rem;
+        }
+    }
 </style>
         """,
         unsafe_allow_html=True,
@@ -556,37 +661,25 @@ def cached_analysis(decklist_text: str, max_mulligans: int, cache_version: str):
 apply_custom_css()
 init_session_state()
 
+
 with st.sidebar:
     st.markdown("## 🃏 PKMN TCG Deck Analyzer")
-    st.caption("Paste a decklist and get exact probability diagnostics.")
-
-    decklist_text = st.text_area(
-        "Decklist",
-        value=EXAMPLE_DECKLIST,
-        height=430,
-        help="Paste a Pokémon TCG Live, Limitless, or similar decklist export.",
-    )
-
-    max_mulligans = st.slider(
-        "Show mulligans up to",
-        min_value=3,
-        max_value=10,
-        value=6,
-        help="The final bucket is shown as X+ mulligans.",
-    )
-
-    analyze = st.button("Analyze deck", type="primary", use_container_width=True)
+    st.caption("Probability tools for competitive deckbuilding.")
 
     st.markdown("---")
     st.markdown(
         """
 <div class="small-muted">
-Current version uses exact probability formulas for opening hands and prizes.
-Search-card reachability and card-swap optimization are planned future modules.
+Analyze opening hands, mulligans, prize cards, and card-level consistency from a pasted decklist.
 </div>
         """,
         unsafe_allow_html=True,
     )
+
+    if st.button("Clear analysis", use_container_width=True):
+        st.session_state.analysis_results = None
+        st.session_state.has_analyzed = False
+        st.rerun()
 
 
 st.markdown(
@@ -610,6 +703,51 @@ st.markdown(
 )
 
 
+st.markdown(
+    """
+<div class="deck-input-card">
+    <h3 style="margin-top: 0;">Deck input</h3>
+    <div class="input-help">
+        Paste a decklist below to calculate opening-hand, mulligan, and prize-card probabilities.
+    </div>
+</div>
+    """,
+    unsafe_allow_html=True,
+)
+
+input_expanded = not st.session_state.has_analyzed
+
+with st.expander("Paste / edit decklist", expanded=input_expanded):
+    decklist_text = st.text_area(
+        "Decklist",
+        value=EXAMPLE_DECKLIST,
+        height=360,
+        help="Paste a Pokémon TCG Live, Limitless, or similar decklist export.",
+        key="main_decklist_text",
+    )
+
+    col_a, col_b = st.columns([1, 1])
+
+    with col_a:
+        max_mulligans = st.slider(
+            "Show mulligans up to",
+            min_value=3,
+            max_value=10,
+            value=6,
+            help="The final bucket is shown as X+ mulligans.",
+            key="main_max_mulligans",
+        )
+
+    with col_b:
+        st.markdown("<br>", unsafe_allow_html=True)
+        analyze = st.button(
+            "Analyze deck",
+            type="primary",
+            use_container_width=True,
+            key="main_analyze_button",
+        )
+
+
 if analyze:
     try:
         with st.spinner("Analyzing deck and fetching card images..."):
@@ -630,7 +768,7 @@ if not st.session_state.has_analyzed or st.session_state.analysis_results is Non
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        metric_card("Step 1", "Paste", "Paste a 60-card Pokémon TCG decklist in the sidebar.")
+        metric_card("Step 1", "Paste", "Paste a 60-card Pokémon TCG decklist.")
 
     with col2:
         metric_card("Step 2", "Analyze", "Run exact opening-hand and prize-card probability calculations.")
@@ -767,9 +905,10 @@ else:
             with controls[3]:
                 columns_per_row = st.selectbox(
                     "Cards per row",
-                    options=[3, 4, 5, 6],
-                    index=1,
+                    options=[2, 3, 4, 5, 6],
+                    index=2,
                     key="gallery_columns_per_row",
+                    help="Use 2 cards per row on phones for the cleanest narrow-screen layout.",
                 )
 
             render_card_gallery(
