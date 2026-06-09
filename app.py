@@ -34,7 +34,6 @@ from src.charts import (
     make_prize_chart,
     make_all_copies_prized_chart,
     make_prize_survival_heatmap,
-    make_access_vs_prize_scatter,
 )
 
 
@@ -439,11 +438,6 @@ else:
                     make_mulligan_chart(mulligan_df),
                     use_container_width=True,
                 )
-
-            st.plotly_chart(
-                make_access_vs_prize_scatter(card_odds_df),
-                use_container_width=True,
-            )
 
             st.subheader("Mulligan probabilities")
             st.dataframe(
