@@ -16,6 +16,8 @@ Main responsibilities:
   - probability at least one copy is prized
   - expected number of copies prized
   - probability all copies are prized
+  - probability at least one copy is still prized after X prizes are taken
+  - probability all copies are still prized after X prizes are taken
 
 A legal opening hand means the 7-card hand contains at least one Basic Pokémon.
 """
@@ -64,9 +66,10 @@ def p_card_in_legal_opening_7(
         p_a_and_no_basic = 0.0
     else:
         non_basic_count = deck_size - basic_count
-        p_a_and_no_basic = (C(non_basic_count, 7) - C(non_basic_count - card_count, 7)) / C(
-            deck_size, 7
-        )
+        p_a_and_no_basic = (
+            C(non_basic_count, 7)
+            - C(non_basic_count - card_count, 7)
+        ) / C(deck_size, 7)
 
     return (p_a - p_a_and_no_basic) / p_legal
 
@@ -93,10 +96,13 @@ def p_card_in_hand_after_turn_draw_given_legal_opening(
 
     p_no_target_and_legal = p_no_target_opening - p_no_target_and_no_basic
 
-    p_turn_draw_not_target_given_no_target_opening = (deck_size - 7 - card_count) / (deck_size - 7)
+    p_turn_draw_not_target_given_no_target_opening = (
+        deck_size - 7 - card_count
+    ) / (deck_size - 7)
 
     p_no_target_after_turn_draw_and_legal = (
-        p_no_target_and_legal * p_turn_draw_not_target_given_no_target_opening
+        p_no_target_and_legal
+        * p_turn_draw_not_target_given_no_target_opening
     )
 
     return 1 - (p_no_target_after_turn_draw_and_legal / p_legal)
@@ -109,14 +115,14 @@ def mulligan_distribution_exact(q: float, max_mulligans: int = 6) -> pd.DataFram
         rows.append(
             {
                 "mulligans": str(k),
-                "probability": (q**k) * (1 - q),
+                "probability": (q ** k) * (1 - q),
             }
         )
 
     rows.append(
         {
             "mulligans": f"{max_mulligans}+",
-            "probability": q**max_mulligans,
+            "probability": q ** max_mulligans,
         }
     )
 
@@ -137,33 +143,11 @@ def p_exactly_x_prized(
     x: int,
     prize_count: int = 6,
 ) -> float:
-    return C(card_count, x) * C(deck_size - card_count, prize_count - x) / C(deck_size, prize_count)
-
-
-def p_still_prized_after_x_prizes_taken(
-    deck_size: int,
-    card_count: int,
-    prizes_taken: int,
-    starting_prize_count: int = 6,
-) -> float:
-    """
-    Probability that at least one copy of the card is still in the prize cards
-    after the player has taken a certain number of prize cards.
-
-    Example:
-    - prizes_taken = 0 means the original 6 prizes.
-    - prizes_taken = 1 means 5 prizes remain.
-    - prizes_taken = 5 means 1 prize remains.
-
-    This assumes the prizes taken are random with respect to the target card.
-    """
-
-    remaining_prizes = starting_prize_count - prizes_taken
-
-    if remaining_prizes <= 0:
-        return 0.0
-
-    return 1 - C(deck_size - card_count, remaining_prizes) / C(deck_size, remaining_prizes)
+    return (
+        C(card_count, x)
+        * C(deck_size - card_count, prize_count - x)
+        / C(deck_size, prize_count)
+    )
 
 
 def p_all_copies_prized(deck_size: int, card_count: int, prize_count: int = 6) -> float:
@@ -175,4 +159,56 @@ def p_all_copies_prized(deck_size: int, card_count: int, prize_count: int = 6) -
         card_count=card_count,
         x=card_count,
         prize_count=prize_count,
+    )
+
+
+def p_still_prized_after_x_prizes_taken(
+    deck_size: int,
+    card_count: int,
+    prizes_taken: int,
+    starting_prize_count: int = 6,
+) -> float:
+    """
+    Probability that at least one copy of the card is still in the prize cards
+    after the player has taken a certain number of random prize cards.
+
+    Example:
+    - prizes_taken = 0 means the original 6 prizes.
+    - prizes_taken = 1 means 5 prizes remain.
+    - prizes_taken = 5 means 1 prize remains.
+    """
+
+    remaining_prizes = starting_prize_count - prizes_taken
+
+    if remaining_prizes <= 0:
+        return 0.0
+
+    return 1 - C(deck_size - card_count, remaining_prizes) / C(deck_size, remaining_prizes)
+
+
+def p_all_copies_still_prized_after_x_prizes_taken(
+    deck_size: int,
+    card_count: int,
+    prizes_taken: int,
+    starting_prize_count: int = 6,
+) -> float:
+    """
+    Probability that all copies of a card are still in the remaining prize cards
+    after the player has taken a certain number of random prize cards.
+
+    If the number of remaining prizes is smaller than the card count,
+    the probability is 0.
+    """
+
+    remaining_prizes = starting_prize_count - prizes_taken
+
+    if remaining_prizes <= 0:
+        return 0.0
+
+    if card_count > remaining_prizes:
+        return 0.0
+
+    return C(deck_size - card_count, remaining_prizes - card_count) / C(
+        deck_size,
+        remaining_prizes,
     )

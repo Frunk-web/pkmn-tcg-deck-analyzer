@@ -16,6 +16,7 @@ Main responsibilities:
   - legal opening 7-card hand
   - hand after drawing for turn
 - Calculate prize-card probabilities.
+- Calculate still-prized probabilities after prizes are taken.
 - Build clean pandas DataFrames for the Streamlit app to display.
 """
 
@@ -33,6 +34,7 @@ from src.probability import (
     expected_prized,
     p_all_copies_prized,
     p_still_prized_after_x_prizes_taken,
+    p_all_copies_still_prized_after_x_prizes_taken,
 )
 
 
@@ -42,11 +44,15 @@ def format_probability_table(df: pd.DataFrame) -> pd.DataFrame:
     for col in formatted.columns:
         if col.startswith("P_") or col == "probability" or col == "increase_from_turn_draw":
             formatted[col] = formatted[col].map(
-                lambda x: "" if pd.isna(x) else (f"{x:.4%}" if "all_copies" in col else f"{x:.2%}")
+                lambda x: "" if pd.isna(x) else (
+                    f"{x:.4%}" if "all_copies" in col else f"{x:.2%}"
+                )
             )
 
         if col.startswith("E_"):
-            formatted[col] = formatted[col].map(lambda x: "" if pd.isna(x) else f"{x:.3f}")
+            formatted[col] = formatted[col].map(
+                lambda x: "" if pd.isna(x) else f"{x:.3f}"
+            )
 
     return formatted
 
@@ -62,7 +68,6 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
         raise ValueError("No Basic Pokémon detected. Check the parsed card matching table.")
 
     q = p_no_basic_opening_7(deck_size, basic_count)
-
     mulligan_df = mulligan_distribution_exact(q, max_mulligans=max_mulligans)
 
     rows = []
@@ -102,35 +107,28 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
             prize_count=6,
         )
 
-        p_still_prized_after_1 = p_still_prized_after_x_prizes_taken(
-            deck_size=deck_size,
-            card_count=card.count,
-            prizes_taken=1,
-        )
+        still_prized_values = {}
+        all_copies_still_prized_values = {}
 
-        p_still_prized_after_2 = p_still_prized_after_x_prizes_taken(
-            deck_size=deck_size,
-            card_count=card.count,
-            prizes_taken=2,
-        )
+        for prizes_taken in range(1, 6):
+            suffix = "prize_taken" if prizes_taken == 1 else "prizes_taken"
 
-        p_still_prized_after_3 = p_still_prized_after_x_prizes_taken(
-            deck_size=deck_size,
-            card_count=card.count,
-            prizes_taken=3,
-        )
+            still_prized_values[f"P_still_prized_after_{prizes_taken}_{suffix}"] = (
+                p_still_prized_after_x_prizes_taken(
+                    deck_size=deck_size,
+                    card_count=card.count,
+                    prizes_taken=prizes_taken,
+                )
+            )
 
-        p_still_prized_after_4 = p_still_prized_after_x_prizes_taken(
-            deck_size=deck_size,
-            card_count=card.count,
-            prizes_taken=4,
-        )
+            all_copies_still_prized_values[
+                f"P_all_copies_still_prized_after_{prizes_taken}_{suffix}"
+            ] = p_all_copies_still_prized_after_x_prizes_taken(
+                deck_size=deck_size,
+                card_count=card.count,
+                prizes_taken=prizes_taken,
+            )
 
-        p_still_prized_after_5 = p_still_prized_after_x_prizes_taken(
-            deck_size=deck_size,
-            card_count=card.count,
-            prizes_taken=5,
-        )
         rows.append(
             {
                 "card": card.label,
@@ -139,18 +137,18 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
                 "supertype": card.supertype,
                 "subtypes": ", ".join(card.subtypes or []),
                 "is_basic_pokemon": card.is_basic_pokemon,
+
                 "P_in_random_7_unconditioned": naive_p_opening_7,
                 "P_in_legal_opening_7": p_opening_7,
                 "P_in_hand_after_turn_draw": p_after_turn_draw,
                 "increase_from_turn_draw": p_after_turn_draw - p_opening_7,
+
                 "P_at_least_1_prized": p_prized,
                 "E_prized": e_prized,
                 "P_all_copies_prized": p_all_prized,
-                "P_still_prized_after_1_prize_taken": p_still_prized_after_1,
-                "P_still_prized_after_2_prizes_taken": p_still_prized_after_2,
-                "P_still_prized_after_3_prizes_taken": p_still_prized_after_3,
-                "P_still_prized_after_4_prizes_taken": p_still_prized_after_4,
-                "P_still_prized_after_5_prizes_taken": p_still_prized_after_5,
+
+                **still_prized_values,
+                **all_copies_still_prized_values,
             }
         )
 
@@ -159,22 +157,29 @@ def analyze_deck_opening_hand(decklist_text: str, max_mulligans: int = 6):
         ascending=False,
     )
 
-    prize_df = card_odds_df[
-        [
-            "card",
-            "name",
-            "count",
-            "supertype",
-            "P_at_least_1_prized",
-            "E_prized",
-            "P_all_copies_prized",
-            "P_still_prized_after_1_prize_taken",
-            "P_still_prized_after_2_prizes_taken",
-            "P_still_prized_after_3_prizes_taken",
-            "P_still_prized_after_4_prizes_taken",
-            "P_still_prized_after_5_prizes_taken",
-        ]
-    ].sort_values(
+    prize_cols = [
+        "card",
+        "name",
+        "count",
+        "supertype",
+        "P_at_least_1_prized",
+        "E_prized",
+        "P_all_copies_prized",
+        "P_still_prized_after_1_prize_taken",
+        "P_still_prized_after_2_prizes_taken",
+        "P_still_prized_after_3_prizes_taken",
+        "P_still_prized_after_4_prizes_taken",
+        "P_still_prized_after_5_prizes_taken",
+        "P_all_copies_still_prized_after_1_prize_taken",
+        "P_all_copies_still_prized_after_2_prizes_taken",
+        "P_all_copies_still_prized_after_3_prizes_taken",
+        "P_all_copies_still_prized_after_4_prizes_taken",
+        "P_all_copies_still_prized_after_5_prizes_taken",
+    ]
+
+    existing_prize_cols = [col for col in prize_cols if col in card_odds_df.columns]
+
+    prize_df = card_odds_df[existing_prize_cols].sort_values(
         by="P_at_least_1_prized",
         ascending=False,
     )
