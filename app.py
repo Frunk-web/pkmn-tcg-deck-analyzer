@@ -22,8 +22,9 @@ Main responsibilities:
   - parsed card matching diagnostics
 
 Mobile fixes:
-- Uses compact card/list views for mobile instead of forcing huge Plotly charts and wide tables.
-- Keeps full charts/tables available inside optional expanders.
+- Keeps full charts and tables visible.
+- Makes charts horizontally scrollable on mobile instead of squishing them.
+- Makes tables horizontally scrollable on mobile.
 - Uses a custom CSS grid for the image gallery so mobile shows 2 compact cards per row.
 - Makes the section tabs larger, brighter, and easier to tap on mobile.
 """
@@ -103,7 +104,7 @@ DISPLAY_COLUMN_NAMES = {
 }
 
 
-CACHE_VERSION = "mobile-tabs-v1"
+CACHE_VERSION = "mobile-visible-charts-v2"
 
 PLOTLY_CONFIG = {
     "displayModeBar": False,
@@ -255,86 +256,11 @@ def apply_custom_css():
         margin-bottom: 1rem;
     }
 
-    .mobile-card-list {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 0.75rem;
-        margin-top: 0.75rem;
-    }
-
-    .mobile-result-card {
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        border-radius: 16px;
-        background: rgba(15, 23, 42, 0.70);
-        padding: 0.9rem;
-        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
-    }
-
-    .mobile-result-title {
-        font-size: 0.98rem;
-        font-weight: 900;
-        color: #F8FAFC;
-        line-height: 1.25;
-        margin-bottom: 0.5rem;
-    }
-
-    .mobile-result-meta {
+    .chart-help {
         color: #94A3B8;
-        font-size: 0.78rem;
-        margin-bottom: 0.6rem;
-    }
-
-    .mobile-stat-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 0.45rem;
-    }
-
-    .mobile-stat-box {
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        background: rgba(2, 6, 23, 0.35);
-        border-radius: 12px;
-        padding: 0.52rem;
-    }
-
-    .mobile-stat-label {
-        color: #94A3B8;
-        text-transform: uppercase;
-        font-weight: 900;
-        letter-spacing: 0.04em;
-        font-size: 0.58rem;
-        line-height: 1.1;
-        margin-bottom: 0.2rem;
-    }
-
-    .mobile-stat-value {
-        color: #F8FAFC;
-        font-weight: 950;
-        font-size: 0.98rem;
-        line-height: 1.05;
-    }
-
-    .mobile-stat-value-blue {
-        color: #60A5FA;
-    }
-
-    .mobile-stat-value-yellow {
-        color: #FBBF24;
-    }
-
-    .mobile-stat-value-red {
-        color: #FB7185;
-    }
-
-    .mobile-stat-value-green {
-        color: #34D399;
-    }
-
-    .mobile-note {
-        color: #94A3B8;
-        font-size: 0.86rem;
+        font-size: 0.84rem;
         line-height: 1.45;
-        margin-bottom: 0.9rem;
+        margin: 0.15rem 0 0.75rem 0;
     }
 
     .stTabs [data-baseweb="tab-list"] {
@@ -398,10 +324,25 @@ def apply_custom_css():
         color: white !important;
     }
 
+    div[data-testid="stPlotlyChart"] {
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 18px;
+        background: rgba(15, 23, 42, 0.38);
+        padding: 0.35rem;
+        overflow-x: auto;
+        overflow-y: hidden;
+        margin-bottom: 1rem;
+    }
+
+    div[data-testid="stPlotlyChart"] > div {
+        min-width: 620px;
+    }
+
     div[data-testid="stDataFrame"] {
         border: 1px solid rgba(148, 163, 184, 0.18);
         border-radius: 18px;
-        overflow: hidden;
+        overflow: auto;
+        margin-bottom: 1rem;
     }
 
     .stButton > button {
@@ -657,6 +598,26 @@ def apply_custom_css():
             font-weight: 900;
         }
 
+        div[data-testid="stPlotlyChart"] {
+            padding: 0.25rem;
+            border-radius: 14px;
+            margin-left: -0.1rem;
+            margin-right: -0.1rem;
+        }
+
+        div[data-testid="stPlotlyChart"] > div {
+            min-width: 660px;
+        }
+
+        div[data-testid="stDataFrame"] {
+            font-size: 0.78rem;
+            border-radius: 14px;
+        }
+
+        .chart-help {
+            font-size: 0.78rem;
+        }
+
         .gallery-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
             gap: 0.7rem;
@@ -886,142 +847,6 @@ def render_card_gallery(
     )
 
 
-def render_mobile_hand_list(card_odds_df: pd.DataFrame, limit: int = 12):
-    plot_df = card_odds_df.head(limit).copy()
-
-    cards_html = ""
-
-    for _, row in plot_df.iterrows():
-        card = html.escape(str(row["card"]))
-        count = int(row["count"])
-        card_type = html.escape(str(row.get("supertype", "Unknown")))
-        legal = pct(row["P_in_legal_opening_7"], 2)
-        turn = pct(row["P_in_hand_after_turn_draw"], 2)
-        random_7 = pct(row["P_in_random_7_unconditioned"], 2)
-        gain = pct(row["increase_from_turn_draw"], 2)
-
-        cards_html += f"""
-<div class="mobile-result-card">
-    <div class="mobile-result-title">{card}</div>
-    <div class="mobile-result-meta">x{count} · {card_type}</div>
-    <div class="mobile-stat-grid">
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Legal 7</div>
-            <div class="mobile-stat-value mobile-stat-value-blue">{legal}</div>
-        </div>
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Turn 1</div>
-            <div class="mobile-stat-value mobile-stat-value-green">{turn}</div>
-        </div>
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Random 7</div>
-            <div class="mobile-stat-value">{random_7}</div>
-        </div>
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Draw gain</div>
-            <div class="mobile-stat-value">{gain}</div>
-        </div>
-    </div>
-</div>
-"""
-
-    st.markdown(
-        f"""
-<div class="mobile-note">
-Top cards by Turn 1 raw access. Full chart and table are available below.
-</div>
-<div class="mobile-card-list">
-    {cards_html}
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_mobile_prize_list(prize_df: pd.DataFrame, prizes_taken: int = 0, limit: int = 12):
-    at_least_col, all_col, context_label = prize_column_names(prizes_taken)
-
-    sort_col = at_least_col if at_least_col in prize_df.columns else "P_at_least_1_prized"
-    plot_df = prize_df.sort_values(sort_col, ascending=False).head(limit).copy()
-
-    cards_html = ""
-
-    for _, row in plot_df.iterrows():
-        card = html.escape(str(row["card"]))
-        count = int(row["count"])
-        card_type = html.escape(str(row.get("supertype", "Unknown")))
-        at_least = pct(row.get(at_least_col, float("nan")), 2)
-        all_prized = pct(row.get(all_col, float("nan")), 4)
-        expected = row.get("E_prized", float("nan"))
-        expected_txt = "—" if pd.isna(expected) else f"{expected:.3f}"
-
-        cards_html += f"""
-<div class="mobile-result-card">
-    <div class="mobile-result-title">{card}</div>
-    <div class="mobile-result-meta">x{count} · {card_type} · {html.escape(context_label)}</div>
-    <div class="mobile-stat-grid">
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">≥1 prized</div>
-            <div class="mobile-stat-value mobile-stat-value-yellow">{at_least}</div>
-        </div>
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">All prized</div>
-            <div class="mobile-stat-value mobile-stat-value-red">{all_prized}</div>
-        </div>
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Expected prized</div>
-            <div class="mobile-stat-value">{expected_txt}</div>
-        </div>
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Copies</div>
-            <div class="mobile-stat-value">x{count}</div>
-        </div>
-    </div>
-</div>
-"""
-
-    st.markdown(
-        f"""
-<div class="mobile-note">
-Top prize-liability cards. Full charts and table are available below.
-</div>
-<div class="mobile-card-list">
-    {cards_html}
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_mobile_mulligan_list(mulligan_df: pd.DataFrame):
-    cards_html = ""
-
-    for _, row in mulligan_df.iterrows():
-        mulligans = html.escape(str(row["mulligans"]))
-        probability = pct(row["probability"], 2)
-
-        cards_html += f"""
-<div class="mobile-result-card">
-    <div class="mobile-result-title">{mulligans} mulligan{'s' if mulligans != '1' else ''}</div>
-    <div class="mobile-stat-grid">
-        <div class="mobile-stat-box">
-            <div class="mobile-stat-label">Probability</div>
-            <div class="mobile-stat-value mobile-stat-value-blue">{probability}</div>
-        </div>
-    </div>
-</div>
-"""
-
-    st.markdown(
-        f"""
-<div class="mobile-card-list">
-    {cards_html}
-</div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
 @st.cache_data(show_spinner=False)
 def cached_analysis(decklist_text: str, max_mulligans: int, cache_version: str):
     return analyze_deck_opening_hand(
@@ -1219,14 +1044,20 @@ else:
                 show_chart(make_mulligan_chart(mulligan_df))
 
             st.subheader("Mulligan probabilities")
-            render_mobile_mulligan_list(mulligan_df)
+            st.markdown(
+                """
+<div class="chart-help">
+On smaller screens, charts and tables can be swiped horizontally instead of being squeezed.
+</div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-            with st.expander("Show full mulligan table", expanded=False):
-                st.dataframe(
-                    pretty_table(mulligan_df),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            st.dataframe(
+                pretty_table(mulligan_df),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         with gallery_tab:
             st.subheader("Visual card probability gallery")
@@ -1292,94 +1123,95 @@ else:
 
         with hand_tab:
             st.subheader("Opening-hand access")
-            render_mobile_hand_list(card_odds_df, limit=12)
+            st.caption(
+                "Legal opening 7 means the hand contains at least one Basic Pokémon. "
+                "Turn 1 raw access means opening hand plus drawing for turn, without search effects."
+            )
 
-            with st.expander("Show full opening-hand chart", expanded=False):
-                show_chart(make_card_odds_chart(card_odds_df, top_n_cards=top_n_cards))
-
-            with st.expander("Show full opening-hand table", expanded=False):
-                st.caption(
-                    "Legal opening 7 means the hand contains at least one Basic Pokémon. "
-                    "Turn 1 raw access means opening hand plus drawing for turn, without search effects."
+            show_chart(
+                make_card_odds_chart(
+                    card_odds_df,
+                    top_n_cards=top_n_cards,
                 )
+            )
 
-                hand_cols = [
-                    "card",
-                    "count",
-                    "supertype",
-                    "is_basic_pokemon",
-                    "P_in_random_7_unconditioned",
-                    "P_in_legal_opening_7",
-                    "P_in_hand_after_turn_draw",
-                    "increase_from_turn_draw",
-                ]
+            st.subheader("Opening-hand probability table")
 
-                st.dataframe(
-                    pretty_table(card_odds_df[hand_cols]),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            hand_cols = [
+                "card",
+                "count",
+                "supertype",
+                "is_basic_pokemon",
+                "P_in_random_7_unconditioned",
+                "P_in_legal_opening_7",
+                "P_in_hand_after_turn_draw",
+                "increase_from_turn_draw",
+            ]
+
+            st.dataframe(
+                pretty_table(card_odds_df[hand_cols]),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         with prize_tab:
-            st.subheader("Prize-card risk")
-
-            mobile_prizes_taken = st.slider(
-                "Prize view",
-                min_value=0,
-                max_value=5,
-                value=0,
-                key="mobile_prize_view",
-                help="Updates the compact prize-risk cards below.",
+            st.subheader("Prize-card probabilities")
+            st.caption(
+                "Prize probabilities are conditioned on keeping a legal opening hand. "
+                "On mobile, swipe charts and tables horizontally if needed."
             )
 
-            render_mobile_prize_list(
-                prize_df=prize_df,
-                prizes_taken=mobile_prizes_taken,
-                limit=12,
+            show_chart(
+                make_prize_chart(
+                    prize_df,
+                    top_n_cards=top_n_cards,
+                )
             )
 
-            with st.expander("Show at least 1 prized chart", expanded=False):
-                show_chart(make_prize_chart(prize_df, top_n_cards=top_n_cards))
-
-            with st.expander("Show all copies prized chart", expanded=False):
-                show_chart(make_all_copies_prized_chart(prize_df, top_n_cards=top_n_cards))
-
-            with st.expander("Show still-prized heatmap", expanded=False):
-                show_chart(make_prize_survival_heatmap(prize_df))
-
-            with st.expander("Show full prize table", expanded=False):
-                st.caption(
-                    "Prize probabilities are conditioned on keeping a legal opening hand. "
-                    "The 'after X prizes taken' columns assume prizes taken are random with respect to the target card."
+            show_chart(
+                make_all_copies_prized_chart(
+                    prize_df,
+                    top_n_cards=top_n_cards,
                 )
+            )
 
-                st.dataframe(
-                    pretty_table(
-                        prize_df.drop(
-                            columns=["image_url", "image_large_url"],
-                            errors="ignore",
-                        )
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            show_chart(make_prize_survival_heatmap(prize_df))
+
+            st.subheader("Prize probability table")
+
+            st.dataframe(
+                pretty_table(
+                    prize_df.drop(
+                        columns=["image_url", "image_large_url"],
+                        errors="ignore",
+                    )
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
         with diagnostics_tab:
             st.subheader("Diagnostics")
 
-            with st.expander("Show mulligan conditioning chart", expanded=False):
-                show_chart(make_conditioning_effect_chart(card_odds_df, top_n_cards=top_n_cards))
+            st.caption(
+                "This section helps verify how mulligan conditioning changes card access "
+                "and how the app parsed each decklist entry."
+            )
 
-            with st.expander("Show parsed card matching table", expanded=False):
-                st.caption(
-                    "This table shows how the app classified each parsed decklist entry and whether an API image was found."
+            show_chart(
+                make_conditioning_effect_chart(
+                    card_odds_df,
+                    top_n_cards=top_n_cards,
                 )
+            )
 
-                st.dataframe(
-                    parsed_df.rename(columns=DISPLAY_COLUMN_NAMES),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            st.subheader("Parsed card matching")
+
+            st.dataframe(
+                parsed_df.rename(columns=DISPLAY_COLUMN_NAMES),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     except Exception as e:
         st.error(str(e))
