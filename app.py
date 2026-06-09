@@ -21,7 +21,10 @@ Main responsibilities:
   - prize-after-X-prizes controls
   - parsed card matching diagnostics
 
-Most of the actual probability and parsing logic is imported from the src/ folder.
+Mobile-specific gallery fix:
+- Uses a custom CSS grid for card images instead of Streamlit columns.
+- Forces 2 compact cards per row on mobile screens.
+- Prevents one oversized card from taking the full phone screen.
 """
 
 import html
@@ -99,7 +102,7 @@ DISPLAY_COLUMN_NAMES = {
 }
 
 
-CACHE_VERSION = "mobile-layout-v2"
+CACHE_VERSION = "mobile-card-grid-v1"
 
 
 st.set_page_config(
@@ -287,6 +290,14 @@ def apply_custom_css():
         transform: translateY(-1px);
     }
 
+    .gallery-grid {
+        display: grid;
+        grid-template-columns: repeat(var(--cards-per-row), minmax(0, 1fr));
+        gap: 1rem;
+        width: 100%;
+        margin-top: 1rem;
+    }
+
     .gallery-card {
         position: relative;
         border-radius: 18px;
@@ -294,8 +305,8 @@ def apply_custom_css():
         border: 1px solid rgba(148, 163, 184, 0.24);
         background: rgba(15, 23, 42, 0.78);
         box-shadow: 0 20px 48px rgba(0, 0, 0, 0.38);
-        margin-bottom: 1rem;
         transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+        min-width: 0;
     }
 
     .gallery-card:hover {
@@ -315,10 +326,13 @@ def apply_custom_css():
         width: 100%;
         display: block;
         border-radius: 16px;
+        aspect-ratio: 63 / 88;
+        object-fit: cover;
+        object-position: top center;
     }
 
     .gallery-placeholder {
-        height: 320px;
+        aspect-ratio: 63 / 88;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -343,6 +357,7 @@ def apply_custom_css():
         font-size: 0.78rem;
         font-weight: 900;
         backdrop-filter: blur(10px);
+        z-index: 3;
     }
 
     .gallery-overlay {
@@ -352,6 +367,7 @@ def apply_custom_css():
         bottom: 0;
         padding: 0.7rem;
         background: linear-gradient(180deg, rgba(2, 6, 23, 0), rgba(2, 6, 23, 0.94) 38%, rgba(2, 6, 23, 0.98));
+        z-index: 2;
     }
 
     .gallery-title {
@@ -474,35 +490,68 @@ def apply_custom_css():
             font-size: 0.78rem;
         }
 
+        .gallery-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+            gap: 0.7rem;
+        }
+
+        .gallery-card {
+            border-radius: 14px;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.34);
+        }
+
+        .gallery-image {
+            border-radius: 14px 14px 0 0;
+        }
+
         .gallery-placeholder {
-            height: 245px;
+            border-radius: 14px 14px 0 0;
+            padding: 0.65rem;
+            font-size: 0.76rem;
+        }
+
+        .gallery-overlay {
+            position: relative;
+            padding: 0.48rem;
+            background: rgba(2, 6, 23, 0.96);
         }
 
         .gallery-title {
-            font-size: 0.82rem;
+            font-size: 0.68rem;
+            line-height: 1.15;
+            margin-bottom: 0.38rem;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
 
         .prob-grid {
             grid-template-columns: 1fr;
-            gap: 0.28rem;
+            gap: 0.26rem;
         }
 
         .prob-box {
             min-height: auto;
-            padding: 0.34rem;
+            padding: 0.28rem 0.32rem;
+            border-radius: 9px;
         }
 
         .prob-label {
-            font-size: 0.56rem;
+            font-size: 0.48rem;
+            line-height: 1.05;
+            letter-spacing: 0.03em;
         }
 
         .prob-value {
-            font-size: 0.85rem;
+            font-size: 0.72rem;
         }
 
         .count-pill {
-            font-size: 0.72rem;
-            padding: 0.22rem 0.48rem;
+            top: 7px;
+            right: 7px;
+            font-size: 0.62rem;
+            padding: 0.18rem 0.38rem;
         }
     }
 </style>
@@ -559,7 +608,7 @@ def prize_column_names(prizes_taken: int):
     )
 
 
-def render_card_tile(row: pd.Series, prizes_taken: int):
+def render_card_tile_html(row: pd.Series, prizes_taken: int) -> str:
     at_least_col, all_col, context_label = prize_column_names(prizes_taken)
 
     image_url = row.get("image_large_url") or row.get("image_url")
@@ -573,12 +622,19 @@ def render_card_tile(row: pd.Series, prizes_taken: int):
     safe_context_label = html.escape(context_label)
 
     if image_url:
-        image_html = f'<img class="gallery-image" src="{html.escape(str(image_url))}" alt="{safe_card_label}">'
+        safe_image_url = html.escape(str(image_url), quote=True)
+        image_html = (
+            f'<img class="gallery-image" src="{safe_image_url}" '
+            f'alt="{safe_card_label}" loading="lazy">'
+        )
     else:
-        image_html = f'<div class="gallery-placeholder">{safe_card_label}<br><span class="small-muted">No image found</span></div>'
+        image_html = (
+            f'<div class="gallery-placeholder">'
+            f'{safe_card_label}<br><span class="small-muted">No image found</span>'
+            f'</div>'
+        )
 
-    st.markdown(
-        f"""
+    return f"""
 <div class="gallery-card">
     <div class="gallery-image-wrap">
         {image_html}
@@ -587,7 +643,7 @@ def render_card_tile(row: pd.Series, prizes_taken: int):
             <div class="gallery-title">{safe_card_label}</div>
             <div class="prob-grid">
                 <div class="prob-box">
-                    <div class="prob-label">Turn 1 raw</div>
+                    <div class="prob-label">Turn 1</div>
                     <div class="prob-value prob-value-good">{pct(turn_access, 2)}</div>
                 </div>
                 <div class="prob-box">
@@ -602,9 +658,7 @@ def render_card_tile(row: pd.Series, prizes_taken: int):
         </div>
     </div>
 </div>
-        """,
-        unsafe_allow_html=True,
-    )
+"""
 
 
 def render_card_gallery(
@@ -640,14 +694,21 @@ def render_card_gallery(
         st.info("No cards match the selected gallery filters.")
         return
 
-    rows = gallery_df.to_dict("records")
+    safe_columns = max(1, min(int(columns_per_row), 6))
 
-    for start in range(0, len(rows), columns_per_row):
-        cols = st.columns(columns_per_row)
+    cards_html = "\n".join(
+        render_card_tile_html(pd.Series(row_dict), prizes_taken)
+        for row_dict in gallery_df.to_dict("records")
+    )
 
-        for col, row_dict in zip(cols, rows[start:start + columns_per_row]):
-            with col:
-                render_card_tile(pd.Series(row_dict), prizes_taken)
+    st.markdown(
+        f"""
+<div class="gallery-grid" style="--cards-per-row: {safe_columns};">
+    {cards_html}
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_data(show_spinner=False)
@@ -860,7 +921,7 @@ else:
         with gallery_tab:
             st.subheader("Visual card probability gallery")
             st.caption(
-                "Each card image shows Turn 1 raw access, at least 1 prized copy, and all copies prized. "
+                "Each card shows Turn 1 raw access, at least 1 prized copy, and all copies prized. "
                 "Use the controls to view probabilities after prizes have been taken."
             )
 
@@ -908,7 +969,7 @@ else:
                     options=[2, 3, 4, 5, 6],
                     index=2,
                     key="gallery_columns_per_row",
-                    help="Use 2 cards per row on phones for the cleanest narrow-screen layout.",
+                    help="Desktop uses this setting. Phones automatically use 2 compact cards per row.",
                 )
 
             render_card_gallery(
