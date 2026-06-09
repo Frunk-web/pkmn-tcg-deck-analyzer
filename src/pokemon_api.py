@@ -11,6 +11,7 @@ Main responsibilities:
 - Search the Pokémon TCG API.
 - Match cards by name, set code, and collector number.
 - Cache API responses locally so repeated analyses are faster.
+- Detect stale cached API responses that do not contain image URLs.
 - Add metadata to DeckCard objects:
   - api_id
   - supertype
@@ -18,7 +19,7 @@ Main responsibilities:
   - image_url
   - image_large_url
 
-The app now uses API image URLs to display a visual card gallery with probability overlays.
+The app uses API image URLs to display a visual card gallery with probability overlays.
 """
 
 import os
@@ -32,6 +33,7 @@ import streamlit as st
 
 from src.deck_parser import DeckCard
 
+
 POKEMON_TCG_API_BASE = "https://api.pokemontcg.io/v2"
 CACHE_FILE = "pokemon_opening_hand_cache.json"
 
@@ -44,8 +46,11 @@ def load_cache() -> Dict[str, dict]:
     if not os.path.exists(CACHE_FILE):
         return {}
 
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
 
 
 def save_cache(cache: Dict[str, dict]) -> None:
@@ -72,6 +77,11 @@ def normalize_set_aliases(set_code: Optional[str]) -> set:
         aliases.add(f"{promo_part}p")
 
     return aliases
+
+
+def api_card_has_image(api_card: dict) -> bool:
+    images = api_card.get("images", {}) or {}
+    return bool(images.get("small") or images.get("large"))
 
 
 def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
@@ -153,10 +163,12 @@ def fallback_classify_card(card: DeckCard) -> DeckCard:
 
     if card.section == "Energy":
         card.supertype = "Energy"
+
         if card.name.lower().startswith("basic ") and card.name.lower().endswith(" energy"):
             card.subtypes = ["Basic"]
         else:
             card.subtypes = []
+
         return card
 
     return card
@@ -174,13 +186,7 @@ def attach_api_card_to_deck_card(card: DeckCard, api_card: dict) -> DeckCard:
     return card
 
 
-def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
-    key = make_cache_key(card.name, card.set_code, card.collector_number)
-
-    if key in cache:
-        api_card = cache[key]
-        return attach_api_card_to_deck_card(card, api_card)
-
+def build_queries(card: DeckCard) -> List[str]:
     safe_name = card.name.replace('"', '\\"')
     queries = []
 
@@ -196,11 +202,18 @@ def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
             f'name:"{safe_name}" set.ptcgoCode:{card.set_code} number:{card.collector_number}'
         )
 
-    if card.collector_number:
+    # Basic Energy exports can produce fake set_code="Energy".
+    # For those, name-only tends to be safer than forcing collector number.
+    if card.collector_number and (card.set_code or "").lower() != "energy":
         queries.append(f'name:"{safe_name}" number:{card.collector_number}')
 
     queries.append(f'name:"{safe_name}"')
 
+    return queries
+
+
+def find_best_api_match(card: DeckCard) -> Optional[dict]:
+    queries = build_queries(card)
     api_card = None
 
     for query in queries:
@@ -219,11 +232,31 @@ def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
         ]
 
         if filtered:
-            api_card = filtered[0]
-            break
+            image_matches = [r for r in filtered if api_card_has_image(r)]
+            return image_matches[0] if image_matches else filtered[0]
 
         if exact_name_results and api_card is None:
-            api_card = exact_name_results[0]
+            image_matches = [r for r in exact_name_results if api_card_has_image(r)]
+            api_card = image_matches[0] if image_matches else exact_name_results[0]
+
+    return api_card
+
+
+def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
+    key = make_cache_key(card.name, card.set_code, card.collector_number)
+
+    if key in cache:
+        cached_api_card = cache[key]
+
+        # Durable cache validation:
+        # Older cached entries may not have image URLs. If an image is missing,
+        # treat the cache entry as stale and refetch it.
+        if api_card_has_image(cached_api_card):
+            return attach_api_card_to_deck_card(card, cached_api_card)
+
+        del cache[key]
+
+    api_card = find_best_api_match(card)
 
     if api_card is None:
         st.warning(f"No API match found for {card.label}")

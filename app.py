@@ -9,6 +9,7 @@ Main responsibilities:
 - Apply custom dark-mode styling.
 - Provide a sidebar where the user pastes a decklist.
 - Run the deck analysis when the user clicks the Analyze button.
+- Persist analysis results across gallery-control changes.
 - Display a professional dashboard with:
   - summary metrics
   - deck composition
@@ -42,7 +43,7 @@ EXAMPLE_DECKLIST = """Pokémon: 5
 4 Teal Mask Ogerpon ex TWM 25
 1 Latias ex SSP 76
 4 Raging Bolt ex TEF 123
-1 Fezandipiti ex ASC 142
+1 Fezandipiti ex SFA 38
 1 Raging Bolt SCR 111
 
 Trainer: 10
@@ -97,7 +98,14 @@ DISPLAY_COLUMN_NAMES = {
 }
 
 
-CACHE_VERSION = "card-gallery-v1"
+CACHE_VERSION = "card-gallery-v2"
+
+
+st.set_page_config(
+    page_title="PKMN TCG Deck Analyzer",
+    page_icon="🃏",
+    layout="wide",
+)
 
 
 def apply_custom_css():
@@ -397,11 +405,14 @@ def apply_custom_css():
         unsafe_allow_html=True,
     )
 
-if "analysis_results" not in st.session_state:
-    st.session_state.analysis_results = None
 
-if "has_analyzed" not in st.session_state:
-    st.session_state.has_analyzed = False
+def init_session_state():
+    if "analysis_results" not in st.session_state:
+        st.session_state.analysis_results = None
+
+    if "has_analyzed" not in st.session_state:
+        st.session_state.has_analyzed = False
+
 
 def pct(value, decimals=2):
     if pd.isna(value):
@@ -501,7 +512,9 @@ def render_card_gallery(
     gallery_df = card_df.copy()
 
     if card_type_filter != "All":
-        gallery_df = gallery_df[gallery_df["supertype"].fillna("Unknown") == card_type_filter].copy()
+        gallery_df = gallery_df[
+            gallery_df["supertype"].fillna("Unknown") == card_type_filter
+        ].copy()
 
     at_least_col, all_col, _ = prize_column_names(prizes_taken)
 
@@ -540,13 +553,8 @@ def cached_analysis(decklist_text: str, max_mulligans: int, cache_version: str):
     )
 
 
-st.set_page_config(
-    page_title="PKMN TCG Deck Analyzer",
-    page_icon="🃏",
-    layout="wide",
-)
-
 apply_custom_css()
+init_session_state()
 
 with st.sidebar:
     st.markdown("## 🃏 PKMN TCG Deck Analyzer")
@@ -600,13 +608,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-
-if "analysis_results" not in st.session_state:
-    st.session_state.analysis_results = None
-
-if "has_analyzed" not in st.session_state:
-    st.session_state.has_analyzed = False
 
 
 if analyze:
