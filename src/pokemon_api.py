@@ -1,10 +1,8 @@
 """
-Explanation
-
 This file handles communication with the Pokémon TCG API.
 
 It takes parsed DeckCard objects and tries to match them to real Pokémon TCG API
-cards using the card name, set code, and collector number.
+cards using card name, set code, and collector number.
 
 Main responsibilities:
 - Read the Pokémon TCG API key from Streamlit secrets or environment variables.
@@ -20,13 +18,20 @@ Main responsibilities:
   - image_large_url
 
 The app uses API image URLs to display a visual card gallery with probability overlays.
+
+Important:
+Basic Energy cards are handled locally instead of through API lookup. Deck exports
+often contain names like "Basic Fighting Energy", while the Pokémon TCG API may
+represent printings as "Fighting Energy". For probability analysis, the exact
+Basic Energy printing is usually irrelevant, so local classification is safer and
+avoids noisy API warnings.
 """
 
-import os
-import json
-import time
 import hashlib
-from typing import Optional, Dict, List
+import json
+import os
+import time
+from typing import Dict, List, Optional
 
 import requests
 import streamlit as st
@@ -36,6 +41,18 @@ from src.deck_parser import DeckCard
 
 POKEMON_TCG_API_BASE = "https://api.pokemontcg.io/v2"
 CACHE_FILE = "pokemon_opening_hand_cache.json"
+
+BASIC_ENERGY_TYPES = {
+    "grass": "Grass",
+    "fire": "Fire",
+    "water": "Water",
+    "lightning": "Lightning",
+    "psychic": "Psychic",
+    "fighting": "Fighting",
+    "darkness": "Darkness",
+    "metal": "Metal",
+    "fairy": "Fairy",
+}
 
 
 def get_api_key():
@@ -58,7 +75,11 @@ def save_cache(cache: Dict[str, dict]) -> None:
         json.dump(cache, f, indent=2, ensure_ascii=False)
 
 
-def make_cache_key(name: str, set_code: Optional[str], collector_number: Optional[str]) -> str:
+def make_cache_key(
+    name: str,
+    set_code: Optional[str],
+    collector_number: Optional[str],
+) -> str:
     raw = f"{name}|{set_code or ''}|{collector_number or ''}".lower()
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
@@ -84,6 +105,62 @@ def api_card_has_image(api_card: dict) -> bool:
     return bool(images.get("small") or images.get("large"))
 
 
+def is_basic_energy_name(name: str) -> bool:
+    lowered = name.lower().strip()
+
+    for energy_key in BASIC_ENERGY_TYPES:
+        valid_names = {
+            f"basic {energy_key} energy",
+            f"{energy_key} energy",
+            f"basic {energy_key}",
+        }
+
+        if lowered in valid_names:
+            return True
+
+    return False
+
+
+def local_basic_energy_api_card(card: DeckCard) -> Optional[dict]:
+    """
+    Build a local API-card-like object for Basic Energy.
+
+    This avoids fragile API lookup for decklist-style Basic Energy names such as:
+    - Basic Fighting Energy
+    - Fighting Energy
+    - Basic {F} Energy Energy 14, after deck_parser normalization
+
+    The returned object has the same fields the rest of the app expects from a
+    Pokémon TCG API card, but intentionally has no image URL.
+    """
+    lowered = card.name.lower().strip()
+
+    for energy_key, energy_type in BASIC_ENERGY_TYPES.items():
+        valid_names = {
+            f"basic {energy_key} energy",
+            f"{energy_key} energy",
+            f"basic {energy_key}",
+        }
+
+        if lowered in valid_names:
+            return {
+                "id": f"local-basic-{energy_key}-energy",
+                "name": f"Basic {energy_type} Energy",
+                "supertype": "Energy",
+                "subtypes": ["Basic"],
+                "types": [energy_type],
+                "set": {
+                    "id": "local-basic-energy",
+                    "name": "Basic Energy",
+                    "ptcgoCode": "Energy",
+                },
+                "number": card.collector_number or "",
+                "images": {},
+            }
+
+    return None
+
+
 def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
     headers = {}
 
@@ -98,7 +175,6 @@ def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
     }
 
     url = f"{POKEMON_TCG_API_BASE}/cards"
-
     last_error = None
 
     for attempt in range(3):
@@ -106,7 +182,6 @@ def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
             response = requests.get(url, headers=headers, params=params, timeout=60)
             response.raise_for_status()
             return response.json().get("data", [])
-
         except requests.exceptions.RequestException as e:
             last_error = e
             wait_time = 2**attempt
@@ -117,7 +192,11 @@ def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
     return []
 
 
-def card_matches(card: dict, set_code: Optional[str], collector_number: Optional[str]) -> bool:
+def card_matches(
+    card: dict,
+    set_code: Optional[str],
+    collector_number: Optional[str],
+) -> bool:
     if not set_code and not collector_number:
         return True
 
@@ -149,9 +228,9 @@ def card_matches(card: dict, set_code: Optional[str], collector_number: Optional
 def fallback_classify_card(card: DeckCard) -> DeckCard:
     """
     If the API cannot match a card, classify it from the decklist section.
+
     This keeps the probability calculations safe even if an image is unavailable.
     """
-
     card.api_id = None
     card.image_url = None
     card.image_large_url = None
@@ -164,7 +243,7 @@ def fallback_classify_card(card: DeckCard) -> DeckCard:
     if card.section == "Energy":
         card.supertype = "Energy"
 
-        if card.name.lower().startswith("basic ") and card.name.lower().endswith(" energy"):
+        if is_basic_energy_name(card.name):
             card.subtypes = ["Basic"]
         else:
             card.subtypes = []
@@ -190,6 +269,11 @@ def build_queries(card: DeckCard) -> List[str]:
     safe_name = card.name.replace('"', '\\"')
     queries = []
 
+    # Basic Energy is handled locally. This function should usually not be
+    # called for Basic Energy, but keep this guard to avoid noisy bad queries.
+    if card.section == "Energy" and is_basic_energy_name(card.name):
+        return []
+
     # Avoid strict set-code query for hyphenated promo codes like PR-SV,
     # because those often do not match ptcgoCode directly.
     if (
@@ -213,6 +297,10 @@ def build_queries(card: DeckCard) -> List[str]:
 
 
 def find_best_api_match(card: DeckCard) -> Optional[dict]:
+    local_energy_card = local_basic_energy_api_card(card)
+    if local_energy_card is not None:
+        return local_energy_card
+
     queries = build_queries(card)
     api_card = None
 
@@ -220,14 +308,15 @@ def find_best_api_match(card: DeckCard) -> Optional[dict]:
         results = pokemon_tcg_search(query)
 
         exact_name_results = [
-            r for r in results
+            r
+            for r in results
             if r.get("name", "").lower().strip() == card.name.lower().strip()
         ]
-
         exact_name_results = exact_name_results or results
 
         filtered = [
-            r for r in exact_name_results
+            r
+            for r in exact_name_results
             if card_matches(r, card.set_code, card.collector_number)
         ]
 
@@ -243,6 +332,11 @@ def find_best_api_match(card: DeckCard) -> Optional[dict]:
 
 
 def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
+    # Basic Energy is deterministic and should not call the external API.
+    local_energy_card = local_basic_energy_api_card(card)
+    if local_energy_card is not None:
+        return attach_api_card_to_deck_card(card, local_energy_card)
+
     key = make_cache_key(card.name, card.set_code, card.collector_number)
 
     if key in cache:
