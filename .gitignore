@@ -39,4 +39,6 @@ tcg_compiler_pipeline_v0_1/
 # Logs/temp outputs
 *.log
 tmp/
-temp/
+
+
+.venv/
