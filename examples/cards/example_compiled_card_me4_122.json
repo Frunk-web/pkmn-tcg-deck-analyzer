@@ -1,0 +1,475 @@
+{
+  "schema_version": "pokemon-card-definition/v1",
+  "card_id": "me4-122",
+  "identity": {
+    "name": "Mega Greninja ex",
+    "canonical_name": "Mega Greninja ex",
+    "supertype": "Pokémon",
+    "subtypes": [
+      "Stage 2",
+      "MEGA",
+      "ex"
+    ],
+    "types": [
+      "Water"
+    ],
+    "tags": [
+      "pokemon",
+      "stage_2",
+      "mega",
+      "ex"
+    ]
+  },
+  "printed": {
+    "set": {
+      "id": "me4",
+      "name": "Chaos Rising",
+      "series": "Mega Evolution",
+      "release_date": "2026/05/22"
+    },
+    "number": "122",
+    "rarity": "Mega Hyper Rare",
+    "regulation_mark": "J",
+    "legalities": {
+      "standard": "Legal",
+      "expanded": "Legal",
+      "unlimited": "Legal"
+    },
+    "images": {
+      "small": "https://images.scrydex.com/pokemon/me4-122/small",
+      "large": "https://images.scrydex.com/pokemon/me4-122/large"
+    }
+  },
+  "gameplay": {
+    "pokemon": {
+      "hp": 350,
+      "stage": "Stage 2",
+      "evolves_from": "Frogadier",
+      "weaknesses": [
+        {
+          "type": "Lightning",
+          "value": "×2"
+        }
+      ],
+      "resistances": [],
+      "retreat_cost": [
+        "Colorless"
+      ],
+      "converted_retreat_cost": 1,
+      "special_rule_tags": [
+        "mega_evolution_ex_rule",
+        "ex"
+      ]
+    },
+    "deckbuilding": {
+      "counts_as_name": "Mega Greninja ex",
+      "max_copies_by_name": 4,
+      "special_limits": [],
+      "format_legalities": {
+        "standard": "Legal"
+      }
+    }
+  },
+  "sources": {
+    "raw_text": "Mega Evolution ex Rule: When your Mega Evolution Pokémon ex is Knocked Out, your opponent takes 3 Prize cards.\nMortal Shuriken: Once during your turn, if this Pokémon is in the Active Spot, you may discard a Basic Water Energy card from your hand in order to use this Ability. Place 6 damage counters on 1 of your opponent's Pokémon.\nNinja Spinner: You may put a Water Energy attached to this Pokémon into your hand and have this attack do 80 more damage.",
+    "rules": [
+      "Mega Evolution ex Rule: When your Mega Evolution Pokémon ex is Knocked Out, your opponent takes 3 Prize cards."
+    ],
+    "abilities": [
+      {
+        "name": "Mortal Shuriken",
+        "ability_type": "Ability",
+        "text": "Once during your turn, if this Pokémon is in the Active Spot, you may discard a Basic Water Energy card from your hand in order to use this Ability. Place 6 damage counters on 1 of your opponent's Pokémon."
+      }
+    ],
+    "attacks": [
+      {
+        "name": "Ninja Spinner",
+        "cost": [
+          "Water",
+          "Water"
+        ],
+        "converted_energy_cost": 2,
+        "printed_damage": "120+",
+        "text": "You may put a Water Energy attached to this Pokémon into your hand and have this attack do 80 more damage."
+      }
+    ],
+    "raw_api_card": {
+      "id": "me4-122",
+      "name": "Mega Greninja ex",
+      "supertype": "Pokémon",
+      "subtypes": [
+        "Stage 2",
+        "MEGA",
+        "ex"
+      ],
+      "hp": "350",
+      "types": [
+        "Water"
+      ],
+      "evolvesFrom": "Frogadier",
+      "rules": [
+        "Mega Evolution ex Rule: When your Mega Evolution Pokémon ex is Knocked Out, your opponent takes 3 Prize cards."
+      ],
+      "abilities": [
+        {
+          "name": "Mortal Shuriken",
+          "text": "Once during your turn, if this Pokémon is in the Active Spot, you may discard a Basic Water Energy card from your hand in order to use this Ability. Place 6 damage counters on 1 of your opponent's Pokémon.",
+          "type": "Ability"
+        }
+      ],
+      "attacks": [
+        {
+          "name": "Ninja Spinner",
+          "cost": [
+            "Water",
+            "Water"
+          ],
+          "convertedEnergyCost": 2,
+          "damage": "120+",
+          "text": "You may put a Water Energy attached to this Pokémon into your hand and have this attack do 80 more damage."
+        }
+      ],
+      "weaknesses": [
+        {
+          "type": "Lightning",
+          "value": "×2"
+        }
+      ],
+      "retreatCost": [
+        "Colorless"
+      ],
+      "convertedRetreatCost": 1,
+      "set": {
+        "id": "me4",
+        "name": "Chaos Rising",
+        "series": "Mega Evolution",
+        "printedTotal": 86,
+        "total": 122,
+        "legalities": {
+          "unlimited": "Legal",
+          "standard": "Legal",
+          "expanded": "Legal"
+        },
+        "ptcgoCode": "CRI",
+        "releaseDate": "2026/05/22",
+        "updatedAt": "2026/05/21 15:00:00",
+        "images": {
+          "symbol": "https://images.scrydex.com/pokemon/me4-symbol/symbol",
+          "logo": "https://images.scrydex.com/pokemon/me4-logo/logo"
+        }
+      },
+      "number": "122",
+      "artist": "takuyoa",
+      "rarity": "Mega Hyper Rare",
+      "nationalPokedexNumbers": [
+        658
+      ],
+      "legalities": {
+        "standard": "Legal",
+        "unlimited": "Legal",
+        "expanded": "Legal"
+      },
+      "regulationMark": "J",
+      "images": {
+        "small": "https://images.scrydex.com/pokemon/me4-122/small",
+        "large": "https://images.scrydex.com/pokemon/me4-122/large"
+      },
+      "tcgplayer": {
+        "url": "https://prices.pokemontcg.io/tcgplayer/me4-122"
+      }
+    }
+  },
+  "compiled_effects": [
+    {
+      "effect_id": "me4-122:rule:mega-ex-prizes",
+      "source": {
+        "section": "rules",
+        "index": 0,
+        "name": "Mega Evolution ex Rule"
+      },
+      "kind": "special_rule",
+      "timing": {
+        "windows": [
+          "on_knockout"
+        ],
+        "priority": "replacement",
+        "owner_turn_required": null
+      },
+      "text": "When your Mega Evolution Pokémon ex is Knocked Out, your opponent takes 3 Prize cards.",
+      "playability": {
+        "requires_turn_player": false,
+        "source_zone": [
+          "active",
+          "bench"
+        ],
+        "conditions": [],
+        "requires_legal_target": false,
+        "optional": false
+      },
+      "costs": [],
+      "choices": [],
+      "steps": [
+        {
+          "op": "set_prize_cards_taken_for_knockout",
+          "amount": {
+            "mode": "exact",
+            "value": 3
+          },
+          "target": "knocked_out_self"
+        }
+      ],
+      "duration": {
+        "kind": "while_in_play"
+      },
+      "usage_limit": {
+        "scope": "none",
+        "max_uses": null
+      },
+      "parser": {
+        "confidence": 0.95
+      }
+    },
+    {
+      "effect_id": "me4-122:ability:0",
+      "source": {
+        "section": "ability",
+        "index": 0,
+        "name": "Mortal Shuriken"
+      },
+      "kind": "ability_activated",
+      "timing": {
+        "windows": [
+          "main_step"
+        ],
+        "priority": "normal",
+        "owner_turn_required": true
+      },
+      "text": "Once during your turn, if this Pokémon is in the Active Spot, you may discard a Basic Water Energy card from your hand in order to use this Ability. Place 6 damage counters on 1 of your opponent's Pokémon.",
+      "playability": {
+        "requires_turn_player": true,
+        "source_zone": [
+          "active"
+        ],
+        "source_position": [
+          "active"
+        ],
+        "conditions": [
+          {
+            "op": "source_is_active",
+            "subject": "source"
+          }
+        ],
+        "requires_legal_target": true,
+        "optional": true
+      },
+      "costs": [
+        {
+          "op": "discard_card",
+          "amount": {
+            "mode": "exact",
+            "value": 1
+          },
+          "from": "self.hand",
+          "to": "self.discard",
+          "filter": {
+            "owner": "self",
+            "zone": [
+              "hand"
+            ],
+            "card": {
+              "supertype": "Energy",
+              "subtypes": [
+                "Basic"
+              ],
+              "provides": [
+                "Water"
+              ]
+            }
+          },
+          "optional": false
+        }
+      ],
+      "choices": [
+        {
+          "choice_id": "target_pokemon",
+          "kind": "select_pokemon",
+          "controller": "self",
+          "amount": {
+            "mode": "exact",
+            "value": 1
+          },
+          "from": [
+            "opponent.active",
+            "opponent.bench"
+          ],
+          "filter": {
+            "owner": "opponent",
+            "zone": [
+              "active",
+              "bench"
+            ],
+            "pokemon": {}
+          },
+          "visibility": "public",
+          "optional": false
+        }
+      ],
+      "steps": [
+        {
+          "op": "place_damage_counters",
+          "amount": {
+            "mode": "exact",
+            "value": 6
+          },
+          "target": "choice.target_pokemon"
+        }
+      ],
+      "duration": {
+        "kind": "instant"
+      },
+      "usage_limit": {
+        "scope": "per_turn_per_copy",
+        "key": "me4-122:ability:0",
+        "max_uses": 1
+      },
+      "parser": {
+        "confidence": 0.9
+      }
+    },
+    {
+      "effect_id": "me4-122:attack:0",
+      "source": {
+        "section": "attack",
+        "index": 0,
+        "name": "Ninja Spinner"
+      },
+      "kind": "attack",
+      "timing": {
+        "windows": [
+          "attack_declaration",
+          "attack_resolution"
+        ],
+        "priority": "normal",
+        "owner_turn_required": true
+      },
+      "text": "120+. You may put a Water Energy attached to this Pokémon into your hand and have this attack do 80 more damage.",
+      "playability": {
+        "requires_turn_player": true,
+        "source_zone": [
+          "active"
+        ],
+        "conditions": [
+          {
+            "op": "has_attack_energy_cost",
+            "subject": "source",
+            "value": [
+              "Water",
+              "Water"
+            ]
+          },
+          {
+            "op": "can_attack",
+            "subject": "source"
+          }
+        ],
+        "requires_legal_target": true,
+        "optional": false
+      },
+      "costs": [],
+      "choices": [
+        {
+          "choice_id": "use_bonus",
+          "kind": "yes_no",
+          "controller": "self",
+          "optional": true
+        },
+        {
+          "choice_id": "returned_energy",
+          "kind": "select_energy",
+          "controller": "self",
+          "amount": {
+            "mode": "exact",
+            "value": 1
+          },
+          "from": [
+            "source.attached"
+          ],
+          "filter": {
+            "owner": "self",
+            "zone": [
+              "attached"
+            ],
+            "energy": {
+              "provides": [
+                "Water"
+              ]
+            }
+          },
+          "visibility": "public",
+          "optional": true,
+          "condition": {
+            "op": "choice_equals",
+            "subject": "choice.use_bonus",
+            "value": true
+          }
+        }
+      ],
+      "steps": [
+        {
+          "op": "deal_attack_damage",
+          "damage": {
+            "mode": "exact",
+            "value": 120
+          },
+          "target": "opponent.active"
+        },
+        {
+          "op": "conditional",
+          "condition": {
+            "op": "choice_equals",
+            "subject": "choice.use_bonus",
+            "value": true
+          },
+          "then": [
+            {
+              "op": "move_card",
+              "from": "source.attached",
+              "to": "self.hand",
+              "target": "choice.returned_energy"
+            },
+            {
+              "op": "modify_attack_damage",
+              "amount": {
+                "mode": "exact",
+                "value": 80
+              },
+              "target": "this_attack"
+            }
+          ]
+        }
+      ],
+      "duration": {
+        "kind": "instant"
+      },
+      "usage_limit": {
+        "scope": "none",
+        "max_uses": null
+      },
+      "parser": {
+        "confidence": 0.75,
+        "notes": [
+          "Engine should apply the +80 before final attack damage calculation; represented sequentially for readability."
+        ]
+      }
+    }
+  ],
+  "parser": {
+    "status": "partial",
+    "confidence": 0.82,
+    "unparsed_text": [],
+    "notes": [
+      "Example compiled manually from uploaded CSV text."
+    ]
+  }
+}
