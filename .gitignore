@@ -1,7 +1,42 @@
+# Python cache/build artifacts
 __pycache__/
-*.pyc
-.env
-.streamlit/secrets.toml
-pokemon_opening_hand_cache.json
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .ipynb_checkpoints/
+
+# OS/editor noise
 .DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment/secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# App/cache files
+pokemon_opening_hand_cache.json
+
+# Downloaded/generated card data
+data/all_cards.csv
+data/all_card_text.csv
+data/unique_effect_groups.csv
+data/unique_effect_groups.json
+data/card_batches_unique/
+
+# Generated compiler outputs
+data/compiled_cards/
+data/reports/
+
+# Extracted local tool/package folders
+tcg_compiler_pipeline_v0_1/
+
+# Logs/temp outputs
+*.log
+tmp/
+temp/
