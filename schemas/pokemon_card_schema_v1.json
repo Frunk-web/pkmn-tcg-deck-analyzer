@@ -1,0 +1,915 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/tcg-deck-analyzer/pokemon_card_definition.schema.json",
+  "title": "Pokemon TCG Compiled Card Definition",
+  "description": "Immutable card definition used by a Pokemon TCG simulator. It preserves raw API data and adds parsed/compiled gameplay capabilities.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "card_id",
+    "identity",
+    "printed",
+    "gameplay",
+    "sources",
+    "compiled_effects",
+    "parser"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "card_id": {
+      "type": "string"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "name",
+        "supertype",
+        "subtypes"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "canonical_name": {
+          "type": "string"
+        },
+        "supertype": {
+          "enum": [
+            "Pokémon",
+            "Trainer",
+            "Energy"
+          ]
+        },
+        "subtypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "printed": {
+      "type": "object",
+      "description": "Printing/collection metadata; not usually needed for simulation but needed for traceability, deck lists, and display.",
+      "additionalProperties": true,
+      "properties": {
+        "set": {
+          "type": "object"
+        },
+        "number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rarity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regulation_mark": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "legalities": {
+          "type": "object"
+        },
+        "images": {
+          "type": "object"
+        },
+        "artist": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flavor_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "gameplay": {
+      "type": "object",
+      "description": "Static gameplay facts available before parsing card text.",
+      "additionalProperties": true,
+      "properties": {
+        "pokemon": {
+          "$ref": "#/$defs/PokemonStats"
+        },
+        "trainer": {
+          "$ref": "#/$defs/TrainerStats"
+        },
+        "energy": {
+          "$ref": "#/$defs/EnergyStats"
+        },
+        "deckbuilding": {
+          "$ref": "#/$defs/DeckbuildingRules"
+        }
+      }
+    },
+    "sources": {
+      "type": "object",
+      "required": [
+        "raw_text",
+        "rules",
+        "abilities",
+        "attacks"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "raw_text": {
+          "type": "string"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "abilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceAbility"
+          }
+        },
+        "attacks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SourceAttack"
+          }
+        },
+        "raw_api_card": {
+          "type": "object"
+        }
+      }
+    },
+    "compiled_effects": {
+      "type": "array",
+      "description": "All card capabilities compiled into a uniform event/action/effect format.",
+      "items": {
+        "$ref": "#/$defs/EffectDefinition"
+      }
+    },
+    "parser": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status": {
+          "enum": [
+            "raw_only",
+            "partial",
+            "compiled",
+            "manual_override"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "unparsed_text": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "PokemonStats": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "hp": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "enum": [
+            "Basic",
+            "Stage 1",
+            "Stage 2",
+            "V-UNION",
+            "Restored",
+            "Unknown",
+            null
+          ]
+        },
+        "evolves_from": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evolves_to": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "weaknesses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypeModifier"
+          }
+        },
+        "resistances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypeModifier"
+          }
+        },
+        "retreat_cost": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "converted_retreat_cost": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "national_pokedex_numbers": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "special_rule_tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TrainerStats": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "trainer_kind": {
+          "enum": [
+            "Item",
+            "Supporter",
+            "Stadium",
+            "Pokémon Tool",
+            "Technical Machine",
+            "ACE SPEC",
+            "Unknown"
+          ]
+        },
+        "default_zone_after_play": {
+          "enum": [
+            "discard",
+            "stadium",
+            "attached",
+            "lost_zone",
+            "unknown"
+          ]
+        },
+        "counts_as_supporter": {
+          "type": "boolean"
+        },
+        "counts_as_item": {
+          "type": "boolean"
+        },
+        "counts_as_tool": {
+          "type": "boolean"
+        },
+        "counts_as_stadium": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EnergyStats": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "energy_kind": {
+          "enum": [
+            "Basic",
+            "Special",
+            "Unknown"
+          ]
+        },
+        "printed_energy_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_provides": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "attachable_to": {
+          "$ref": "#/$defs/TargetFilter"
+        }
+      }
+    },
+    "DeckbuildingRules": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "counts_as_name": {
+          "type": "string"
+        },
+        "max_copies_by_name": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "special_limits": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "format_legalities": {
+          "type": "object"
+        }
+      }
+    },
+    "TypeModifier": {
+      "type": "object",
+      "required": [
+        "type",
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "SourceAbility": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "ability_type": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "SourceAttack": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "cost": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "converted_energy_cost": {
+          "type": "integer"
+        },
+        "printed_damage": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "EffectDefinition": {
+      "type": "object",
+      "required": [
+        "effect_id",
+        "source",
+        "kind",
+        "timing",
+        "text",
+        "playability",
+        "costs",
+        "choices",
+        "steps"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "effect_id": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/EffectSource"
+        },
+        "kind": {
+          "enum": [
+            "attack",
+            "ability_activated",
+            "ability_static",
+            "trainer_play",
+            "stadium_static",
+            "tool_static",
+            "energy_static",
+            "triggered",
+            "replacement",
+            "special_rule",
+            "unknown"
+          ]
+        },
+        "timing": {
+          "$ref": "#/$defs/Timing"
+        },
+        "text": {
+          "type": "string"
+        },
+        "playability": {
+          "$ref": "#/$defs/Playability"
+        },
+        "costs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Cost"
+          }
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Choice"
+          }
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectStep"
+          }
+        },
+        "duration": {
+          "$ref": "#/$defs/Duration"
+        },
+        "usage_limit": {
+          "$ref": "#/$defs/UsageLimit"
+        },
+        "resolution": {
+          "type": "object"
+        },
+        "parser": {
+          "type": "object"
+        }
+      }
+    },
+    "EffectSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "section"
+      ],
+      "properties": {
+        "section": {
+          "enum": [
+            "rules",
+            "ability",
+            "attack",
+            "implicit_rule"
+          ]
+        },
+        "index": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Timing": {
+      "type": "object",
+      "required": [
+        "windows"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "windows": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "setup",
+              "start_of_turn",
+              "draw_step",
+              "main_step",
+              "before_attack",
+              "attack_declaration",
+              "attack_resolution",
+              "after_attack",
+              "end_of_turn",
+              "pokemon_checkup",
+              "on_play_from_hand",
+              "on_attach_from_hand",
+              "on_evolve",
+              "on_retreat",
+              "on_damage",
+              "on_knockout",
+              "continuous"
+            ]
+          }
+        },
+        "priority": {
+          "enum": [
+            "normal",
+            "replacement",
+            "prevention",
+            "modifier",
+            "trigger"
+          ]
+        },
+        "owner_turn_required": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "Playability": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "requires_turn_player": {
+          "type": "boolean"
+        },
+        "source_zone": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "source_position": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Condition"
+          }
+        },
+        "requires_legal_target": {
+          "type": "boolean"
+        },
+        "optional": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Condition": {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "op": {
+          "type": "string"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "value": {},
+        "filter": {
+          "$ref": "#/$defs/TargetFilter"
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        }
+      }
+    },
+    "Cost": {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "op": {
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "filter": {
+          "$ref": "#/$defs/TargetFilter"
+        },
+        "target_ref": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Choice": {
+      "type": "object",
+      "required": [
+        "choice_id",
+        "kind"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "choice_id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "select_card",
+            "select_pokemon",
+            "select_energy",
+            "select_player",
+            "yes_no",
+            "coin_flip",
+            "order_cards",
+            "declare_name",
+            "allocate"
+          ]
+        },
+        "controller": {
+          "enum": [
+            "self",
+            "opponent",
+            "turn_player",
+            "effect_owner",
+            "target_owner"
+          ]
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        },
+        "from": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filter": {
+          "$ref": "#/$defs/TargetFilter"
+        },
+        "visibility": {
+          "enum": [
+            "public",
+            "private_to_chooser",
+            "revealed"
+          ]
+        },
+        "optional": {
+          "type": "boolean"
+        }
+      }
+    },
+    "EffectStep": {
+      "type": "object",
+      "required": [
+        "op"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "op": {
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/Amount"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "target": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/TargetFilter"
+            }
+          ]
+        },
+        "filter": {
+          "$ref": "#/$defs/TargetFilter"
+        },
+        "damage": {
+          "$ref": "#/$defs/Amount"
+        },
+        "condition": {
+          "$ref": "#/$defs/Condition"
+        },
+        "then": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectStep"
+          }
+        },
+        "else": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EffectStep"
+          }
+        }
+      }
+    },
+    "TargetFilter": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "owner": {
+          "enum": [
+            "self",
+            "opponent",
+            "both",
+            "any",
+            "turn_player",
+            "non_turn_player"
+          ]
+        },
+        "zone": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "position": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "card": {
+          "type": "object"
+        },
+        "pokemon": {
+          "type": "object"
+        },
+        "energy": {
+          "type": "object"
+        },
+        "attached_to": {
+          "type": "object"
+        }
+      }
+    },
+    "Amount": {
+      "type": "object",
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "mode": {
+          "enum": [
+            "exact",
+            "up_to",
+            "all",
+            "range",
+            "per",
+            "expression"
+          ]
+        },
+        "value": {
+          "type": [
+            "integer",
+            "number",
+            "string",
+            "null"
+          ]
+        },
+        "min": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ]
+        },
+        "max": {
+          "type": [
+            "integer",
+            "number",
+            "null"
+          ]
+        },
+        "per": {
+          "type": "string"
+        },
+        "expression": {
+          "type": "string"
+        }
+      }
+    },
+    "Duration": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": [
+            "instant",
+            "while_attached",
+            "while_in_play",
+            "until_end_of_turn",
+            "until_end_of_opponents_next_turn",
+            "permanent",
+            "next_attack",
+            "custom"
+          ]
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "UsageLimit": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "scope": {
+          "enum": [
+            "none",
+            "per_turn_per_copy",
+            "per_turn_per_card_name",
+            "per_game_player",
+            "per_game_card_name",
+            "supporter_per_turn",
+            "retreat_per_turn",
+            "energy_attachment_per_turn",
+            "custom"
+          ]
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_uses": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}
