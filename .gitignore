@@ -1,4 +1,4 @@
-# Python cache/build artifacts
+﻿# Python cache/build artifacts
 __pycache__/
 *.py[cod]
 *$py.class
@@ -42,3 +42,50 @@ tmp/
 
 
 .venv/
+
+# --- BEGIN TCG DECK ANALYZER GENERATED FILES ---
+
+# Python / local environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local secrets / app cache
+.env
+.streamlit/secrets.toml
+pokemon_opening_hand_cache.json
+
+# Backups
+*.bak
+.gitignore.bak
+
+# Generated data outputs
+data/*
+!data/decks/
+!data/decks/**
+
+# Large/generated pipeline files
+data/all_cards.csv
+data/all_card_text.csv
+data/compiled_cards/
+data/reports/
+data/review_queue*.csv
+data/review_queue*.json
+data/effect_corpus/
+data/unique_effect_groups.json
+
+# Generated archives / packages
+*.zip
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- END TCG DECK ANALYZER GENERATED FILES ---
+
