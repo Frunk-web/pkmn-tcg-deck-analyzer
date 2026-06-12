@@ -1,0 +1,21 @@
+{
+  "name": "Solrock + Lunatone + Fighting Energy engine",
+  "mode": "all",
+  "requirements": [
+    {
+      "label": "Lunatone",
+      "card": "me1-74",
+      "zone": "in_play"
+    },
+    {
+      "label": "Solrock",
+      "card": "me1-75",
+      "zone": "in_play"
+    },
+    {
+      "label": "Basic Fighting Energy",
+      "card": "sve-6",
+      "zone": "accessed"
+    }
+  ]
+}

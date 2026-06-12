@@ -1,0 +1,21 @@
+{
+  "name": "Mega Lucario Turn 1 package",
+  "mode": "all",
+  "requirements": [
+    {
+      "label": "Riolu",
+      "card": "me1-76",
+      "zone": "hand_or_in_play"
+    },
+    {
+      "label": "Mega Lucario ex",
+      "card": "me1-77",
+      "zone": "hand"
+    },
+    {
+      "label": "Wally's Compassion",
+      "card": "me1-132",
+      "zone": "hand"
+    }
+  ]
+}
