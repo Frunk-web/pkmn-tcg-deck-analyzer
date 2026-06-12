@@ -1,8 +1,9 @@
 """
+Explanation
 This file handles communication with the Pokémon TCG API.
 
-It takes parsed DeckCard objects and tries to match them to real Pokémon TCG API
-cards using card name, set code, and collector number.
+It takes parsed DeckCard objects and tries to match them to real Pokémon TCG
+API cards using the card name, set code, and collector number.
 
 Main responsibilities:
 - Read the Pokémon TCG API key from Streamlit secrets or environment variables.
@@ -17,21 +18,26 @@ Main responsibilities:
   - image_url
   - image_large_url
 
-The app uses API image URLs to display a visual card gallery with probability overlays.
+The app uses API image URLs to display a visual card gallery with probability
+overlays.
 
-Important:
-Basic Energy cards are handled locally instead of through API lookup. Deck exports
-often contain names like "Basic Fighting Energy", while the Pokémon TCG API may
-represent printings as "Fighting Energy". For probability analysis, the exact
-Basic Energy printing is usually irrelevant, so local classification is safer and
-avoids noisy API warnings.
+Note on Basic Energy cards:
+Some deck exports use pseudo-printings such as:
+  Basic {G} Energy Energy 1
+  Basic {L} Energy Energy 12
+  Basic {F} Energy Energy 14
+
+Those pseudo set codes are not reliable Pokémon TCG API identifiers. If the API
+cannot resolve a Basic Energy printing, this module supplies a stable fallback
+image from the Scarlet & Violet Energy set so the gallery does not show
+"No image found" for vanilla Basic Energy cards.
 """
 
 import hashlib
 import json
 import os
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import requests
 import streamlit as st
@@ -42,16 +48,19 @@ from src.deck_parser import DeckCard
 POKEMON_TCG_API_BASE = "https://api.pokemontcg.io/v2"
 CACHE_FILE = "pokemon_opening_hand_cache.json"
 
-BASIC_ENERGY_TYPES = {
-    "grass": "Grass",
-    "fire": "Fire",
-    "water": "Water",
-    "lightning": "Lightning",
-    "psychic": "Psychic",
-    "fighting": "Fighting",
-    "darkness": "Darkness",
-    "metal": "Metal",
-    "fairy": "Fairy",
+
+# Stable fallback images for vanilla Basic Energy cards.
+# These are intentionally keyed by Energy type rather than collector number,
+# because exported pseudo-printings like "Energy 12" are not stable API IDs.
+BASIC_ENERGY_FALLBACK_IMAGES: Dict[str, Tuple[str, str, str]] = {
+    "grass": ("sve-1", "https://images.pokemontcg.io/sve/1.png", "https://images.pokemontcg.io/sve/1_hires.png"),
+    "fire": ("sve-2", "https://images.pokemontcg.io/sve/2.png", "https://images.pokemontcg.io/sve/2_hires.png"),
+    "water": ("sve-3", "https://images.pokemontcg.io/sve/3.png", "https://images.pokemontcg.io/sve/3_hires.png"),
+    "lightning": ("sve-4", "https://images.pokemontcg.io/sve/4.png", "https://images.pokemontcg.io/sve/4_hires.png"),
+    "psychic": ("sve-5", "https://images.pokemontcg.io/sve/5.png", "https://images.pokemontcg.io/sve/5_hires.png"),
+    "fighting": ("sve-6", "https://images.pokemontcg.io/sve/6.png", "https://images.pokemontcg.io/sve/6_hires.png"),
+    "darkness": ("sve-7", "https://images.pokemontcg.io/sve/7.png", "https://images.pokemontcg.io/sve/7_hires.png"),
+    "metal": ("sve-8", "https://images.pokemontcg.io/sve/8.png", "https://images.pokemontcg.io/sve/8_hires.png"),
 }
 
 
@@ -75,11 +84,7 @@ def save_cache(cache: Dict[str, dict]) -> None:
         json.dump(cache, f, indent=2, ensure_ascii=False)
 
 
-def make_cache_key(
-    name: str,
-    set_code: Optional[str],
-    collector_number: Optional[str],
-) -> str:
+def make_cache_key(name: str, set_code: Optional[str], collector_number: Optional[str]) -> str:
     raw = f"{name}|{set_code or ''}|{collector_number or ''}".lower()
     return hashlib.md5(raw.encode("utf-8")).hexdigest()
 
@@ -105,65 +110,43 @@ def api_card_has_image(api_card: dict) -> bool:
     return bool(images.get("small") or images.get("large"))
 
 
-def is_basic_energy_name(name: str) -> bool:
-    lowered = name.lower().strip()
-
-    for energy_key in BASIC_ENERGY_TYPES:
-        valid_names = {
-            f"basic {energy_key} energy",
-            f"{energy_key} energy",
-            f"basic {energy_key}",
-        }
-
-        if lowered in valid_names:
-            return True
-
-    return False
+def is_basic_energy_card(card: DeckCard) -> bool:
+    name = (card.name or "").lower().strip()
+    return name.startswith("basic ") and name.endswith(" energy")
 
 
-def local_basic_energy_api_card(card: DeckCard) -> Optional[dict]:
-    """
-    Build a local API-card-like object for Basic Energy.
+def infer_basic_energy_type(card_name: str) -> Optional[str]:
+    name = (card_name or "").lower()
 
-    This avoids fragile API lookup for decklist-style Basic Energy names such as:
-    - Basic Fighting Energy
-    - Fighting Energy
-    - Basic {F} Energy Energy 14, after deck_parser normalization
-
-    The returned object has the same fields the rest of the app expects from a
-    Pokémon TCG API card, but intentionally has no image URL.
-    """
-    lowered = card.name.lower().strip()
-
-    for energy_key, energy_type in BASIC_ENERGY_TYPES.items():
-        valid_names = {
-            f"basic {energy_key} energy",
-            f"{energy_key} energy",
-            f"basic {energy_key}",
-        }
-
-        if lowered in valid_names:
-            return {
-                "id": f"local-basic-{energy_key}-energy",
-                "name": f"Basic {energy_type} Energy",
-                "supertype": "Energy",
-                "subtypes": ["Basic"],
-                "types": [energy_type],
-                "set": {
-                    "id": "local-basic-energy",
-                    "name": "Basic Energy",
-                    "ptcgoCode": "Energy",
-                },
-                "number": card.collector_number or "",
-                "images": {},
-            }
+    for energy_type in BASIC_ENERGY_FALLBACK_IMAGES:
+        if energy_type in name:
+            return energy_type
 
     return None
 
 
+def apply_basic_energy_fallback_metadata(card: DeckCard) -> DeckCard:
+    """Attach safe local metadata and fallback images for vanilla Basic Energy."""
+    energy_type = infer_basic_energy_type(card.name)
+
+    card.supertype = "Energy"
+    card.subtypes = ["Basic"]
+
+    if energy_type is None:
+        return card
+
+    fallback_id, small_url, large_url = BASIC_ENERGY_FALLBACK_IMAGES[energy_type]
+
+    # Preserve a real API id if one was found. Otherwise use the known fallback id.
+    card.api_id = card.api_id or fallback_id
+    card.image_url = card.image_url or small_url
+    card.image_large_url = card.image_large_url or large_url or small_url
+
+    return card
+
+
 def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
     headers = {}
-
     api_key = get_api_key()
     if api_key:
         headers["X-Api-Key"] = api_key
@@ -173,10 +156,9 @@ def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
         "pageSize": page_size,
         "orderBy": "-set.releaseDate",
     }
-
     url = f"{POKEMON_TCG_API_BASE}/cards"
-    last_error = None
 
+    last_error = None
     for attempt in range(3):
         try:
             response = requests.get(url, headers=headers, params=params, timeout=60)
@@ -192,11 +174,7 @@ def pokemon_tcg_search(query: str, page_size: int = 50) -> List[dict]:
     return []
 
 
-def card_matches(
-    card: dict,
-    set_code: Optional[str],
-    collector_number: Optional[str],
-) -> bool:
+def card_matches(card: dict, set_code: Optional[str], collector_number: Optional[str]) -> bool:
     if not set_code and not collector_number:
         return True
 
@@ -212,6 +190,8 @@ def card_matches(
     set_ok = True
     number_ok = True
 
+    # Basic Energy exports can produce fake set_code="Energy".
+    # Do not enforce set matching for that pseudo set.
     if wanted_aliases and (set_code or "").lower() != "energy":
         set_ok = (
             api_set_code in wanted_aliases
@@ -229,7 +209,9 @@ def fallback_classify_card(card: DeckCard) -> DeckCard:
     """
     If the API cannot match a card, classify it from the decklist section.
 
-    This keeps the probability calculations safe even if an image is unavailable.
+    This keeps the probability calculations safe even if a card image is
+    unavailable. Basic Energy gets a special fallback image so the gallery still
+    renders a real card image for vanilla Energy cards.
     """
     card.api_id = None
     card.image_url = None
@@ -241,13 +223,11 @@ def fallback_classify_card(card: DeckCard) -> DeckCard:
         return card
 
     if card.section == "Energy":
+        if is_basic_energy_card(card):
+            return apply_basic_energy_fallback_metadata(card)
+
         card.supertype = "Energy"
-
-        if is_basic_energy_name(card.name):
-            card.subtypes = ["Basic"]
-        else:
-            card.subtypes = []
-
+        card.subtypes = []
         return card
 
     return card
@@ -262,17 +242,17 @@ def attach_api_card_to_deck_card(card: DeckCard, api_card: dict) -> DeckCard:
     card.image_url = images.get("small")
     card.image_large_url = images.get("large") or images.get("small")
 
+    # If the API/cache entry is missing images for a Basic Energy, keep the
+    # useful metadata but supply a stable fallback image.
+    if is_basic_energy_card(card) and not (card.image_url or card.image_large_url):
+        card = apply_basic_energy_fallback_metadata(card)
+
     return card
 
 
 def build_queries(card: DeckCard) -> List[str]:
     safe_name = card.name.replace('"', '\\"')
     queries = []
-
-    # Basic Energy is handled locally. This function should usually not be
-    # called for Basic Energy, but keep this guard to avoid noisy bad queries.
-    if card.section == "Energy" and is_basic_energy_name(card.name):
-        return []
 
     # Avoid strict set-code query for hyphenated promo codes like PR-SV,
     # because those often do not match ptcgoCode directly.
@@ -292,15 +272,10 @@ def build_queries(card: DeckCard) -> List[str]:
         queries.append(f'name:"{safe_name}" number:{card.collector_number}')
 
     queries.append(f'name:"{safe_name}"')
-
     return queries
 
 
 def find_best_api_match(card: DeckCard) -> Optional[dict]:
-    local_energy_card = local_basic_energy_api_card(card)
-    if local_energy_card is not None:
-        return local_energy_card
-
     queries = build_queries(card)
     api_card = None
 
@@ -308,16 +283,12 @@ def find_best_api_match(card: DeckCard) -> Optional[dict]:
         results = pokemon_tcg_search(query)
 
         exact_name_results = [
-            r
-            for r in results
-            if r.get("name", "").lower().strip() == card.name.lower().strip()
+            r for r in results if r.get("name", "").lower().strip() == card.name.lower().strip()
         ]
         exact_name_results = exact_name_results or results
 
         filtered = [
-            r
-            for r in exact_name_results
-            if card_matches(r, card.set_code, card.collector_number)
+            r for r in exact_name_results if card_matches(r, card.set_code, card.collector_number)
         ]
 
         if filtered:
@@ -332,11 +303,6 @@ def find_best_api_match(card: DeckCard) -> Optional[dict]:
 
 
 def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
-    # Basic Energy is deterministic and should not call the external API.
-    local_energy_card = local_basic_energy_api_card(card)
-    if local_energy_card is not None:
-        return attach_api_card_to_deck_card(card, local_energy_card)
-
     key = make_cache_key(card.name, card.set_code, card.collector_number)
 
     if key in cache:
@@ -344,9 +310,14 @@ def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
 
         # Durable cache validation:
         # Older cached entries may not have image URLs. If an image is missing,
-        # treat the cache entry as stale and refetch it.
+        # treat non-energy cache entries as stale and refetch them. For Basic
+        # Energy, we can safely attach a local fallback image.
         if api_card_has_image(cached_api_card):
             return attach_api_card_to_deck_card(card, cached_api_card)
+
+        if is_basic_energy_card(card):
+            attached = attach_api_card_to_deck_card(card, cached_api_card)
+            return apply_basic_energy_fallback_metadata(attached)
 
         del cache[key]
 
@@ -358,8 +329,12 @@ def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
 
     cache[key] = api_card
     time.sleep(0.03)
+    attached = attach_api_card_to_deck_card(card, api_card)
 
-    return attach_api_card_to_deck_card(card, api_card)
+    if is_basic_energy_card(attached) and not (attached.image_url or attached.image_large_url):
+        attached = apply_basic_energy_fallback_metadata(attached)
+
+    return attached
 
 
 def attach_metadata(deck):
@@ -370,5 +345,4 @@ def attach_metadata(deck):
         updated.append(fetch_card_metadata(card, cache))
 
     save_cache(cache)
-
     return updated
