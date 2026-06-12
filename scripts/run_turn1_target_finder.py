@@ -1,0 +1,3179 @@
+from __future__ import annotations
+
+"""
+Turn 1 target-finding simulator for a Pokémon TCG deck.
+
+Version: v0.15 — deduplicates compiled/source abilities and fixes ability line labels from nested source names.
+
+Purpose
+-------
+Estimate P(find target card X by the end of turn 1) under simple optimal play.
+
+This is NOT a full game engine. It is a scenario solver for the narrow question:
+"Given my opening hand, prizes, draw-for-turn, first/second turn restrictions, and
+compiled draw/search/look/reorder effects plus Pokémon Abilities, can optimal play find X?"
+
+The policy is conservative and transparent:
+  1. Success if target is already in hand.
+  2. Put 6 prizes aside after opening hand.
+  3. Draw for turn by default.
+  4. Play legal Trainer effects from hand in greedy best-first order.
+  5. Direct search for the target beats draw effects.
+  6. If direct target search is unavailable, draw effects are preferred.
+  7. Optional chain search can fetch another playable enabler from deck.
+  8. Deck-specific combo support includes Ultra Ball, Cyrano, Ciphermaniac + Run Errand,
+     Meowth ex -> Supporter, Lillie's Determination draw, plus a generic compiled-ability executor.
+  9. v0.7 adds a line-audit report that checks whether combo lines have the required
+     setup/action evidence in the simulated log.
+ 10. v0.8 imports src/probability.py and reports exact legal-hand baselines beside the simulated action phase.
+ 11. v0.9 writes the large JSON/CSV reports to the user Downloads folder by default and prints only a compact summary.
+ 12. v0.10 adds a generic Pokémon Ability layer: Basic Pokémon with useful abilities can be benched, active/bench abilities can be used once, and compiled ability draw/search/look/reorder effects are evaluated for every Pokémon, not only deck-specific hand-coded abilities.
+ 13. v0.12 expands that layer for conditional/costed abilities: requirements such as "if you have X in play", costs such as discarding Basic typed Energy from hand, and once-per-turn ability-family limits are now interpreted generically.
+ 14. v0.13 adds search-for-ability-requirement chains. If an ability needs another Basic Pokémon in play, the policy can use a legal search card such as Ultra Ball or Fighting Gong to fetch that requirement, bench it, then use the ability. This covers lines like Lunatone in play + Ultra Ball -> Solrock -> Lunar Cycle -> draw 3.
+ 15. v0.14 adds source-text fallback abilities. If an ability is present in sources.abilities / raw API data but absent from compiled_effects, the script synthesizes a conservative draw/search/look effect from the printed ability text. This fixes ability blindspots such as Lunar Cycle when the compiler did not emit an ability effect.
+ 16. v0.15 fixes ability identity/labels now that compiler v0.9 can emit Lunar Cycle directly: nested source.name is used as the ability name, compiled/source duplicate abilities are deduplicated by printed text, and once-per-turn ability usage keys are stable.
+
+The output logs the lines it used so you can audit what "optimal" meant.
+"""
+
+import argparse
+import csv
+import json
+import math
+import os
+import random
+import re
+import sys
+import unicodedata
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+SRC = os.path.join(ROOT, "src")
+if SRC not in sys.path:
+    sys.path.insert(0, SRC)
+
+try:
+    from tcgsim import load_compiled_cards, filter_complete_cards
+except Exception:  # pragma: no cover - lets the file still show a useful error if copied alone
+    load_compiled_cards = None
+    filter_complete_cards = None
+
+try:
+    from probability import (
+        p_no_basic_opening_7,
+        p_card_in_legal_opening_7,
+        p_card_in_hand_after_turn_draw_given_legal_opening,
+        p_at_least_one_prized_after_legal_hand,
+        expected_prized_after_legal_hand,
+        p_all_copies_prized_after_legal_hand,
+        p_still_prized_after_x_prizes_taken_after_legal_hand,
+        p_all_copies_still_prized_after_x_prizes_taken_after_legal_hand,
+        mulligan_distribution_exact,
+    )
+except Exception:  # pragma: no cover
+    p_no_basic_opening_7 = None
+    p_card_in_legal_opening_7 = None
+    p_card_in_hand_after_turn_draw_given_legal_opening = None
+    p_at_least_one_prized_after_legal_hand = None
+    expected_prized_after_legal_hand = None
+    p_all_copies_prized_after_legal_hand = None
+    p_still_prized_after_x_prizes_taken_after_legal_hand = None
+    p_all_copies_still_prized_after_x_prizes_taken_after_legal_hand = None
+    mulligan_distribution_exact = None
+
+
+# -----------------------------
+# Generic helpers
+# -----------------------------
+
+
+def norm(s: Any) -> str:
+    text = unicodedata.normalize("NFKD", str(s or ""))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def pct(x: float) -> float:
+    return round(100.0 * x, 4)
+
+
+def ci95(successes: int, n: int) -> Dict[str, float]:
+    if n <= 0:
+        return {"low": 0.0, "high": 0.0}
+    p = successes / n
+    se = math.sqrt(max(p * (1.0 - p), 0.0) / n)
+    return {"low": pct(max(0.0, p - 1.96 * se)), "high": pct(min(1.0, p + 1.96 * se))}
+
+
+def ncr(n: int, r: int) -> int:
+    if r < 0 or r > n:
+        return 0
+    return math.comb(n, r)
+
+
+def hypergeom_at_least_one(deck_size: int, copies: int, draws: int) -> float:
+    if deck_size <= 0 or draws <= 0 or copies <= 0:
+        return 0.0
+    if draws > deck_size:
+        draws = deck_size
+    return 1.0 - (ncr(deck_size - copies, draws) / ncr(deck_size, draws))
+
+
+def hypergeom_zero(deck_size: int, copies: int, draws: int) -> float:
+    if deck_size <= 0 or draws <= 0:
+        return 1.0
+    if copies <= 0:
+        return 1.0
+    if draws > deck_size:
+        draws = deck_size
+    return ncr(deck_size - copies, draws) / ncr(deck_size, draws)
+
+
+def _df_to_records_safe(df: Any) -> List[Dict[str, Any]]:
+    """Convert a pandas DataFrame to JSON-safe records without making pandas a hard dependency here."""
+    if df is None:
+        return []
+    try:
+        records = df.to_dict(orient="records")
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in records:
+        clean = {}
+        for k, v in row.items():
+            if isinstance(v, float):
+                clean[k] = round(v, 10)
+            else:
+                clean[k] = v
+        out.append(clean)
+    return out
+
+
+def build_exact_probability_baselines(
+    deck: List[Dict[str, Any]],
+    target_norm: str,
+    hand_size: int = 7,
+    prize_count: int = 6,
+    draw_for_turn: bool = True,
+    max_mulligans: int = 6,
+) -> Dict[str, Any]:
+    """Use src/probability.py for exact opening/draw/prize calculations.
+
+    These are the analytic calculations from the app's probability module. They are
+    exact for the pre-action part of the game: legal opening hand, mulligans,
+    natural turn draw, and prize probabilities after a kept legal hand. The
+    simulator should then estimate only the conditional value of actions such as
+    Ultra Ball, Cyrano, Run Errand, etc.
+    """
+    deck_size = len(deck)
+    target_copies = sum(1 for c in deck if target_matches(c, target_norm))
+    basic_count = sum(1 for c in deck if is_basic_pokemon(c))
+    target_cards = [c for c in deck if target_matches(c, target_norm)]
+    target_is_basic = bool(target_cards and is_basic_pokemon(target_cards[0]))
+
+    if p_no_basic_opening_7 is None:
+        return {
+            "available": False,
+            "reason": "Could not import src/probability.py. The script will still report simulation-only estimates.",
+        }
+
+    q_no_basic = p_no_basic_opening_7(deck_size, basic_count)
+    p_open = p_card_in_legal_opening_7(
+        deck_size=deck_size,
+        basic_count=basic_count,
+        card_count=target_copies,
+        card_is_basic=target_is_basic,
+    )
+    if draw_for_turn:
+        p_by_draw = p_card_in_hand_after_turn_draw_given_legal_opening(
+            deck_size=deck_size,
+            basic_count=basic_count,
+            card_count=target_copies,
+            card_is_basic=target_is_basic,
+        )
+    else:
+        p_by_draw = p_open
+    p_draw_increment = max(0.0, p_by_draw - p_open)
+
+    prize_rows = []
+    for prizes_taken in range(prize_count + 1):
+        prize_rows.append({
+            "prizes_taken": prizes_taken,
+            "at_least_one_copy_still_prized_percent": pct(p_still_prized_after_x_prizes_taken_after_legal_hand(
+                deck_size=deck_size,
+                basic_count=basic_count,
+                card_count=target_copies,
+                card_is_basic=target_is_basic,
+                prizes_taken=prizes_taken,
+                starting_prize_count=prize_count,
+                hand_size=hand_size,
+            )),
+            "all_copies_still_prized_percent": pct(p_all_copies_still_prized_after_x_prizes_taken_after_legal_hand(
+                deck_size=deck_size,
+                basic_count=basic_count,
+                card_count=target_copies,
+                card_is_basic=target_is_basic,
+                prizes_taken=prizes_taken,
+                starting_prize_count=prize_count,
+                hand_size=hand_size,
+            )),
+        })
+
+    mulligan_rows = []
+    if mulligan_distribution_exact is not None:
+        mulligan_rows = _df_to_records_safe(mulligan_distribution_exact(q_no_basic, max_mulligans=max_mulligans))
+        for row in mulligan_rows:
+            if "probability" in row:
+                row["percent"] = pct(float(row["probability"]))
+
+    return {
+        "available": True,
+        "source": "src/probability.py",
+        "conditioning": "All opening-hand, draw-for-turn, mulligan, and prize probabilities are conditioned on keeping a legal opening hand with at least one Basic Pokémon.",
+        "deck_size": deck_size,
+        "basic_pokemon": basic_count,
+        "target_copies": target_copies,
+        "target_is_basic_pokemon": target_is_basic,
+        "no_basic_opening_hand_percent": pct(q_no_basic),
+        "legal_opening_hand_percent": pct(1.0 - q_no_basic),
+        "opening_hand_has_target_percent": pct(p_open),
+        "natural_draw_by_turn_1_has_target_percent": pct(p_by_draw),
+        "draw_for_turn_increment_percent": pct(p_draw_increment),
+        "at_least_one_target_prized_after_legal_hand_percent": pct(p_at_least_one_prized_after_legal_hand(
+            deck_size=deck_size,
+            basic_count=basic_count,
+            card_count=target_copies,
+            card_is_basic=target_is_basic,
+            prize_count=prize_count,
+            hand_size=hand_size,
+        )),
+        "expected_target_copies_prized_after_legal_hand": round(expected_prized_after_legal_hand(
+            deck_size=deck_size,
+            basic_count=basic_count,
+            card_count=target_copies,
+            card_is_basic=target_is_basic,
+            prize_count=prize_count,
+            hand_size=hand_size,
+        ), 6),
+        "all_target_copies_prized_after_legal_hand_percent": pct(p_all_copies_prized_after_legal_hand(
+            deck_size=deck_size,
+            basic_count=basic_count,
+            card_count=target_copies,
+            card_is_basic=target_is_basic,
+            prize_count=prize_count,
+            hand_size=hand_size,
+        )),
+        "mulligan_distribution_exact": mulligan_rows,
+        "remaining_prize_probabilities_after_prizes_taken": prize_rows,
+    }
+
+
+def add_exact_plus_simulation_fields(scenarios: List[Dict[str, Any]], exact: Dict[str, Any]) -> None:
+    """Blend exact pre-action probabilities with simulated conditional action value."""
+    if not exact.get("available"):
+        return
+    p_open = float(exact["opening_hand_has_target_percent"]) / 100.0
+    p_by_draw = float(exact["natural_draw_by_turn_1_has_target_percent"]) / 100.0
+    p_draw_increment = max(0.0, p_by_draw - p_open)
+    p_not_by_draw = max(0.0, 1.0 - p_by_draw)
+
+    for scenario in scenarios:
+        sm = scenario.get("summary", {})
+        n = int(sm.get("trials") or 0)
+        opening_count = int(sm.get("found_in_opening_hand", {}).get("successes") or 0)
+        draw_count = int(sm.get("found_on_draw_for_turn", {}).get("successes") or 0)
+        action_count = int(sm.get("found_after_actions", {}).get("successes") or 0)
+        not_seen_after_draw_count = max(0, n - opening_count - draw_count)
+        conditional_action_rate = (action_count / not_seen_after_draw_count) if not_seen_after_draw_count else 0.0
+        final_probability = p_by_draw + p_not_by_draw * conditional_action_rate
+
+        line_rows = []
+        for row in sm.get("top_success_lines", []) or []:
+            count = int(row.get("count") or 0)
+            conditional_line_rate = (count / not_seen_after_draw_count) if not_seen_after_draw_count else 0.0
+            line_rows.append({
+                **row,
+                "conditional_on_not_seen_after_draw_percent": pct(conditional_line_rate),
+                "exact_weighted_percent_of_trials": pct(p_not_by_draw * conditional_line_rate),
+            })
+
+        scenario["exact_plus_simulation"] = {
+            "method": "Exact opening/draw from src/probability.py + simulated conditional action success from this script.",
+            "exact_opening_hand_percent": pct(p_open),
+            "exact_draw_for_turn_increment_percent": pct(p_draw_increment),
+            "exact_seen_by_draw_for_turn_percent": pct(p_by_draw),
+            "simulated_action_success_given_not_seen_after_draw_percent": pct(conditional_action_rate),
+            "exact_weighted_action_increment_percent": pct(p_not_by_draw * conditional_action_rate),
+            "final_exact_plus_sim_percent": pct(final_probability),
+            "line_contributions": line_rows,
+        }
+
+
+def card_identity(card: Dict[str, Any]) -> Dict[str, Any]:
+    return card.get("identity", {}) or {}
+
+
+def card_id(card: Dict[str, Any]) -> str:
+    return str(card.get("card_id") or card.get("representative_card_id") or card_identity(card).get("card_id") or "unknown")
+
+
+def card_name(card: Dict[str, Any]) -> str:
+    i = card_identity(card)
+    return str(i.get("name") or i.get("canonical_name") or card.get("name") or card_id(card))
+
+
+def card_supertype(card: Dict[str, Any]) -> str:
+    return str(card_identity(card).get("supertype") or "")
+
+
+def card_subtypes(card: Dict[str, Any]) -> List[str]:
+    return list(card_identity(card).get("subtypes") or [])
+
+
+def card_types(card: Dict[str, Any]) -> List[str]:
+    return list(card_identity(card).get("types") or [])
+
+
+def is_basic_pokemon(card: Dict[str, Any]) -> bool:
+    return card_supertype(card) == "Pokémon" and "Basic" in card_subtypes(card)
+
+
+def is_energy(card: Dict[str, Any]) -> bool:
+    return card_supertype(card) == "Energy"
+
+
+def is_trainer(card: Dict[str, Any]) -> bool:
+    return card_supertype(card) == "Trainer"
+
+
+def is_supporter(card: Dict[str, Any]) -> bool:
+    return "Supporter" in card_subtypes(card) or bool((card.get("gameplay", {}) or {}).get("trainer", {}).get("counts_as_supporter"))
+
+
+def is_item_like(card: Dict[str, Any]) -> bool:
+    subs = set(card_subtypes(card))
+    return bool(subs & {"Item", "Pokémon Tool", "Tool", "Stadium"}) or bool((card.get("gameplay", {}) or {}).get("trainer", {}).get("counts_as_item"))
+
+
+def is_named(card: Dict[str, Any], name: str) -> bool:
+    return norm(card_name(card)) == norm(name)
+
+
+def is_ultra_ball(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Ultra Ball")
+
+
+def is_cyrano(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Cyrano")
+
+
+def is_ciphermaniac(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Ciphermaniac's Codebreaking")
+
+
+def is_lillies_determination(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Lillie's Determination")
+
+
+def is_crispin(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Crispin")
+
+
+def is_mega_kangaskhan_ex(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Mega Kangaskhan ex")
+
+
+def is_meowth_ex(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Meowth ex")
+
+
+def is_pokemon_ex(card: Dict[str, Any]) -> bool:
+    return card_supertype(card) == "Pokémon" and "ex" in set(card_subtypes(card))
+
+
+def target_is_pokemon_ex_in_pool(target_norm: str, pool: Sequence[Dict[str, Any]]) -> bool:
+    return any(target_matches(c, target_norm) and is_pokemon_ex(c) for c in pool)
+
+
+def find_card_in_zone(zone: Sequence[Dict[str, Any]], pred) -> Optional[Dict[str, Any]]:
+    for c in zone:
+        if pred(c):
+            return c
+    return None
+
+
+def has_card_in_zone(zone: Sequence[Dict[str, Any]], pred) -> bool:
+    return find_card_in_zone(zone, pred) is not None
+
+
+def target_matches(card: Dict[str, Any], target_norm: str) -> bool:
+    if not target_norm:
+        return False
+    names = [
+        card_name(card),
+        card_identity(card).get("canonical_name"),
+        card.get("card_id"),
+        card.get("representative_card_id"),
+    ]
+    for p in card.get("same_effect_printings", []) or []:
+        if isinstance(p, dict):
+            names.extend([p.get("name"), p.get("card_id"), p.get("id")])
+    for x in names:
+        nx = norm(x)
+        if nx and (nx == target_norm or target_norm in nx):
+            return True
+    return False
+
+
+def amount_value(amount: Any, default: int = 0, counts: Optional[Dict[str, int]] = None, coin_heads: int = 0) -> int:
+    counts = counts or {}
+    if amount is None:
+        return default
+    if isinstance(amount, bool):
+        return int(amount)
+    if isinstance(amount, int):
+        return amount
+    if isinstance(amount, float):
+        return int(amount)
+    if isinstance(amount, str):
+        m = re.search(r"\d+", amount)
+        return int(m.group(0)) if m else default
+    if isinstance(amount, dict):
+        if "value" in amount and isinstance(amount["value"], (int, float)):
+            return int(amount["value"])
+        if "base" in amount and isinstance(amount["base"], (int, float)):
+            return int(amount["base"])
+        if amount.get("mode") == "count_ref":
+            return int(counts.get(str(amount.get("count_id")), default))
+        if amount.get("mode") == "coin_heads":
+            return int(coin_heads)
+        if amount.get("mode") == "per_coin_heads":
+            return int(amount.get("value", default)) * int(coin_heads)
+        if "printed" in amount:
+            return amount_value(amount.get("printed"), default=default, counts=counts, coin_heads=coin_heads)
+    return default
+
+
+# -----------------------------
+# Decklist resolution
+# -----------------------------
+
+
+def parse_decklist(path: str) -> List[Tuple[int, str]]:
+    """Parse common decklist formats.
+
+    Supported:
+      - TXT: lines like "4 Professor's Research" or "Professor's Research x4"
+      - CSV: count/name columns, or two columns count,name
+      - JSON: {"Card Name": 4} or [{"name": ..., "count": ...}]
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".json":
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            return [(int(v), str(k)) for k, v in payload.items()]
+        if isinstance(payload, list):
+            out: List[Tuple[int, str]] = []
+            for row in payload:
+                if not isinstance(row, dict):
+                    continue
+                name = row.get("name") or row.get("card") or row.get("card_name")
+                count = row.get("count") or row.get("qty") or row.get("quantity") or row.get("copies")
+                if name and count:
+                    out.append((int(float(count)), str(name).strip()))
+            return out
+        raise ValueError(f"Unsupported JSON decklist structure: {path}")
+
+    if ext == ".csv":
+        with open(path, "r", encoding="utf-8-sig", newline="") as f:
+            sample = f.read(4096)
+            f.seek(0)
+            has_header = csv.Sniffer().has_header(sample) if sample.strip() else False
+            if has_header:
+                reader = csv.DictReader(f)
+                out: List[Tuple[int, str]] = []
+                for row in reader:
+                    lower = {norm(k): v for k, v in row.items()}
+                    count = lower.get("count") or lower.get("qty") or lower.get("quantity") or lower.get("copies")
+                    name = lower.get("name") or lower.get("card") or lower.get("card name") or lower.get("cardname")
+                    if count and name:
+                        out.append((int(float(str(count).strip())), str(name).strip()))
+                return out
+            reader = csv.reader(f)
+            out = []
+            for row in reader:
+                if len(row) >= 2 and str(row[0]).strip().isdigit():
+                    out.append((int(row[0]), str(row[1]).strip()))
+            return out
+
+    out: List[Tuple[int, str]] = []
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for raw in f:
+            line = raw.strip().lstrip("\ufeff")
+            if not line or line.startswith("#"):
+                continue
+            if norm(line) in {"pokemon", "trainer", "trainers", "energy", "energies"}:
+                continue
+            m = re.match(r"^(\d+)\s+(.+)$", line)
+            if m:
+                out.append((int(m.group(1)), m.group(2).strip()))
+                continue
+            m = re.match(r"^(.+?)\s+[xX](\d+)$", line)
+            if m:
+                out.append((int(m.group(2)), m.group(1).strip()))
+                continue
+    return out
+
+
+def build_name_index(cards: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    index: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for c in cards:
+        names = {
+            card_name(c),
+            card_identity(c).get("canonical_name"),
+            c.get("name"),
+            c.get("card_id"),
+            c.get("representative_card_id"),
+        }
+        for p in c.get("same_effect_printings", []) or []:
+            if isinstance(p, dict):
+                names.update({p.get("name"), p.get("card_id"), p.get("id")})
+        for name in names:
+            key = norm(name)
+            if key:
+                index[key].append(c)
+    return index
+
+
+
+
+def basic_energy_proxy_from_request(requested: str) -> Optional[Dict[str, Any]]:
+    """Create a lightweight Basic Energy card when an Energy printing is absent from compiled JSON.
+
+    The compiler may omit vanilla Basic Energy printings because they have no card text. For
+    probability questions, those cards still need to occupy slots in the 60-card deck. This
+    function turns obvious Basic Energy decklist entries into safe no-effect proxy cards.
+    """
+    raw = str(requested or "").strip()
+    n = norm(raw)
+    raw_upper = raw.upper()
+
+    # Type hints from common Pokémon decklist symbols and names.
+    symbol_map = {
+        "{G}": "Grass",
+        "{R}": "Fire",
+        "{W}": "Water",
+        "{L}": "Lightning",
+        "{P}": "Psychic",
+        "{F}": "Fighting",
+        "{D}": "Darkness",
+        "{M}": "Metal",
+    }
+    energy_type: Optional[str] = None
+    for sym, typ in symbol_map.items():
+        if sym in raw_upper:
+            energy_type = typ
+            break
+
+    if energy_type is None:
+        for typ in ["Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal"]:
+            if norm(typ) in n:
+                energy_type = typ
+                break
+
+    # Handle the mistaken/short IDs commonly used while testing this project, plus real SVE IDs.
+    # The v0.1 decklist used sve-5/4/6/1/3 to stand for MEE 5/4/6/1/3 from the pasted decklist.
+    id_hint_map = {
+        "sve 1": "Grass",
+        "sve 3": "Water",
+        "sve 4": "Lightning",
+        "sve 5": "Psychic",
+        "sve 6": "Fighting",
+        "sve 10": "Fire",
+        "sve 11": "Water",
+        "sve 12": "Lightning",
+        "sve 13": "Psychic",
+        "sve 14": "Fighting",
+        "sve 15": "Darkness",
+        "sve 16": "Metal",
+        "mee 1": "Grass",
+        "mee 3": "Water",
+        "mee 4": "Lightning",
+        "mee 5": "Psychic",
+        "mee 6": "Fighting",
+    }
+    if energy_type is None:
+        energy_type = id_hint_map.get(n)
+
+    looks_like_energy = "energy" in n or n in id_hint_map or n.startswith("sve ") or n.startswith("mee ")
+    if not energy_type or not looks_like_energy:
+        return None
+
+    name = f"Basic {energy_type} Energy"
+    proxy_id = f"proxy-energy-{norm(energy_type).replace(' ', '-')}-{re.sub(r'[^a-z0-9]+', '-', n).strip('-')}"
+    return {
+        "card_id": proxy_id,
+        "representative_card_id": proxy_id,
+        "identity": {
+            "card_id": proxy_id,
+            "name": name,
+            "canonical_name": name,
+            "supertype": "Energy",
+            "subtypes": ["Basic"],
+            "types": [energy_type],
+        },
+        "gameplay": {},
+        "compiled_effects": [],
+        "parser_status": "proxy_basic_energy",
+        "source": {"proxy_for_decklist_entry": raw},
+        "same_effect_printings": [
+            {"card_id": raw, "id": raw, "name": name}
+        ],
+    }
+
+def resolve_decklist(decklist: List[Tuple[int, str]], cards: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    index = build_name_index(cards)
+    all_keys = list(index.keys())
+    deck: List[Dict[str, Any]] = []
+    unresolved: List[Dict[str, Any]] = []
+    for count, requested in decklist:
+        key = norm(requested)
+        candidates = index.get(key) or []
+        if not candidates:
+            hits = [k for k in all_keys if key and key in k]
+            unique: List[Dict[str, Any]] = []
+            seen = set()
+            for h in hits:
+                for c in index[h]:
+                    cid = card_id(c)
+                    if cid not in seen:
+                        unique.append(c)
+                        seen.add(cid)
+            if len(unique) == 1:
+                candidates = unique
+        if not candidates:
+            proxy = basic_energy_proxy_from_request(requested)
+            if proxy is not None:
+                for _ in range(int(count)):
+                    deck.append(proxy)
+                continue
+            unresolved.append({"requested_name": requested, "count": count})
+            continue
+        chosen = candidates[0]
+        for _ in range(int(count)):
+            deck.append(chosen)
+    return deck, unresolved
+
+
+# -----------------------------
+# Compiled-effect helpers
+# -----------------------------
+
+
+def iter_effects(card: Dict[str, Any]) -> Iterable[Dict[str, Any]]:
+    for eff in card.get("compiled_effects", []) or []:
+        if isinstance(eff, dict):
+            yield eff
+
+
+def iter_steps(effect_or_steps: Any) -> Iterable[Dict[str, Any]]:
+    if isinstance(effect_or_steps, dict):
+        steps = effect_or_steps.get("steps", [])
+    else:
+        steps = effect_or_steps
+    if not isinstance(steps, list):
+        return
+    for s in steps:
+        if isinstance(s, dict):
+            yield s
+
+
+def flatten_steps(obj: Any) -> Iterable[Dict[str, Any]]:
+    if isinstance(obj, dict):
+        if "op" in obj:
+            yield obj
+        for key in ("steps", "then", "else", "if_true", "if_false", "heads", "tails", "yes", "no", "branches"):
+            val = obj.get(key)
+            if isinstance(val, list):
+                for x in val:
+                    yield from flatten_steps(x)
+            elif isinstance(val, dict):
+                yield from flatten_steps(val)
+    elif isinstance(obj, list):
+        for x in obj:
+            yield from flatten_steps(x)
+
+
+def meaningful_steps(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+    out = []
+    for eff in iter_effects(card):
+        for step in iter_steps(eff):
+            op = step.get("op")
+            if op == "reference_global_rule":
+                continue
+            out.append(step)
+    return out
+
+
+def effect_is_trivial_rule(effect: Dict[str, Any]) -> bool:
+    steps = list(iter_steps(effect))
+    if not steps:
+        return True
+    return all(s.get("op") == "reference_global_rule" for s in steps)
+
+
+def card_has_play_effect(card: Dict[str, Any]) -> bool:
+    return bool(meaningful_steps(card))
+
+
+def step_text(step: Dict[str, Any]) -> str:
+    return str(step.get("source_text") or step.get("text") or "")
+
+
+def extract_filter(step: Dict[str, Any]) -> Dict[str, Any]:
+    f = step.get("filter") or step.get("card_filter") or {}
+    if isinstance(f, dict) and "card" in f and isinstance(f["card"], dict):
+        return f["card"]
+    return f if isinstance(f, dict) else {}
+
+
+def filter_text_blob(filt: Dict[str, Any]) -> str:
+    """Flatten a compiled card filter into searchable text.
+
+    Some compiler outputs keep the important restriction only as raw_text /
+    source_text. The all-card simulator must not treat those vague dictionaries
+    as "any card". For example, Fighting Gong may compile with raw text but
+    no structured filter; it should only find Basic Fighting Energy or Basic
+    Fighting Pokemon, not Trainers.
+    """
+    try:
+        return norm(json.dumps(filt, ensure_ascii=False))
+    except Exception:
+        return norm(str(filt))
+
+
+def is_basic_fighting_energy(card: Dict[str, Any]) -> bool:
+    if card_supertype(card) != "Energy":
+        return False
+    name_n = norm(card_name(card))
+    types = {norm(x) for x in card_types(card)}
+    return ("fighting" in name_n) or ("fighting" in types)
+
+
+def is_basic_fighting_pokemon(card: Dict[str, Any]) -> bool:
+    if not is_basic_pokemon(card):
+        return False
+    types = {norm(x) for x in card_types(card)}
+    return "fighting" in types
+
+
+def filter_allows_card(filt: Dict[str, Any], card: Dict[str, Any]) -> bool:
+    """Best-effort filter matcher for compiled search/select filters.
+
+    This intentionally errs conservative for all-card target finding. A vague
+    search filter should not be allowed to find arbitrary Trainers, because that
+    badly inflates results. Known text-only filters, such as Fighting Gong, are
+    interpreted before the generic structured checks.
+    """
+    if not filt:
+        return True
+
+    blob = filter_text_blob(filt)
+
+    # Fighting Gong: "Search your deck for a Basic Fighting Energy card or a
+    # Basic Fighting Pokemon...". The compiler may store this only in raw_text.
+    # Accept only those two categories.
+    if ("basic fighting energy" in blob or "basic f energy" in blob or "basic {f} energy" in blob) and (
+        "basic fighting pokemon" in blob or "basic f pokemon" in blob or "basic {f} pokemon" in blob
+    ):
+        return is_basic_fighting_energy(card) or is_basic_fighting_pokemon(card)
+
+    # Similar single-category text filters.
+    if "basic fighting energy" in blob or "basic f energy" in blob or "basic {f} energy" in blob:
+        return is_basic_fighting_energy(card)
+    if "basic fighting pokemon" in blob or "basic f pokemon" in blob or "basic {f} pokemon" in blob:
+        return is_basic_fighting_pokemon(card)
+
+    if filt.get("any_card") is True or filt.get("any") is True:
+        return True
+
+    st = filt.get("supertype") or filt.get("card_supertype")
+    if st and str(st) != card_supertype(card):
+        return False
+
+    # subtype can be string or list. Require at least one match if provided.
+    sub = filt.get("subtype") or filt.get("subtypes")
+    if sub:
+        needed = {str(x) for x in (sub if isinstance(sub, list) else [sub])}
+        if not (needed & set(card_subtypes(card))):
+            return False
+
+    types = filt.get("types") or filt.get("type")
+    if types:
+        needed = {str(x) for x in (types if isinstance(types, list) else [types])}
+        if not (needed & set(card_types(card))):
+            return False
+
+    name_contains = filt.get("name_contains") or filt.get("name")
+    if name_contains and norm(name_contains) not in norm(card_name(card)):
+        return False
+
+    # Common broad filters expressed in text/flags.
+    if filt.get("basic_pokemon") and not is_basic_pokemon(card):
+        return False
+    if filt.get("energy") and not is_energy(card):
+        return False
+    return True
+
+
+def search_amount(step: Dict[str, Any]) -> int:
+    for key in ("amount", "count", "max_cards", "number"):
+        if key in step:
+            return max(1, amount_value(step[key], default=1))
+    text = step_text(step)
+    m = re.search(r"(?:search|choose|find).{0,40}?(\d+)", text, flags=re.I)
+    return int(m.group(1)) if m else 1
+
+
+def draw_amount_from_step(step: Dict[str, Any], counts: Optional[Dict[str, int]] = None, coin_heads: int = 0) -> int:
+    op = step.get("op")
+    if op == "draw_until_hand_size":
+        return max(0, amount_value(step.get("target_hand_size"), default=0) - 0)  # scored approximately elsewhere
+    for key in ("amount", "cards", "count"):
+        if key in step:
+            return max(0, amount_value(step[key], default=0, counts=counts, coin_heads=coin_heads))
+    text = step_text(step)
+    m = re.search(r"draw\s+(\d+)", text, flags=re.I)
+    return int(m.group(1)) if m else 0
+
+
+def card_directly_searches_target(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+    target_cards = [c for c in deck if target_matches(c, target_norm)]
+    if not target_cards:
+        return False
+    if card_specific_directly_searches_target(card, target_norm, deck):
+        return True
+    for step in meaningful_steps(card):
+        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
+            filt = extract_filter(step)
+            if any(filter_allows_card(filt, tc) for tc in target_cards):
+                return True
+    return False
+
+
+def card_draw_power(card: Dict[str, Any]) -> int:
+    total = 0
+    for step in flatten_steps(list(iter_effects(card))):
+        op = step.get("op")
+        if op in {"draw_cards", "draw_cards_per_coin_heads"}:
+            total += draw_amount_from_step(step, coin_heads=1)
+        elif op == "draw_until_hand_size":
+            total += amount_value(step.get("target_hand_size"), default=0)
+        elif op == "draw_until_hand_size_matches":
+            total += 3  # unknown opponent hand; small heuristic
+    return total
+
+
+def card_has_search(card: Dict[str, Any]) -> bool:
+    return any(s.get("op") == "search_deck" for s in flatten_steps(list(iter_effects(card))))
+
+
+def card_known_discard_cost(card: Dict[str, Any]) -> int:
+    """Return a conservative required discard count for common search cards.
+
+    The compiler usually emits this as a discard_cards step with
+    required_to_play=True, but this helper lets the turn-1 policy reason
+    about playability before choosing the card.
+    """
+    name_n = norm(card_name(card))
+    if name_n == "ultra ball":
+        return 2
+
+    cost = 0
+    for step in flatten_steps(list(iter_effects(card))):
+        if step.get("op") not in {"discard_cards", "discard_card"}:
+            continue
+        required = bool(step.get("required_to_play")) or "only if you discard" in norm(step_text(step))
+        if not required:
+            continue
+        selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
+        amount = step.get("amount") or selection.get("value") or step.get("count")
+        cost = max(cost, amount_value(amount, default=1))
+    return cost
+
+
+def has_enough_discard_fodder(hand: Sequence[Dict[str, Any]], card: Dict[str, Any], target_norm: str) -> bool:
+    cost = card_known_discard_cost(card)
+    if cost <= 0:
+        return True
+    others = [c for c in hand if c is not card and not target_matches(c, target_norm)]
+    return len(others) >= cost
+
+
+def target_is_pokemon_in_pool(target_norm: str, pool: Sequence[Dict[str, Any]]) -> bool:
+    return any(target_matches(c, target_norm) and card_supertype(c) == "Pokémon" for c in pool)
+
+
+def card_specific_directly_searches_target(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+    """Fallback for common cards whose compiled filters may be too vague.
+
+    Directly searches target means: this card can put the target into hand.
+    Ciphermaniac is intentionally NOT direct because it only puts cards on top
+    of the deck; it needs an immediate draw effect such as Run Errand.
+    """
+    if is_ultra_ball(card):
+        return target_is_pokemon_in_pool(target_norm, deck)
+    if is_cyrano(card):
+        return target_is_pokemon_ex_in_pool(target_norm, deck)
+    return False
+
+
+def card_has_specific_play_effect(card: Dict[str, Any]) -> bool:
+    """True for common cards/abilities we model explicitly for the target-finding scenario."""
+    return any([
+        is_ultra_ball(card),
+        is_cyrano(card),
+        is_ciphermaniac(card),
+        is_lillies_determination(card),
+        is_crispin(card),
+        is_meowth_ex(card),
+    ])
+
+
+def card_can_be_played_from_hand(card: Dict[str, Any], going: str, supporter_used: bool) -> bool:
+    # Meowth ex is a Basic Pokémon that can be played to the Bench to trigger Last-Ditch Catch.
+    if is_meowth_ex(card):
+        return True
+
+    # Main target-finder v0.6 focuses on Trainer cards from hand plus explicit Pokémon abilities.
+    if not is_trainer(card):
+        return False
+    if not (card_has_play_effect(card) or card_has_specific_play_effect(card)):
+        return False
+    if is_supporter(card):
+        if supporter_used:
+            return False
+        # Current Pokémon rules: player going first cannot play Supporter on their first turn.
+        if going == "first":
+            return False
+    return True
+
+
+# -----------------------------
+# Scenario state and executor
+# -----------------------------
+
+
+@dataclass
+class SimState:
+    deck: List[Dict[str, Any]]
+    hand: List[Dict[str, Any]]
+    prizes: List[Dict[str, Any]]
+    discard: List[Dict[str, Any]] = field(default_factory=list)
+    supporter_used: bool = False
+    found: bool = False
+    found_stage: Optional[str] = None
+    line: List[str] = field(default_factory=list)
+    log: List[Dict[str, Any]] = field(default_factory=list)
+    counts: Dict[str, int] = field(default_factory=dict)
+    memory_cards: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+    coin_heads: int = 0
+    actions_used: int = 0
+    active: Optional[Dict[str, Any]] = None
+    bench: List[Dict[str, Any]] = field(default_factory=list)
+    run_errand_used: bool = False
+    last_ditch_used: bool = False
+    abilities_used: set = field(default_factory=set)
+
+    def has_target_in_hand(self, target_norm: str) -> bool:
+        return any(target_matches(c, target_norm) for c in self.hand)
+
+    def target_in_deck(self, target_norm: str) -> bool:
+        return any(target_matches(c, target_norm) for c in self.deck)
+
+
+def remove_first_matching(cards: List[Dict[str, Any]], predicate) -> Optional[Dict[str, Any]]:
+    for i, c in enumerate(cards):
+        if predicate(c):
+            return cards.pop(i)
+    return None
+
+
+def choose_optimal_active(opening: Sequence[Dict[str, Any]], target_norm: str) -> Optional[Dict[str, Any]]:
+    """Choose an Active Pokémon for the target-finding objective.
+
+    If the target is not already found, Mega Kangaskhan ex is the best Active
+    because Run Errand draws 2. If Meowth ex is in the opener, prefer another
+    Basic as Active so Meowth can be benched during the turn and trigger
+    Last-Ditch Catch.
+    """
+    basics = [c for c in opening if is_basic_pokemon(c)]
+    if not basics:
+        return None
+    # Preserve target-finding cards in hand when possible.
+    non_target_basics = [c for c in basics if not target_matches(c, target_norm)]
+    pool = non_target_basics or basics
+    for c in pool:
+        if is_mega_kangaskhan_ex(c):
+            return c
+    non_meowth = [c for c in pool if not is_meowth_ex(c)]
+    if non_meowth:
+        return non_meowth[0]
+    return pool[0]
+
+
+def can_use_run_errand(st: SimState) -> bool:
+    return bool(st.active is not None and is_mega_kangaskhan_ex(st.active) and not st.run_errand_used)
+
+
+def use_run_errand(st: SimState, target_norm: str, stage: str) -> None:
+    """Mega Kangaskhan ex — Run Errand: if Active, draw 2 once per turn."""
+    if not can_use_run_errand(st):
+        return
+    st.run_errand_used = True
+    st.actions_used += 1
+    st.line.append("Run Errand")
+    draw_cards(st, 2, stage)
+    st.log.append({"event": "use_ability", "ability": "Run Errand", "stage": stage, "source": "Mega Kangaskhan ex"})
+    if st.has_target_in_hand(target_norm):
+        st.found = True
+        st.found_stage = stage
+
+
+def run_errand_score(st: SimState, target_norm: str) -> float:
+    if not can_use_run_errand(st):
+        return -1.0
+    target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
+    if target_remaining <= 0 or not st.deck:
+        return -1.0
+    # If target is actually in the top two after known ordering, use it now.
+    if any(target_matches(c, target_norm) for c in st.deck[:2]):
+        return 9000.0
+    # Otherwise it is a normal two-card dig line. Keep it below direct search
+    # and below Lillie/Cipher lines, but above doing nothing.
+    n = min(2, len(st.deck))
+    return 1800.0 * (1.0 - hypergeom_zero(len(st.deck), target_remaining, n))
+
+
+
+# -----------------------------
+# Generic Pokémon Ability layer
+# -----------------------------
+
+
+def _source_ability_rows(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return raw/source ability rows from compiled card metadata.
+
+    Some cards have printed abilities in `sources.abilities` / raw API data but
+    no compiled ability in `compiled_effects`. For a target-finding simulator,
+    it is better to synthesize conservative draw/search/look effects from the
+    printed ability text than to ignore the ability entirely.
+    """
+    rows: List[Dict[str, Any]] = []
+
+    sources = card.get("sources") if isinstance(card.get("sources"), dict) else {}
+    for row in sources.get("abilities") or []:
+        if isinstance(row, dict):
+            rows.append(row)
+
+    raw = sources.get("raw_api_card") if isinstance(sources.get("raw_api_card"), dict) else {}
+    for row in raw.get("abilities") or []:
+        if isinstance(row, dict):
+            rows.append(row)
+
+    # Older/generated objects sometimes keep raw ability rows outside `sources`.
+    for key in ("abilities", "raw_abilities", "raw_abilities_json"):
+        val = card.get(key)
+        if isinstance(val, list):
+            for row in val:
+                if isinstance(row, dict):
+                    rows.append(row)
+        elif isinstance(val, str) and val.strip().startswith("["):
+            try:
+                parsed = json.loads(val)
+            except Exception:
+                parsed = []
+            if isinstance(parsed, list):
+                for row in parsed:
+                    if isinstance(row, dict):
+                        rows.append(row)
+
+    # Deduplicate by name + text.
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        key = (norm(row.get("name")), norm(row.get("text")))
+        if key in seen or not key[1]:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def _steps_from_printed_ability_text(text: str) -> List[Dict[str, Any]]:
+    """Conservatively synthesize target-finding steps from printed ability text.
+
+    This intentionally covers only effects that matter for finding cards by turn 1:
+    drawing, searching deck into hand, looking at top cards, and ordering cards.
+    Costs and board requirements stay in the effect text so the generic ability
+    requirement/cost parser can still enforce them.
+    """
+    blob = norm(text)
+    steps: List[Dict[str, Any]] = []
+
+    # Draw N cards. Example: Lunar Cycle -> Draw 3 cards.
+    for m in re.finditer(r"draw (\d+) cards?", blob):
+        steps.append({"op": "draw_cards", "amount": int(m.group(1)), "source_text": text})
+
+    # Draw until you have N cards in hand.
+    m = re.search(r"draw cards until you have (\d+) cards? in your hand", blob)
+    if m:
+        steps.append({"op": "draw_until_hand_size", "target_hand_size": int(m.group(1)), "source_text": text})
+
+    # Search your deck for ... put it/them into your hand. The filter is text-only,
+    # but filter_allows_card already understands useful raw_text filters such as
+    # Pokémon, Pokémon ex, Basic Energy, etc.
+    if "search your deck" in blob and ("put" in blob and "hand" in blob):
+        raw_filter = text
+        amount = 1
+        m = re.search(r"up to (\d+)", blob) or re.search(r"for (\d+)", blob)
+        if m:
+            amount = int(m.group(1))
+        steps.append({"op": "search_deck", "amount": amount, "filter": {"raw_text": raw_filter}, "source_text": text})
+
+    # Look at the top N cards.
+    m = re.search(r"look at the top (\d+) cards?", blob)
+    if m:
+        steps.append({"op": "look_at_top_cards", "amount": int(m.group(1)), "source_text": text})
+
+    # If the text explicitly lets you reorder/top-deck cards, expose that as reorder.
+    if "put" in blob and "top of your deck" in blob:
+        steps.append({"op": "reorder_cards", "source_text": text})
+
+    return steps
+
+
+def _source_ability_effects(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+    effects: List[Dict[str, Any]] = []
+    for idx, row in enumerate(_source_ability_rows(card)):
+        name = str(row.get("name") or f"Ability {idx + 1}")
+        text = str(row.get("text") or "")
+        steps = _steps_from_printed_ability_text(text)
+        if not steps:
+            continue
+        effects.append({
+            "effect_id": f"{card_id(card)}::source_ability::{idx}",
+            "effect_kind": "ability_activated",
+            "kind": "ability_activated",
+            "name": name,
+            "ability_name": name,
+            "text": text,
+            "source_text": text,
+            "steps": steps,
+            "_synthetic_from_source_ability": True,
+        })
+    return effects
+
+
+def ability_dedupe_key(effect: Dict[str, Any]) -> Tuple[str, str]:
+    """Stable identity for duplicate compiled/source ability rows.
+
+    Compiler v0.9 can now emit abilities such as Lunar Cycle directly, while
+    v0.14 also adds a raw-text fallback from sources.abilities. If both exist,
+    they describe the same printed ability and must not both become playable
+    actions. Prefer the normalized printed text when available; otherwise fall
+    back to the normalized ability name.
+    """
+    text = norm(ability_text_blob(effect))
+    if text:
+        return ("text", text)
+    name = norm(ability_name_from_effect(effect))
+    if name:
+        return ("name", name)
+    return ("id", str(effect.get("effect_id") or effect.get("id") or id(effect)))
+
+
+def ability_effects(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return ability effects, using compiled effects plus source-text fallbacks.
+
+    v0.15 fix: if the compiler already emitted a useful ability, do not also add
+    the source-text fallback for the same printed text. This prevents duplicate
+    lines such as `Lunar Cycle -> Once during your turn...` and ensures usage
+    limits apply to a single stable ability identity.
+    """
+    out: List[Dict[str, Any]] = []
+    if card_supertype(card) != "Pokémon":
+        return out
+
+    seen_keys = set()
+    for eff in iter_effects(card):
+        kind = str(eff.get("effect_kind") or eff.get("kind") or "").lower()
+        eid = str(eff.get("effect_id") or eff.get("id") or "").lower()
+        if "ability" in kind or "::ability" in eid:
+            if not effect_is_trivial_rule(eff):
+                key = ability_dedupe_key(eff)
+                if key not in seen_keys:
+                    out.append(eff)
+                    seen_keys.add(key)
+
+    for eff in _source_ability_effects(card):
+        key = ability_dedupe_key(eff)
+        if key in seen_keys:
+            continue
+        out.append(eff)
+        seen_keys.add(key)
+
+    return out
+
+
+def ability_name_from_effect(effect: Dict[str, Any]) -> str:
+    for key in ("name", "ability_name", "label", "title"):
+        if effect.get(key):
+            return str(effect.get(key))
+
+    # Compiler effects usually store the printed ability name under source.name.
+    # Use that before falling back to raw text or effect_id so lines show
+    # `Lunar Cycle`, not `Once during your turn, if you have Solro...`.
+    source = effect.get("source") if isinstance(effect.get("source"), dict) else {}
+    for key in ("name", "ability_name", "label", "title"):
+        if source.get(key):
+            return str(source.get(key))
+
+    # Some older rows keep source metadata under other nested keys.
+    for nested_key in ("printed", "metadata"):
+        nested = effect.get(nested_key) if isinstance(effect.get(nested_key), dict) else {}
+        for key in ("name", "ability_name", "label", "title"):
+            if nested.get(key):
+                return str(nested.get(key))
+
+    # Many compiled effects do not carry a clean ability_name field but still
+    # keep the printed text. Prefer a printed name like "Lunar Cycle [Ability]"
+    # over a generic effect id such as "ability::1".
+    raw_text_parts = [str(effect.get("text") or ""), str(effect.get("source_text") or "")]
+    for step in flatten_steps(effect):
+        raw_text_parts.extend([str(step.get("text") or ""), str(step.get("source_text") or "")])
+    raw_text = " ".join(p for p in raw_text_parts if p).strip()
+    if raw_text:
+        m = re.search(r"([A-Z][A-Za-z0-9'’\- ]{1,48})\s*\[Ability\]", raw_text)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r"^([A-Z][A-Za-z0-9'’\- ]{1,48})\s*:", raw_text)
+        if m:
+            return m.group(1).strip()
+
+    eid = str(effect.get("effect_id") or effect.get("id") or "")
+    if "::" in eid:
+        parts = [p for p in eid.split("::") if p]
+        if parts:
+            candidate = parts[-1].replace("_", " ").title()
+            if not candidate.isdigit():
+                return candidate
+    if raw_text:
+        return raw_text[:40]
+    return "Ability"
+
+
+def is_teal_mask_ogerpon_ex(card: Dict[str, Any]) -> bool:
+    return is_named(card, "Teal Mask Ogerpon ex")
+
+
+def is_basic_grass_energy(card: Dict[str, Any]) -> bool:
+    if card_supertype(card) != "Energy":
+        return False
+    name_n = norm(card_name(card))
+    types = {norm(x) for x in card_types(card)}
+    return "grass" in name_n or "grass" in types
+
+
+ENERGY_TYPE_NAMES = ["Grass", "Fire", "Water", "Lightning", "Psychic", "Fighting", "Darkness", "Metal"]
+
+
+def is_basic_typed_energy(card: Dict[str, Any], energy_type: Optional[str] = None) -> bool:
+    """Return True for Basic Energy, optionally restricted to a type.
+
+    This covers real API cards and project-local proxy Basic Energy cards.
+    """
+    if card_supertype(card) != "Energy":
+        return False
+    subtypes_n = {norm(x) for x in card_subtypes(card)}
+    name_n = norm(card_name(card))
+    if "basic" not in subtypes_n and "basic" not in name_n:
+        return False
+    if energy_type is None:
+        return True
+    et = norm(energy_type)
+    types_n = {norm(x) for x in card_types(card)}
+    return et in name_n or et in types_n
+
+
+def ability_text_blob(effect: Dict[str, Any]) -> str:
+    parts = [
+        str(effect.get("name") or ""),
+        str(effect.get("ability_name") or ""),
+        str(effect.get("text") or ""),
+        str(effect.get("source_text") or ""),
+    ]
+    for step in flatten_steps(effect):
+        parts.extend([
+            str(step.get("text") or ""),
+            str(step.get("source_text") or ""),
+            step_text(step),
+        ])
+    return " ".join(p for p in parts if p).strip()
+
+
+def ability_norm_blob(effect: Dict[str, Any]) -> str:
+    return norm(ability_text_blob(effect))
+
+
+def cards_known_to_state(st: SimState) -> List[Dict[str, Any]]:
+    cards: List[Dict[str, Any]] = []
+    if st.active is not None:
+        cards.append(st.active)
+    cards.extend(list(st.bench))
+    cards.extend(list(st.hand))
+    cards.extend(list(st.deck))
+    cards.extend(list(st.discard))
+    cards.extend(list(st.prizes))
+    return cards
+
+
+def unique_pokemon_names_known_to_state(st: SimState) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for c in cards_known_to_state(st):
+        if card_supertype(c) != "Pokémon":
+            continue
+        nm = card_name(c)
+        key = norm(nm)
+        if key and key not in seen:
+            seen.add(key)
+            out.append(nm)
+    # Longest first prevents "Meowth" from matching before "Meowth ex".
+    out.sort(key=lambda x: len(norm(x)), reverse=True)
+    return out
+
+
+def pokemon_in_play_by_name(st: SimState, name: str) -> bool:
+    target = norm(name)
+    return any(norm(card_name(c)) == target for c in in_play_pokemon(st))
+
+
+def bench_basic_by_name_from_hand(st: SimState, name: str, stage: str) -> bool:
+    target = norm(name)
+    if len(st.bench) >= bench_capacity(st):
+        return False
+    for c in list(st.hand):
+        if norm(card_name(c)) == target and is_basic_pokemon(c):
+            st.hand.remove(c)
+            st.bench.append(c)
+            st.actions_used += 1
+            st.line.append(card_name(c))
+            st.log.append({"event": "ability_requirement_benched", "card": card_name(c), "stage": stage})
+            return True
+    return False
+
+
+def ability_required_pokemon_names(effect: Dict[str, Any], st: SimState, source: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Infer printed "if you have X in play" requirements.
+
+    This is generic rather than Lunar Cycle-specific. It scans the printed / step
+    text for known Pokémon names near "in play" / "on your Bench" language.
+    """
+    blob = ability_norm_blob(effect)
+    if not any(token in blob for token in ["in play", "on your bench", "on the bench", "on your active"]):
+        return []
+    source_key = norm(card_name(source)) if source else ""
+    reqs: List[str] = []
+    seen = set()
+    for name in unique_pokemon_names_known_to_state(st):
+        key = norm(name)
+        if not key or key == source_key or key in seen:
+            continue
+        if key in blob:
+            reqs.append(name)
+            seen.add(key)
+    return reqs
+
+
+def ability_requirements_can_be_met(effect: Dict[str, Any], st: SimState, source: Dict[str, Any]) -> bool:
+    for name in ability_required_pokemon_names(effect, st, source):
+        if pokemon_in_play_by_name(st, name):
+            continue
+        # We only auto-set up Basic Pokémon from hand. Fetching requirements from
+        # deck is handled through normal search/enabler actions; evolutions are not
+        # free and should not be assumed turn 1.
+        if len(st.bench) >= bench_capacity(st):
+            return False
+        if not any(norm(card_name(c)) == norm(name) and is_basic_pokemon(c) for c in st.hand):
+            return False
+    return True
+
+
+def prepare_ability_requirements(effect: Dict[str, Any], st: SimState, source: Dict[str, Any], stage: str) -> bool:
+    for name in ability_required_pokemon_names(effect, st, source):
+        if pokemon_in_play_by_name(st, name):
+            st.log.append({"event": "ability_requirement_already_in_play", "card": name, "stage": stage})
+            continue
+        if not bench_basic_by_name_from_hand(st, name, stage):
+            st.log.append({"event": "ability_requirement_missing", "card": name, "stage": stage})
+            return False
+    return True
+
+
+def ability_discard_energy_costs(effect: Dict[str, Any]) -> List[Tuple[Optional[str], int]]:
+    """Infer costs like "discard a Basic Fighting Energy card from your hand".
+
+    Returns (energy_type, amount). energy_type None means any Basic Energy.
+    """
+    blob_raw = ability_text_blob(effect)
+    blob = norm(blob_raw)
+    if "discard" not in blob or "energy" not in blob or "hand" not in blob:
+        return []
+    costs: List[Tuple[Optional[str], int]] = []
+    for typ in ENERGY_TYPE_NAMES:
+        typ_n = norm(typ)
+        if re.search(rf"discard (?:a |an |1 )?(?:basic )?{typ_n} energy", blob):
+            m = re.search(rf"discard (\d+) (?:basic )?{typ_n} energy", blob)
+            costs.append((typ, int(m.group(1)) if m else 1))
+    if not costs and re.search(r"discard (?:a |an |1 )?basic energy", blob):
+        m = re.search(r"discard (\d+) basic energy", blob)
+        costs.append((None, int(m.group(1)) if m else 1))
+    return costs
+
+
+def ability_generic_discard_card_cost(effect: Dict[str, Any]) -> int:
+    blob = ability_norm_blob(effect)
+    if "discard" not in blob or "hand" not in blob:
+        return 0
+    # Do not double-count energy-specific costs.
+    if ability_discard_energy_costs(effect):
+        return 0
+    m = re.search(r"discard (\d+) cards? from your hand", blob)
+    if m:
+        return int(m.group(1))
+    if re.search(r"discard (?:a|1) cards? from your hand", blob):
+        return 1
+    return 0
+
+
+def ability_costs_can_be_paid(effect: Dict[str, Any], st: SimState, target_norm: str) -> bool:
+    for typ, amount in ability_discard_energy_costs(effect):
+        pool = [c for c in st.hand if not target_matches(c, target_norm) and is_basic_typed_energy(c, typ)]
+        if len(pool) < amount:
+            return False
+    generic_cost = ability_generic_discard_card_cost(effect)
+    if generic_cost:
+        pool = [c for c in st.hand if not target_matches(c, target_norm)]
+        if len(pool) < generic_cost:
+            return False
+    return True
+
+
+def pay_ability_costs(effect: Dict[str, Any], st: SimState, target_norm: str, stage: str) -> bool:
+    paid_any = False
+    for typ, amount in ability_discard_energy_costs(effect):
+        discarded: List[str] = []
+        for _ in range(amount):
+            candidates = [c for c in st.hand if not target_matches(c, target_norm) and is_basic_typed_energy(c, typ)]
+            if not candidates:
+                return False
+            candidates.sort(key=card_name)
+            chosen = candidates[0]
+            st.hand.remove(chosen)
+            st.discard.append(chosen)
+            discarded.append(card_name(chosen))
+        paid_any = True
+        st.log.append({"event": "ability_cost_discard", "stage": stage, "cost": "basic_energy", "energy_type": typ or "Any", "discarded": discarded})
+    generic_cost = ability_generic_discard_card_cost(effect)
+    if generic_cost:
+        discarded = []
+        for _ in range(generic_cost):
+            candidates = [c for c in st.hand if not target_matches(c, target_norm)]
+            if not candidates:
+                return False
+            candidates.sort(key=lambda c: (card_has_play_effect(c), card_name(c)))
+            chosen = candidates[0]
+            st.hand.remove(chosen)
+            st.discard.append(chosen)
+            discarded.append(card_name(chosen))
+        paid_any = True
+        st.log.append({"event": "ability_cost_discard", "stage": stage, "cost": "card", "discarded": discarded})
+    if paid_any:
+        # If the compiled effect also contains a discard_cards/discard_card cost
+        # step, skip the next such step to avoid paying the same printed cost twice.
+        st.counts["_skip_next_discard_cost"] = int(st.counts.get("_skip_next_discard_cost", 0) or 0) + 1
+    return True
+
+
+def ability_usage_key(source: Dict[str, Any], effect: Dict[str, Any]) -> Tuple[Any, ...]:
+    ability_name = ability_name_from_effect(effect)
+    blob = ability_norm_blob(effect)
+    name_key = norm(ability_name)
+    if "cant use more than 1" in blob or "can t use more than 1" in blob or "cant use more than one" in blob or "can t use more than one" in blob:
+        return ("ability_global_once", name_key)
+    return ("ability_source", id(source), str(effect.get("effect_id") or effect.get("id") or name_key))
+
+
+def ability_ready_for_target_finding(effect: Dict[str, Any], st: SimState, source: Dict[str, Any], target_norm: str) -> bool:
+    return ability_requirements_can_be_met(effect, st, source) and ability_costs_can_be_paid(effect, st, target_norm)
+
+
+def bench_capacity(st: SimState) -> int:
+    # Area Zero's expanded Bench is not modeled yet; normal Bench cap only.
+    return 5
+
+
+def in_play_pokemon(st: SimState) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if st.active is not None:
+        out.append(st.active)
+    out.extend(list(st.bench))
+    return out
+
+
+def ability_draw_power(effect: Dict[str, Any]) -> int:
+    total = 0
+    for step in flatten_steps(effect):
+        op = step.get("op")
+        if op in {"draw_cards", "draw_cards_per_coin_heads"}:
+            total += draw_amount_from_step(step, coin_heads=1)
+        elif op == "draw_until_hand_size":
+            total += amount_value(step.get("target_hand_size"), default=0)
+        elif op == "draw_until_hand_size_matches":
+            total += 3
+    return total
+
+
+def ability_directly_searches_target(effect: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+    target_cards = [c for c in deck if target_matches(c, target_norm)]
+    if not target_cards:
+        return False
+    for step in flatten_steps(effect):
+        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
+            filt = extract_filter(step)
+            if any(filter_allows_card(filt, tc) for tc in target_cards):
+                return True
+    return False
+
+
+def ability_has_target_finding_ops(effect: Dict[str, Any]) -> bool:
+    for step in flatten_steps(effect):
+        if step.get("op") in {
+            "draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches",
+            "search_deck", "choose_cards", "put_card_into_hand",
+            "look_at_top_cards", "look_at_cards", "reorder_cards", "move_card", "move_cards",
+        }:
+            return True
+    return False
+
+
+def card_has_usable_ability(card: Dict[str, Any]) -> bool:
+    if is_mega_kangaskhan_ex(card) or is_meowth_ex(card) or is_teal_mask_ogerpon_ex(card):
+        return True
+    return any(ability_has_target_finding_ops(eff) for eff in ability_effects(card))
+
+
+def can_bench_basic_for_ability(st: SimState, card: Dict[str, Any], target_norm: str) -> bool:
+    if not is_basic_pokemon(card):
+        return False
+    if len(st.bench) >= bench_capacity(st):
+        return False
+    if card not in st.hand:
+        return False
+    # If this card is the target, the trial would already have succeeded from hand.
+    if target_matches(card, target_norm):
+        return False
+    return card_has_usable_ability(card)
+
+
+def score_generic_ability(st: SimState, source: Dict[str, Any], effect: Dict[str, Any], target_norm: str) -> float:
+    """Heuristic score for any compiled Pokémon Ability.
+
+    v0.12 gates generic abilities by inferred printed requirements/costs before
+    scoring them. This prevents over-counting abilities that require another
+    Pokémon in play or an Energy/card discard cost, while allowing engines like
+    Lunar Cycle to work when the required board + hand state is actually present
+    or can be set up from hand.
+    """
+    if not ability_ready_for_target_finding(effect, st, source, target_norm):
+        return -1.0
+    if ability_directly_searches_target(effect, target_norm, st.deck):
+        return 8800.0
+    target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
+    if target_remaining <= 0:
+        return -1.0
+    deck_size = max(1, len(st.deck))
+    draw_power = ability_draw_power(effect)
+    draw_score = 1000.0 * (1.0 - hypergeom_zero(deck_size, target_remaining, min(draw_power, deck_size))) if draw_power else 0.0
+    look_score = 0.0
+    for step in flatten_steps(effect):
+        if step.get("op") in {"look_at_top_cards", "look_at_cards"}:
+            n = amount_value(step.get("amount") or step.get("count") or step.get("number"), default=1)
+            if any(target_matches(c, target_norm) for c in st.deck[:max(0, n)]):
+                look_score = max(look_score, 100.0)
+    return max(draw_score, look_score)
+
+def can_use_teal_dance(st: SimState) -> bool:
+    # Once per Teal Mask Ogerpon ex in play. This is good enough for turn-1 target finding.
+    used = int(st.counts.get("teal_dance_used", 0) or 0)
+    available_sources = sum(1 for c in in_play_pokemon(st) if is_teal_mask_ogerpon_ex(c))
+    if used >= available_sources:
+        return False
+    return any(is_basic_grass_energy(c) for c in st.hand)
+
+
+def teal_dance_score(st: SimState, target_norm: str) -> float:
+    if not can_use_teal_dance(st):
+        return -1.0
+    target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
+    if target_remaining <= 0:
+        return -1.0
+    return 1000.0 * (1.0 - hypergeom_zero(max(1, len(st.deck)), target_remaining, 1))
+
+
+def use_teal_dance(st: SimState, target_norm: str, stage: str) -> None:
+    if not can_use_teal_dance(st):
+        return
+    energy = None
+    for c in list(st.hand):
+        if is_basic_grass_energy(c):
+            energy = c
+            break
+    if energy is None:
+        return
+    st.hand.remove(energy)
+    st.counts["teal_dance_used"] = int(st.counts.get("teal_dance_used", 0) or 0) + 1
+    st.actions_used += 1
+    st.line.append("Teal Dance")
+    st.log.append({"event": "use_ability", "ability": "Teal Dance", "stage": stage, "source": "Teal Mask Ogerpon ex", "attached": card_name(energy)})
+    draw_cards(st, 1, stage)
+    if st.has_target_in_hand(target_norm):
+        st.found = True
+        st.found_stage = stage
+
+
+def generic_ability_candidates(st: SimState, target_norm: str) -> List[Tuple[float, Dict[str, Any], Dict[str, Any]]]:
+    out: List[Tuple[float, Dict[str, Any], Dict[str, Any]]] = []
+    for source in in_play_pokemon(st):
+        for idx, eff in enumerate(ability_effects(source)):
+            key = ability_usage_key(source, eff)
+            if key in st.abilities_used:
+                continue
+            # These have explicit models so we do not double-count them.
+            name_n = norm(ability_name_from_effect(eff) + " " + ability_text_blob(eff))
+            if "run errand" in name_n or "teal dance" in name_n or "last ditch" in name_n:
+                continue
+            score = score_generic_ability(st, source, eff, target_norm)
+            if score > 0:
+                out.append((score, source, eff))
+    return out
+
+
+def use_generic_ability(st: SimState, source: Dict[str, Any], effect: Dict[str, Any], rng: random.Random, target_norm: str, going: str, enable_chain_search: bool) -> None:
+    key = ability_usage_key(source, effect)
+    if key in st.abilities_used:
+        return
+    ability_name = ability_name_from_effect(effect)
+    stage = f"after_use_{ability_name}"
+    if not prepare_ability_requirements(effect, st, source, stage):
+        return
+    if not pay_ability_costs(effect, st, target_norm, stage):
+        return
+    st.abilities_used.add(key)
+    st.actions_used += 1
+    st.line.append(ability_name)
+    st.log.append({"event": "use_ability", "ability": ability_name, "stage": stage, "source": card_name(source)})
+    execute_steps(st, iter_steps(effect), rng, target_norm, going, stage, enable_chain_search)
+
+def bench_basic_for_ability(st: SimState, card: Dict[str, Any], rng: random.Random, target_norm: str, going: str, enable_chain_search: bool) -> None:
+    if not can_bench_basic_for_ability(st, card, target_norm):
+        return
+    # Preserve special Meowth handling from the target-finder policy.
+    if is_meowth_ex(card):
+        play_card(st, card, rng, target_norm, going, enable_chain_search)
+        return
+    st.hand.remove(card)
+    st.bench.append(card)
+    st.actions_used += 1
+    st.line.append(card_name(card))
+    stage = f"after_bench_{card_name(card)}"
+    st.log.append({"event": "play_basic_to_bench", "card": card_name(card), "stage": stage})
+    if is_teal_mask_ogerpon_ex(card) and can_use_teal_dance(st):
+        use_teal_dance(st, target_norm, f"{stage}_then_Teal_Dance")
+        return
+    cands = [x for x in generic_ability_candidates(st, target_norm) if x[1] is card]
+    if cands:
+        cands.sort(key=lambda x: x[0], reverse=True)
+        _, source, eff = cands[0]
+        use_generic_ability(st, source, eff, rng, target_norm, going, enable_chain_search)
+
+
+def bench_basic_ability_score(st: SimState, card: Dict[str, Any], target_norm: str, going: str) -> float:
+    if not can_bench_basic_for_ability(st, card, target_norm):
+        return -1.0
+    if is_meowth_ex(card):
+        return score_playable_card(card, st, target_norm, going, True)
+    if is_teal_mask_ogerpon_ex(card):
+        if any(is_basic_grass_energy(c) for c in st.hand if c is not card):
+            return teal_dance_score(st, target_norm) if card in st.bench else 1000.0 * (1.0 - hypergeom_zero(max(1, len(st.deck)), sum(1 for x in st.deck if target_matches(x, target_norm)), 1))
+        return -1.0
+    best = -1.0
+    for eff in ability_effects(card):
+        best = max(best, score_generic_ability(st, card, eff, target_norm))
+    return best
+
+
+# -----------------------------
+# Ability requirement search chains
+# -----------------------------
+
+
+def search_card_can_find_card(searcher: Dict[str, Any], wanted: Dict[str, Any]) -> bool:
+    """Return True if searcher can fetch wanted from the deck into hand.
+
+    This is used for ability-enabler chains, not just direct target finding. It
+    is intentionally conservative: known broad cards like Ultra Ball and Fighting
+    Gong are handled explicitly, then compiled search filters are checked.
+    """
+    if is_ultra_ball(searcher):
+        return card_supertype(wanted) == "Pokémon"
+    if is_cyrano(searcher):
+        return card_supertype(wanted) == "Pokémon" and "ex" in norm(card_name(wanted))
+    if is_named(searcher, "Fighting Gong"):
+        return is_basic_fighting_energy(wanted) or is_basic_fighting_pokemon(wanted)
+    for step in meaningful_steps(searcher):
+        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
+            if filter_allows_card(extract_filter(step), wanted):
+                return True
+    return False
+
+
+def ability_missing_basic_requirement_cards_in_deck(effect: Dict[str, Any], st: SimState, source: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Find missing required Basic Pokémon for an ability that are still in deck.
+
+    Example: Lunar Cycle needs Solrock in play. If Lunatone is in play and
+    Solrock is in deck, this returns the Solrock card so a search enabler can
+    fetch and bench it before using the ability.
+    """
+    missing: List[Dict[str, Any]] = []
+    seen = set()
+    for name in ability_required_pokemon_names(effect, st, source):
+        if pokemon_in_play_by_name(st, name):
+            continue
+        key = norm(name)
+        if key in seen:
+            continue
+        # If it is already in hand, the normal ability preparation path can bench it.
+        if any(norm(card_name(c)) == key and is_basic_pokemon(c) for c in st.hand):
+            continue
+        for c in st.deck:
+            if norm(card_name(c)) == key and is_basic_pokemon(c):
+                missing.append(c)
+                seen.add(key)
+                break
+    return missing
+
+
+def _ability_energy_cost_predicates(effect: Dict[str, Any]):
+    preds = []
+    for typ, _amount in ability_discard_energy_costs(effect):
+        preds.append(lambda c, typ=typ: is_basic_typed_energy(c, typ))
+    return preds
+
+
+def has_search_discard_fodder_preserving_ability_cost(
+    st: SimState,
+    searcher: Dict[str, Any],
+    effect: Dict[str, Any],
+    target_norm: str,
+    preserve_cards: Optional[Sequence[Dict[str, Any]]] = None,
+) -> bool:
+    cost = card_known_discard_cost(searcher)
+    if cost <= 0:
+        return True
+    preserve_ids = {id(c) for c in (preserve_cards or [])}
+    preserve_preds = _ability_energy_cost_predicates(effect)
+    choices = []
+    for c in st.hand:
+        if c is searcher or id(c) in preserve_ids:
+            continue
+        if target_matches(c, target_norm):
+            continue
+        if any(pred(c) for pred in preserve_preds):
+            continue
+        choices.append(c)
+    return len(choices) >= cost
+
+
+def pay_search_discard_cost_preserving_ability_cost(
+    st: SimState,
+    searcher: Dict[str, Any],
+    effect: Dict[str, Any],
+    target_norm: str,
+    stage: str,
+    preserve_cards: Optional[Sequence[Dict[str, Any]]] = None,
+) -> bool:
+    cost = card_known_discard_cost(searcher)
+    if cost <= 0:
+        return True
+    preserve_ids = {id(c) for c in (preserve_cards or [])}
+    preserve_preds = _ability_energy_cost_predicates(effect)
+    chosen = []
+    for c in list(st.hand):
+        if c is searcher or id(c) in preserve_ids:
+            continue
+        if target_matches(c, target_norm):
+            continue
+        if any(pred(c) for pred in preserve_preds):
+            continue
+        chosen.append(c)
+        if len(chosen) >= cost:
+            break
+    if len(chosen) < cost:
+        st.log.append({
+            "event": "cannot_pay_search_cost_preserving_ability_cost",
+            "card": card_name(searcher),
+            "required_discards": cost,
+            "stage": stage,
+        })
+        return False
+    for c in chosen:
+        st.hand.remove(c)
+        st.discard.append(c)
+    st.log.append({
+        "event": "search_cost_discard",
+        "card": card_name(searcher),
+        "stage": stage,
+        "discarded": [card_name(c) for c in chosen],
+        "preserved_ability_energy_cost": bool(preserve_preds),
+    })
+    return True
+
+
+def ability_requirement_chain_score(effect: Dict[str, Any], st: SimState, target_norm: str) -> float:
+    """Score an ability after its missing requirement can be searched/benched."""
+    target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
+    if target_remaining <= 0:
+        return -1.0
+    if ability_directly_searches_target(effect, target_norm, st.deck):
+        return 8300.0
+    draw_power = ability_draw_power(effect)
+    if draw_power > 0:
+        return 1500.0 * (1.0 - hypergeom_zero(max(1, len(st.deck)), target_remaining, min(draw_power, len(st.deck))))
+    # Look/reorder abilities can matter when the target is already visible.
+    for step in flatten_steps(effect):
+        if step.get("op") in {"look_at_top_cards", "look_at_cards"}:
+            n = amount_value(step.get("amount") or step.get("count") or step.get("number"), default=1)
+            if any(target_matches(c, target_norm) for c in st.deck[:max(0, n)]):
+                return 100.0
+    return -1.0
+
+
+def ability_requirement_search_candidates(st: SimState, target_norm: str, going: str, enable_chain_search: bool) -> List[Tuple[float, Dict[str, Any]]]:
+    """Actions that use a search card to fetch a missing Pokémon requirement for an ability.
+
+    This fixes the blindspot where a conditional ability is available in principle
+    but needs a partner Pokémon first. Example:
+      Lunatone in play + Ultra Ball + Basic Fighting Energy + 2 other cards
+      -> Ultra Ball for Solrock -> bench Solrock -> Lunar Cycle -> draw 3.
+    """
+    out: List[Tuple[float, Dict[str, Any]]] = []
+    potential_sources: List[Tuple[Dict[str, Any], bool]] = []  # (source, source_from_hand)
+    for source in in_play_pokemon(st):
+        potential_sources.append((source, False))
+    for source in list(st.hand):
+        if is_basic_pokemon(source) and not target_matches(source, target_norm) and len(st.bench) < bench_capacity(st):
+            if card_has_usable_ability(source):
+                potential_sources.append((source, True))
+
+    for source, source_from_hand in potential_sources:
+        for eff in ability_effects(source):
+            key = ability_usage_key(source, eff)
+            if key in st.abilities_used:
+                continue
+            name_n = norm(ability_name_from_effect(eff) + " " + ability_text_blob(eff))
+            if "run errand" in name_n or "teal dance" in name_n or "last ditch" in name_n:
+                continue
+            if not ability_has_target_finding_ops(eff):
+                continue
+            missing = ability_missing_basic_requirement_cards_in_deck(eff, st, source)
+            if not missing:
+                continue
+            # For now handle one searched requirement at a time. Multi-requirement abilities are rare;
+            # the conservative choice is not to invent multiple searches in one virtual action.
+            req = missing[0]
+            for searcher in list(st.hand):
+                if source_from_hand and searcher is source:
+                    continue
+                if not card_can_be_played_from_hand(searcher, going, st.supporter_used):
+                    continue
+                if not search_card_can_find_card(searcher, req):
+                    continue
+                preserve = [source] if source_from_hand else []
+                if not has_search_discard_fodder_preserving_ability_cost(st, searcher, eff, target_norm, preserve):
+                    continue
+                score = ability_requirement_chain_score(eff, st, target_norm)
+                if score <= 0:
+                    continue
+                # Slightly reward cards that search the requirement without using a Supporter.
+                if not is_supporter(searcher):
+                    score += 25.0
+                out.append((score, {
+                    "_virtual_action": "AbilityRequirementSearch",
+                    "source": source,
+                    "source_from_hand": source_from_hand,
+                    "effect": eff,
+                    "searcher": searcher,
+                    "requirement": req,
+                }))
+    return out
+
+
+def use_ability_requirement_search_chain(
+    st: SimState,
+    action: Dict[str, Any],
+    rng: random.Random,
+    target_norm: str,
+    going: str,
+    enable_chain_search: bool,
+) -> None:
+    source = action["source"]
+    effect = action["effect"]
+    searcher = action["searcher"]
+    requirement = action["requirement"]
+    ability_name = ability_name_from_effect(effect)
+    stage = f"after_{card_name(searcher)}_for_{card_name(requirement)}_then_{ability_name}"
+
+    # If the ability source was in hand, bench it first.
+    if action.get("source_from_hand"):
+        if source not in st.hand or len(st.bench) >= bench_capacity(st):
+            return
+        st.hand.remove(source)
+        st.bench.append(source)
+        st.actions_used += 1
+        st.line.append(card_name(source))
+        st.log.append({"event": "play_basic_to_bench", "card": card_name(source), "stage": stage, "purpose": "ability_source"})
+
+    if searcher not in st.hand:
+        return
+    preserve = [source] if action.get("source_from_hand") else []
+    if not pay_search_discard_cost_preserving_ability_cost(st, searcher, effect, target_norm, stage, preserve):
+        return
+
+    st.hand.remove(searcher)
+    st.discard.append(searcher)
+    if is_supporter(searcher):
+        st.supporter_used = True
+    st.actions_used += 1
+    st.line.append(card_name(searcher))
+    st.log.append({"event": "play_card", "card": card_name(searcher), "stage": stage, "purpose": "search_ability_requirement"})
+
+    req = remove_first_matching(st.deck, lambda c: card_id(c) == card_id(requirement))
+    if req is None:
+        st.log.append({"event": "ability_requirement_search_failed", "card": card_name(requirement), "stage": stage})
+        return
+    st.hand.append(req)
+    rng.shuffle(st.deck)
+    st.log.append({"event": "search_deck_found_ability_requirement", "stage": stage, "searched_by": card_name(searcher), "selected": card_name(req)})
+
+    # If the requirement itself is the target, the search already found it.
+    if target_matches(req, target_norm):
+        st.found = True
+        st.found_stage = stage
+        return
+
+    if not bench_basic_by_name_from_hand(st, card_name(req), stage):
+        return
+
+    use_generic_ability(st, source, effect, rng, target_norm, going, enable_chain_search)
+
+def target_on_top_via_ciphermaniac(st: SimState, target_norm: str, stage: str) -> bool:
+    """Ciphermaniac puts target on top of deck, but does not itself find it."""
+    target = remove_first_matching(st.deck, lambda c: target_matches(c, target_norm))
+    if target is None:
+        st.log.append({"event": "ciphermaniac_no_target_in_deck", "stage": stage})
+        return False
+    # The real card shuffles first, then puts chosen cards on top. For target
+    # finding, all that matters is that the target becomes the top card.
+    st.deck.insert(0, target)
+    st.log.append({
+        "event": "ciphermaniac_put_target_on_top",
+        "stage": stage,
+        "selected": card_name(target),
+        "note": "Not a success until an immediate draw effect draws it.",
+    })
+    return True
+
+
+def remove_basic_energies_for_crispin(st: SimState, stage: str) -> None:
+    """Crispin deck-thinning approximation: remove up to 2 Basic Energy of different types.
+
+    Crispin cannot find Ogerpon directly, but before Run Errand it can slightly
+    improve the draw odds by thinning two Basic Energy cards. One would go to
+    hand and one would attach, but neither is the target, so we model only the
+    deck thinning for this target-finding scenario.
+    """
+    chosen = []
+    used_types = set()
+    for c in list(st.deck):
+        if not is_energy(c):
+            continue
+        c_types = tuple(card_types(c)) or (card_name(c),)
+        typ = c_types[0]
+        if typ in used_types:
+            continue
+        st.deck.remove(c)
+        chosen.append(card_name(c))
+        used_types.add(typ)
+        if len(chosen) >= 2:
+            break
+    if chosen:
+        st.log.append({"event": "crispin_thin_basic_energy", "stage": stage, "removed_from_deck": chosen})
+
+
+def draw_cards(st: SimState, n: int, stage: str) -> None:
+    drawn = []
+    for _ in range(max(0, n)):
+        if not st.deck:
+            break
+        c = st.deck.pop(0)
+        st.hand.append(c)
+        drawn.append(card_name(c))
+    if drawn:
+        st.log.append({"event": "draw_cards", "stage": stage, "amount": len(drawn), "drawn": drawn})
+
+
+def choose_enabler_from_deck(st: SimState, filt: Dict[str, Any], going: str, target_norm: str) -> Optional[Dict[str, Any]]:
+    candidates = [c for c in st.deck if filter_allows_card(filt, c) and card_can_be_played_from_hand(c, going, st.supporter_used)]
+    if not candidates:
+        return None
+    # Best enabler: direct search first, then larger draw power, then any search.
+    def score(c: Dict[str, Any]) -> Tuple[int, int, int, str]:
+        return (
+            1 if card_directly_searches_target(c, target_norm, st.deck) else 0,
+            card_draw_power(c),
+            1 if card_has_search(c) else 0,
+            card_name(c),
+        )
+    candidates.sort(key=score, reverse=True)
+    best = candidates[0]
+    if score(best)[:3] == (0, 0, 0):
+        return None
+    return best
+
+
+def execute_steps(
+    st: SimState,
+    steps: Iterable[Dict[str, Any]],
+    rng: random.Random,
+    target_norm: str,
+    going: str,
+    stage: str,
+    enable_chain_search: bool,
+) -> None:
+    for step in steps:
+        if st.found:
+            return
+        op = step.get("op")
+
+        if op in {"reference_global_rule", "register_usage_limit", "register_play_condition", "play_condition", "register_continuous_modifier", "register_trigger", "register_replacement_effect", "register_knockout_prize_rule"}:
+            continue
+
+        if op == "shuffle_deck":
+            rng.shuffle(st.deck)
+            st.log.append({"event": "shuffle_deck", "stage": stage})
+            continue
+
+        if op in {"draw_cards", "draw_cards_per_coin_heads"}:
+            n = draw_amount_from_step(step, counts=st.counts, coin_heads=st.coin_heads)
+            if op == "draw_cards_per_coin_heads" and n == 0:
+                n = st.coin_heads
+            draw_cards(st, n, stage)
+            if st.has_target_in_hand(target_norm):
+                st.found = True
+                st.found_stage = stage
+            continue
+
+        if op == "draw_until_hand_size":
+            target_size = amount_value(step.get("target_hand_size"), default=len(st.hand), counts=st.counts)
+            draw_cards(st, max(0, target_size - len(st.hand)), stage)
+            if st.has_target_in_hand(target_norm):
+                st.found = True
+                st.found_stage = stage
+            continue
+
+        if op == "search_deck":
+            filt = extract_filter(step)
+            amt = search_amount(step)
+            selected: List[Dict[str, Any]] = []
+            current_card_name = st.line[-1] if st.line else ""
+            # Direct target search. For Ultra Ball, compiled filters can vary, so
+            # explicitly allow any Pokémon target.
+            def can_select_target(c: Dict[str, Any]) -> bool:
+                if not target_matches(c, target_norm):
+                    return False
+                if norm(current_card_name) == "ultra ball":
+                    return card_supertype(c) == "Pokémon"
+                return filter_allows_card(filt, c)
+
+            while len(selected) < amt:
+                chosen = remove_first_matching(st.deck, can_select_target)
+                if chosen is None:
+                    break
+                selected.append(chosen)
+            if selected:
+                st.hand.extend(selected)
+                st.found = True
+                st.found_stage = stage
+                st.log.append({"event": "search_deck_found_target", "stage": stage, "selected": [card_name(c) for c in selected], "filter": filt})
+                continue
+            # Optional chain search for a card that can draw/search into target.
+            if enable_chain_search:
+                enabler = choose_enabler_from_deck(st, filt, going, target_norm)
+                if enabler is not None:
+                    st.deck.remove(enabler)
+                    st.hand.append(enabler)
+                    st.log.append({"event": "search_deck_found_enabler", "stage": stage, "selected": card_name(enabler), "filter": filt})
+            continue
+
+        if op in {"look_at_top_cards", "look_at_cards"}:
+            n = amount_value(step.get("amount") or step.get("count") or step.get("number"), default=1)
+            looked = st.deck[: max(0, n)]
+            st.memory_cards["looked"] = list(looked)
+            st.log.append({"event": "look_at_top_cards", "stage": stage, "amount": len(looked), "cards": [card_name(c) for c in looked]})
+            continue
+
+        if op == "reorder_cards":
+            looked = st.memory_cards.get("looked", [])
+            if looked:
+                # Put target first if seen, otherwise preserve order.
+                target_seen = [c for c in looked if target_matches(c, target_norm)]
+                others = [c for c in looked if not target_matches(c, target_norm)]
+                new_top = target_seen + others
+                st.deck[: len(looked)] = new_top
+                st.log.append({"event": "reorder_cards", "stage": stage, "new_top": [card_name(c) for c in new_top]})
+            continue
+
+        if op in {"choose_cards", "put_card_into_hand", "move_card", "move_cards"}:
+            # Best effort: if this step moves/selects from recently looked cards or deck to hand, take the target.
+            filt = extract_filter(step)
+            source_text = json.dumps(step).lower()
+            if "hand" in source_text:
+                chosen = remove_first_matching(st.deck, lambda c: target_matches(c, target_norm) and filter_allows_card(filt, c))
+                if chosen is None:
+                    looked = st.memory_cards.get("looked", [])
+                    for c in list(looked):
+                        if target_matches(c, target_norm) and filter_allows_card(filt, c) and c in st.deck:
+                            st.deck.remove(c)
+                            chosen = c
+                            break
+                if chosen is not None:
+                    st.hand.append(chosen)
+                    st.found = True
+                    st.found_stage = stage
+                    st.log.append({"event": "move_or_choose_target_to_hand", "stage": stage, "selected": card_name(chosen)})
+            continue
+
+        if op in {"discard_cards", "discard_card"}:
+            if int(st.counts.get("_skip_next_discard_cost", 0) or 0) > 0:
+                st.counts["_skip_next_discard_cost"] = int(st.counts.get("_skip_next_discard_cost", 0) or 0) - 1
+                st.log.append({"event": "skip_duplicate_discard_cost_step", "stage": stage})
+                continue
+            selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
+            n = amount_value(step.get("amount") or selection.get("value") or step.get("count"), default=1)
+            discarded = []
+            for _ in range(max(0, n)):
+                # Never discard the target if already found. Prefer discarding cards with no play effect.
+                candidates = [c for c in st.hand if not target_matches(c, target_norm)]
+                if not candidates:
+                    break
+                candidates.sort(key=lambda c: (card_has_play_effect(c), card_name(c)))
+                c = candidates[0]
+                st.hand.remove(c)
+                st.discard.append(c)
+                discarded.append(card_name(c))
+            if discarded:
+                st.log.append({"event": "discard_cards", "stage": stage, "discarded": discarded})
+            continue
+
+        if op == "count_cards":
+            count_id = str(step.get("count_id") or step.get("target_id") or "count")
+            zone = str(step.get("from") or step.get("zone") or "self.hand")
+            filt = extract_filter(step)
+            pool = st.hand if "hand" in zone else st.deck if "deck" in zone else st.discard if "discard" in zone else []
+            st.counts[count_id] = sum(1 for c in pool if filter_allows_card(filt, c))
+            continue
+
+        if op == "coin_flip":
+            result = rng.choice(["heads", "tails"])
+            st.coin_heads = 1 if result == "heads" else 0
+            st.log.append({"event": "coin_flip", "stage": stage, "result": result})
+            continue
+
+        if op == "coin_flip_until":
+            # Conservative cap to avoid loops. Count heads before first tails.
+            heads = 0
+            for _ in range(20):
+                if rng.choice([True, False]):
+                    heads += 1
+                else:
+                    break
+            st.coin_heads = heads
+            st.log.append({"event": "coin_flip_until", "stage": stage, "heads": heads})
+            continue
+
+        if op == "branch_on_result":
+            branch = None
+            if st.coin_heads > 0:
+                branch = step.get("heads") or step.get("on_heads") or step.get("if_heads")
+            else:
+                branch = step.get("tails") or step.get("on_tails") or step.get("if_tails")
+            if branch is not None:
+                execute_steps(st, list(flatten_steps(branch)), rng, target_norm, going, stage, enable_chain_search)
+            continue
+
+        if op in {"choose_yes_no", "branch_on_choice"}:
+            # For target finding, always choose the branch that gives more actions. This is a heuristic.
+            branch = step.get("yes") or step.get("if_yes") or step.get("then") or step.get("steps")
+            if branch is not None:
+                execute_steps(st, list(flatten_steps(branch)), rng, target_norm, going, stage, enable_chain_search)
+            continue
+
+        if op in {"conditional", "conditional_effect"}:
+            branch = step.get("then") or step.get("if_true") or step.get("steps")
+            if branch is not None:
+                execute_steps(st, list(flatten_steps(branch)), rng, target_norm, going, stage, enable_chain_search)
+            continue
+
+        # Many battle/board ops do not help find a card in hand. They are safe no-ops for this scenario.
+        if op in {
+            "deal_attack_damage", "deal_damage", "modify_attack_damage", "set_attack_damage_from_coin_heads",
+            "set_attack_damage_from_value", "set_attack_damage_per_damage_counter", "place_damage_counters",
+            "heal_damage", "apply_special_condition", "remove_special_condition", "remove_special_conditions",
+            "switch_active", "switch_active_with_bench", "choose_target", "choose_attack", "choose_player",
+            "attach_card", "attach_cards", "attach_energy", "provide_energy", "move_energy", "discard_attached_energy",
+            "evolve_pokemon", "evolve_pokemon_from_hand", "devolve_pokemon", "knock_out_pokemon",
+            "attack_does_nothing", "attack_does_nothing_if", "conditional_attack_does_nothing",
+            "ignore_resistance", "ignore_weakness_resistance", "ignore_effects_on_defending_pokemon",
+            "ignore_defending_pokemon_damage_modifiers", "register_deck_construction_rule", "register_legality_note",
+            "reveal_cards", "reveal_hand", "reveal_hand_to_player", "reveal_zone", "discard_stadium",
+            "move_damage_counters", "distribute_damage_counters", "copy_and_use_attack",
+            "move_pokemon_and_attached_cards", "play_trainer_as_pokemon", "grant_attack_from_attached_card",
+        }:
+            continue
+
+        st.log.append({"event": "ignored_unknown_op", "op": op, "stage": stage, "step": step})
+
+
+def score_playable_card(card: Dict[str, Any], st: SimState, target_norm: str, going: str, enable_chain_search: bool) -> float:
+    if not card_can_be_played_from_hand(card, going, st.supporter_used):
+        return -1.0
+    if is_meowth_ex(card) and st.last_ditch_used:
+        return -1.0
+    if not has_enough_discard_fodder(st.hand, card, target_norm):
+        return -1.0
+
+    target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
+    if target_remaining <= 0:
+        return -1.0
+
+    # Direct target-to-hand lines.
+    if card_directly_searches_target(card, target_norm, st.deck):
+        if is_ultra_ball(card):
+            return 10000.0
+        if is_cyrano(card):
+            return 9700.0
+        return 9500.0
+
+    # Ciphermaniac only finds the target if followed by immediate draw, primarily Run Errand.
+    if is_ciphermaniac(card):
+        if going == "second" and not st.supporter_used and can_use_run_errand(st):
+            return 9400.0
+        return -1.0
+
+    # Meowth ex can bench itself and search a Supporter. Going second it can fetch Cyrano,
+    # or Ciphermaniac if active Kangaskhan can Run Errand afterward.
+    if is_meowth_ex(card):
+        if st.last_ditch_used or going == "first" or st.supporter_used:
+            return -1.0
+        if has_card_in_zone(st.deck, is_cyrano) and target_is_pokemon_ex_in_pool(target_norm, st.deck):
+            return 9300.0
+        if can_use_run_errand(st) and has_card_in_zone(st.deck, is_ciphermaniac):
+            return 9100.0
+        if has_card_in_zone(st.deck, is_lillies_determination):
+            return 4200.0
+        return -1.0
+
+    # Lillie's Determination draws 8 on turn 1 when 6 prizes remain.
+    if is_lillies_determination(card):
+        deck_size = max(1, len(st.deck) + len(st.hand) - 1)  # after shuffling hand back, Lillie itself is not shuffled in
+        return 4500.0 * (1.0 - hypergeom_zero(deck_size, target_remaining, min(8, deck_size)))
+
+    # Crispin can matter only as deck thinning before Run Errand. Keep it below true draw/search.
+    if is_crispin(card):
+        if going == "second" and not st.supporter_used and can_use_run_errand(st):
+            return 1200.0
+        return -1.0
+
+    deck_size = max(1, len(st.deck))
+    draw_power = card_draw_power(card)
+    draw_score = 1000.0 * (1.0 - hypergeom_zero(deck_size, target_remaining, min(draw_power, deck_size))) if draw_power else 0.0
+
+    search_score = 0.0
+    if enable_chain_search and card_has_search(card):
+        # Can this search find a playable enabler?
+        for step in meaningful_steps(card):
+            if step.get("op") == "search_deck":
+                filt = extract_filter(step)
+                if choose_enabler_from_deck(st, filt, going, target_norm) is not None:
+                    search_score = max(search_score, 250.0)
+
+    # Small preference for look/reorder cards only if they can see at least one target in the known top cards.
+    look_score = 0.0
+    for step in meaningful_steps(card):
+        if step.get("op") in {"look_at_top_cards", "look_at_cards"}:
+            n = amount_value(step.get("amount") or step.get("count") or step.get("number"), default=1)
+            if any(target_matches(c, target_norm) for c in st.deck[:n]):
+                look_score = max(look_score, 100.0)
+
+    return max(draw_score, search_score, look_score)
+
+
+def discard_fodder_cards(st: SimState, n: int, target_norm: str, stage: str) -> List[str]:
+    """Discard low-value non-target cards for required costs.
+
+    This does not try to solve the whole game; it only avoids discarding the
+    target and prefers to throw away cards with no target-finding value.
+    """
+    discarded: List[str] = []
+    for _ in range(max(0, n)):
+        candidates = [c for c in st.hand if not target_matches(c, target_norm)]
+        if not candidates:
+            break
+
+        def discard_priority(c: Dict[str, Any]) -> Tuple[int, int, int, str]:
+            # Lower tuple is discarded first. Keep cards that can find/draw target.
+            return (
+                1 if card_has_specific_play_effect(c) or card_has_play_effect(c) else 0,
+                1 if card_directly_searches_target(c, target_norm, st.deck) else 0,
+                card_draw_power(c),
+                card_name(c),
+            )
+
+        candidates.sort(key=discard_priority)
+        chosen = candidates[0]
+        st.hand.remove(chosen)
+        st.discard.append(chosen)
+        discarded.append(card_name(chosen))
+    if discarded:
+        st.log.append({"event": "discard_fodder", "stage": stage, "discarded": discarded})
+    return discarded
+
+
+def execute_specific_play_effect(
+    st: SimState,
+    card: Dict[str, Any],
+    rng: random.Random,
+    target_norm: str,
+    going: str,
+    stage: str,
+    enable_chain_search: bool,
+) -> bool:
+    """Execute accurate narrow effects for relevant cards in the current deck.
+
+    These are preferred over compiled generic steps when the generic compilation is
+    too coarse for the target-finding question. In particular, Ciphermaniac puts
+    cards on top of the deck, not into hand.
+    """
+
+    if is_ultra_ball(card):
+        # Ultra Ball: discard 2 other cards, search your deck for a Pokémon,
+        # reveal it, put it into your hand, then shuffle.
+        discarded = discard_fodder_cards(st, 2, target_norm, stage)
+        if len(discarded) < 2:
+            st.log.append({"event": "ultra_ball_failed_missing_discard_fodder", "stage": stage})
+            return True
+
+        chosen = remove_first_matching(
+            st.deck,
+            lambda c: target_matches(c, target_norm) and card_supertype(c) == "Pokémon",
+        )
+        if chosen is not None:
+            st.hand.append(chosen)
+            st.found = True
+            st.found_stage = stage
+            st.log.append({
+                "event": "search_deck_found_target",
+                "stage": stage,
+                "source": "Ultra Ball",
+                "selected": [card_name(chosen)],
+                "filter": {"supertype": "Pokémon"},
+            })
+        rng.shuffle(st.deck)
+        st.log.append({"event": "shuffle_deck", "stage": stage, "source": "Ultra Ball"})
+        return True
+
+    if is_cyrano(card):
+        # Cyrano: search for up to 3 Pokémon ex, reveal, put into hand.
+        selected = []
+        while len(selected) < 3:
+            chosen = remove_first_matching(
+                st.deck,
+                lambda c: target_matches(c, target_norm) and is_pokemon_ex(c),
+            )
+            if chosen is None:
+                break
+            selected.append(chosen)
+        if selected:
+            st.hand.extend(selected)
+            st.found = True
+            st.found_stage = stage
+            st.log.append({
+                "event": "search_deck_found_target",
+                "stage": stage,
+                "source": "Cyrano",
+                "selected": [card_name(c) for c in selected],
+                "filter": {"supertype": "Pokémon", "subtype": "ex"},
+            })
+        rng.shuffle(st.deck)
+        st.log.append({"event": "shuffle_deck", "stage": stage, "source": "Cyrano"})
+        return True
+
+    if is_ciphermaniac(card):
+        # Ciphermaniac: search for 2 cards, shuffle, put them on top. This is
+        # NOT success by itself. It becomes success if Run Errand immediately draws.
+        rng.shuffle(st.deck)
+        target_on_top_via_ciphermaniac(st, target_norm, stage)
+        if can_use_run_errand(st):
+            use_run_errand(st, target_norm, f"{stage}_then_Run_Errand")
+        return True
+
+    if is_lillies_determination(card):
+        # Lillie's Determination: shuffle hand into deck, then draw 6; draw 8
+        # instead if you have exactly 6 Prize cards remaining. On turn 1 we do.
+        shuffled_back = [card_name(c) for c in st.hand]
+        st.deck.extend(st.hand)
+        st.hand.clear()
+        rng.shuffle(st.deck)
+        draw_n = 8 if len(st.prizes) == 6 else 6
+        st.log.append({"event": "shuffle_hand_into_deck", "stage": stage, "cards": shuffled_back, "source": "Lillie's Determination"})
+        draw_cards(st, draw_n, stage)
+        if st.has_target_in_hand(target_norm):
+            st.found = True
+            st.found_stage = stage
+            return True
+        # If Mega Kangaskhan is active, optimally use Run Errand after the big draw.
+        if can_use_run_errand(st):
+            use_run_errand(st, target_norm, f"{stage}_then_Run_Errand")
+        return True
+
+    if is_crispin(card):
+        # Crispin cannot find Ogerpon directly. It only matters here if it thins
+        # Basic Energy before Run Errand.
+        remove_basic_energies_for_crispin(st, stage)
+        rng.shuffle(st.deck)
+        if can_use_run_errand(st):
+            use_run_errand(st, target_norm, f"{stage}_then_Run_Errand")
+        return True
+
+    return False
+
+
+def play_card(st: SimState, card: Dict[str, Any], rng: random.Random, target_norm: str, going: str, enable_chain_search: bool) -> None:
+    if card not in st.hand:
+        return
+
+    # Meowth ex — Last-Ditch Catch: when played from hand to Bench, search for
+    # a Supporter. This is relevant going second because it can fetch Cyrano or
+    # Ciphermaniac, then that Supporter can be played immediately.
+    if is_meowth_ex(card):
+        if st.last_ditch_used:
+            return
+        st.hand.remove(card)
+        st.bench.append(card)
+        st.last_ditch_used = True
+        st.actions_used += 1
+        st.line.append(card_name(card))
+        stage = f"after_play_{card_name(card)}"
+        st.log.append({"event": "play_basic_to_bench", "card": card_name(card), "stage": stage})
+
+        if going == "second" and not st.supporter_used:
+            # Priority: Cyrano direct search > Ciphermaniac + Run Errand > Lillie draw.
+            supporter = None
+            if target_is_pokemon_ex_in_pool(target_norm, st.deck):
+                supporter = remove_first_matching(st.deck, is_cyrano)
+            if supporter is None and can_use_run_errand(st):
+                supporter = remove_first_matching(st.deck, is_ciphermaniac)
+            if supporter is None:
+                supporter = remove_first_matching(st.deck, is_lillies_determination)
+            if supporter is not None:
+                st.hand.append(supporter)
+                rng.shuffle(st.deck)
+                st.log.append({
+                    "event": "last_ditch_catch_found_supporter",
+                    "stage": stage,
+                    "selected": card_name(supporter),
+                })
+                if card_can_be_played_from_hand(supporter, going, st.supporter_used):
+                    play_card(st, supporter, rng, target_norm, going, enable_chain_search)
+        return
+
+    if not has_enough_discard_fodder(st.hand, card, target_norm):
+        st.log.append({"event": "cannot_play_missing_discard_fodder", "card": card_name(card), "required_discards": card_known_discard_cost(card)})
+        return
+    st.hand.remove(card)
+    st.discard.append(card)
+    if is_supporter(card):
+        st.supporter_used = True
+    st.actions_used += 1
+    action_name = card_name(card)
+    st.line.append(action_name)
+    stage = f"after_play_{action_name}"
+    st.log.append({"event": "play_card", "card": action_name, "supporter_used": st.supporter_used})
+
+    if execute_specific_play_effect(st, card, rng, target_norm, going, stage, enable_chain_search):
+        return
+
+    for eff in iter_effects(card):
+        if effect_is_trivial_rule(eff):
+            continue
+        execute_steps(st, iter_steps(eff), rng, target_norm, going, stage=stage, enable_chain_search=enable_chain_search)
+        if st.found:
+            return
+
+
+def simulate_one_trial(
+    deck: List[Dict[str, Any]],
+    rng: random.Random,
+    target_norm: str,
+    going: str,
+    hand_size: int,
+    prize_count: int,
+    use_mulligans: bool,
+    draw_for_turn: bool,
+    max_actions: int,
+    enable_chain_search: bool,
+) -> Dict[str, Any]:
+    mulligans = 0
+    while True:
+        shuffled = list(deck)
+        rng.shuffle(shuffled)
+        opening = shuffled[:hand_size]
+        rest = shuffled[hand_size:]
+        if not use_mulligans or any(is_basic_pokemon(c) for c in opening):
+            break
+        mulligans += 1
+        if mulligans > 100:
+            raise RuntimeError("Exceeded 100 mulligans in one trial; check Basic Pokémon count")
+
+    prizes = rest[:prize_count]
+    library = rest[prize_count:]
+
+    target_copies_total = sum(1 for c in deck if target_matches(c, target_norm))
+    target_copies_prized = sum(1 for c in prizes if target_matches(c, target_norm))
+    target_copies_in_opening = sum(1 for c in opening if target_matches(c, target_norm))
+
+    active = choose_optimal_active(opening, target_norm)
+    hand_after_setup = list(opening)
+    if active is not None and active in hand_after_setup:
+        hand_after_setup.remove(active)
+
+    st = SimState(deck=library, hand=hand_after_setup, prizes=list(prizes), active=active)
+    if active is not None:
+        st.log.append({"event": "choose_active", "active": card_name(active)})
+
+    # Opening success means the target was in the opener / accessible at setup,
+    # even if it was chosen as Active and is no longer literally in hand.
+    if target_copies_in_opening > 0:
+        st.found = True
+        st.found_stage = "opening_hand"
+    elif draw_for_turn:
+        draw_cards(st, 1, "draw_for_turn")
+        if st.has_target_in_hand(target_norm):
+            st.found = True
+            st.found_stage = "draw_for_turn"
+
+    while not st.found and st.actions_used < max_actions:
+        scored: List[Tuple[float, Any]] = []
+
+        # Trainer / modeled-from-hand actions.
+        playable = [c for c in list(st.hand) if card_can_be_played_from_hand(c, going, st.supporter_used)]
+        for c in playable:
+            score = score_playable_card(c, st, target_norm, going, enable_chain_search)
+            if score > 0:
+                scored.append((score, c))
+
+        # Basic Pokémon from hand can be benched if their ability helps find the target.
+        for c in list(st.hand):
+            score = bench_basic_ability_score(st, c, target_norm, going)
+            if score > 0:
+                scored.append((score, {"_virtual_action": "BenchAbility", "card": c}))
+
+        # Explicit active/bench abilities.
+        ability_score = run_errand_score(st, target_norm)
+        if ability_score > 0:
+            scored.append((ability_score, {"_virtual_action": "Run Errand"}))
+
+        td_score = teal_dance_score(st, target_norm)
+        if td_score > 0:
+            scored.append((td_score, {"_virtual_action": "Teal Dance"}))
+
+        for score, source, eff in generic_ability_candidates(st, target_norm):
+            scored.append((score, {"_virtual_action": "GenericAbility", "source": source, "effect": eff}))
+
+        for score, action in ability_requirement_search_candidates(st, target_norm, going, enable_chain_search):
+            scored.append((score, action))
+
+        if not scored:
+            break
+        def _choice_label(x: Any) -> str:
+            if isinstance(x, dict) and x.get("_virtual_action"):
+                if x.get("card"):
+                    return card_name(x["card"])
+                if x.get("source"):
+                    return card_name(x["source"])
+                return str(x.get("_virtual_action"))
+            return card_name(x) if isinstance(x, dict) else str(x)
+        scored.sort(key=lambda x: (x[0], _choice_label(x[1])), reverse=True)
+        _, chosen = scored[0]
+        if isinstance(chosen, dict) and chosen.get("_virtual_action") == "Run Errand":
+            use_run_errand(st, target_norm, "after_use_Run_Errand")
+        elif isinstance(chosen, dict) and chosen.get("_virtual_action") == "Teal Dance":
+            use_teal_dance(st, target_norm, "after_use_Teal_Dance")
+        elif isinstance(chosen, dict) and chosen.get("_virtual_action") == "BenchAbility":
+            bench_basic_for_ability(st, chosen["card"], rng, target_norm, going, enable_chain_search)
+        elif isinstance(chosen, dict) and chosen.get("_virtual_action") == "GenericAbility":
+            use_generic_ability(st, chosen["source"], chosen["effect"], rng, target_norm, going, enable_chain_search)
+        elif isinstance(chosen, dict) and chosen.get("_virtual_action") == "AbilityRequirementSearch":
+            use_ability_requirement_search_chain(st, chosen, rng, target_norm, going, enable_chain_search)
+        else:
+            play_card(st, chosen, rng, target_norm, going, enable_chain_search)
+
+    return {
+        "found": st.found,
+        "found_stage": st.found_stage or "not_found",
+        "line": " -> ".join(st.line) if st.line else "none",
+        "mulligans": mulligans,
+        "target_copies_total": target_copies_total,
+        "target_copies_prized": target_copies_prized,
+        "target_copies_in_opening": target_copies_in_opening,
+        "all_target_copies_prized": target_copies_total > 0 and target_copies_prized == target_copies_total,
+        "active": card_name(active) if active else None,
+        "actions_used": st.actions_used,
+        "final_hand_size": len(st.hand),
+        "final_deck_size": len(st.deck),
+        "log": st.log,
+    }
+
+
+def summarize_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    n = len(results)
+    found = sum(1 for r in results if r["found"])
+    by_stage = Counter(r["found_stage"] for r in results)
+    lines = Counter(r["line"] for r in results if r["found"] and r["line"] != "none")
+    mulligans = Counter(r["mulligans"] for r in results)
+    all_prized = sum(1 for r in results if r["all_target_copies_prized"])
+    opening = sum(1 for r in results if r["found_stage"] == "opening_hand")
+    draw_turn = sum(1 for r in results if r["found_stage"] == "draw_for_turn")
+    actions = found - opening - draw_turn
+    return {
+        "trials": n,
+        "successes": found,
+        "probability": round(found / n, 6) if n else 0.0,
+        "percent": pct(found / n) if n else 0.0,
+        "ci95_percent": ci95(found, n),
+        "found_in_opening_hand": {"successes": opening, "percent": pct(opening / n) if n else 0.0},
+        "found_on_draw_for_turn": {"successes": draw_turn, "percent": pct(draw_turn / n) if n else 0.0},
+        "found_after_actions": {"successes": actions, "percent": pct(actions / n) if n else 0.0},
+        "all_target_copies_prized": {"trials": all_prized, "percent": pct(all_prized / n) if n else 0.0},
+        "average_mulligans": round(sum(r["mulligans"] for r in results) / n, 6) if n else 0.0,
+        "mulligan_distribution": [{"mulligans": k, "trials": v, "percent": pct(v / n)} for k, v in sorted(mulligans.items())],
+        "found_stage_distribution": [{"stage": k, "trials": v, "percent": pct(v / n)} for k, v in by_stage.most_common()],
+        "top_success_lines": [{"line": k, "count": v, "percent_of_trials": pct(v / n)} for k, v in lines.most_common(25)],
+    }
+
+
+# -----------------------------
+# Line-audit helpers
+# -----------------------------
+
+
+def _log_events(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return list(result.get("log") or [])
+
+
+def _event_matches(ev: Dict[str, Any], event: str, **conditions: Any) -> bool:
+    if ev.get("event") != event:
+        return False
+    for k, v in conditions.items():
+        if ev.get(k) != v:
+            return False
+    return True
+
+
+def _has_event(log: Sequence[Dict[str, Any]], event: str, **conditions: Any) -> bool:
+    return any(_event_matches(ev, event, **conditions) for ev in log)
+
+
+def _discard_fodder_two_plus(log: Sequence[Dict[str, Any]]) -> bool:
+    for ev in log:
+        if ev.get("event") != "discard_fodder":
+            continue
+        discarded = ev.get("discarded") or []
+        if isinstance(discarded, list) and len(discarded) >= 2:
+            return True
+    return False
+
+
+def _line_contains(line: str, name: str) -> bool:
+    return norm(name) in norm(line)
+
+
+def audit_single_result(result: Dict[str, Any], going: str) -> Dict[str, Any]:
+    """Audit whether one successful line is supported by concrete logged evidence.
+
+    This is not a judge-level rules engine. It is a guardrail against over-counting
+    lines like "Ciphermaniac" as success without the required immediate draw, or
+    "Ultra Ball" without discard fodder. It checks the specific combos this script
+    currently models.
+    """
+    line = str(result.get("line") or "none")
+    log = _log_events(result)
+    checks: Dict[str, bool] = {}
+    notes: List[str] = []
+
+    # Supporters are not legal on the first player's first turn in this model.
+    supporter_names = ["Cyrano", "Ciphermaniac's Codebreaking", "Lillie's Determination", "Crispin"]
+    uses_supporter = any(_line_contains(line, n) for n in supporter_names)
+    if uses_supporter:
+        checks["supporter_legal_for_turn"] = going == "second"
+        if going != "second":
+            notes.append("Supporter appeared in a going-first line.")
+
+    if _line_contains(line, "Ultra Ball"):
+        checks["ultra_ball_discarded_two"] = _discard_fodder_two_plus(log)
+        checks["ultra_ball_searched_target"] = _has_event(log, "search_deck_found_target", source="Ultra Ball")
+        if not checks["ultra_ball_discarded_two"]:
+            notes.append("Ultra Ball line did not show a 2-card discard cost in the log.")
+        if not checks["ultra_ball_searched_target"]:
+            notes.append("Ultra Ball line did not show a target search in the log.")
+
+    if _line_contains(line, "Run Errand"):
+        checks["run_errand_active_kangaskhan"] = norm(result.get("active")) == norm("Mega Kangaskhan ex")
+        checks["run_errand_used"] = _has_event(log, "use_ability", ability="Run Errand")
+        if not checks["run_errand_active_kangaskhan"]:
+            notes.append("Run Errand line did not start with Mega Kangaskhan ex Active.")
+        if not checks["run_errand_used"]:
+            notes.append("Run Errand line did not show the ability being used.")
+
+    if _line_contains(line, "Cyrano"):
+        checks["cyrano_searched_target"] = _has_event(log, "search_deck_found_target", source="Cyrano")
+        if not checks["cyrano_searched_target"]:
+            notes.append("Cyrano line did not show a target search.")
+
+    if _line_contains(line, "Ciphermaniac"):
+        checks["ciphermaniac_put_target_on_top"] = _has_event(log, "ciphermaniac_put_target_on_top")
+        checks["ciphermaniac_followed_by_draw"] = _has_event(log, "use_ability", ability="Run Errand")
+        if not checks["ciphermaniac_put_target_on_top"]:
+            notes.append("Ciphermaniac line did not put target on top in the log.")
+        if not checks["ciphermaniac_followed_by_draw"]:
+            notes.append("Ciphermaniac line was not followed by an immediate draw effect.")
+
+    if _line_contains(line, "Meowth ex"):
+        checks["meowth_benched"] = _has_event(log, "play_basic_to_bench", card="Meowth ex")
+        checks["meowth_found_supporter"] = _has_event(log, "last_ditch_catch_found_supporter")
+        if not checks["meowth_benched"]:
+            notes.append("Meowth ex line did not show Meowth being played to the Bench.")
+        if not checks["meowth_found_supporter"]:
+            notes.append("Meowth ex line did not show Last-Ditch Catch finding a Supporter.")
+
+    if _line_contains(line, "Lillie's Determination"):
+        checks["lillie_shuffled_hand_and_drew"] = _has_event(log, "shuffle_hand_into_deck", source="Lillie's Determination")
+        if not checks["lillie_shuffled_hand_and_drew"]:
+            notes.append("Lillie's Determination line did not show shuffle-hand-then-draw.")
+
+    if _line_contains(line, "Teal Dance"):
+        checks["teal_dance_used"] = _has_event(log, "use_ability", ability="Teal Dance")
+        if not checks["teal_dance_used"]:
+            notes.append("Teal Dance line did not show the ability being used.")
+
+    if _line_contains(line, "Lunar Cycle"):
+        checks["lunar_cycle_used"] = _has_event(log, "use_ability", ability="Lunar Cycle")
+        checks["lunar_cycle_cost_paid"] = any(ev.get("event") == "ability_cost_discard" and ev.get("energy_type") == "Fighting" for ev in log)
+        checks["lunar_cycle_solrock_requirement"] = any(
+            ev.get("event") in {"ability_requirement_already_in_play", "ability_requirement_benched"} and norm(ev.get("card")) == norm("Solrock")
+            for ev in log
+        )
+        if not checks["lunar_cycle_used"]:
+            notes.append("Lunar Cycle line did not show the ability being used.")
+        if not checks["lunar_cycle_cost_paid"]:
+            notes.append("Lunar Cycle line did not show a Basic Fighting Energy discard cost.")
+        if not checks["lunar_cycle_solrock_requirement"]:
+            notes.append("Lunar Cycle line did not show Solrock in play or benched for the requirement.")
+
+    if _line_contains(line, "Crispin"):
+        # Crispin is only modeled as optional deck thinning before a draw. It can be legal
+        # without being the final success event, so this check is informational.
+        checks["crispin_line_has_draw_followup"] = _has_event(log, "use_ability", ability="Run Errand") or _line_contains(line, "Ultra Ball") or _line_contains(line, "Teal Dance")
+
+    valid = all(checks.values()) if checks else True
+    return {
+        "line": line,
+        "valid": valid,
+        "checks": checks,
+        "notes": notes,
+    }
+
+
+def build_line_audit(results: List[Dict[str, Any]], going: str, n_trials: int, examples_per_line: int = 2) -> List[Dict[str, Any]]:
+    grouped: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in results:
+        if r.get("found") and r.get("line") and r.get("line") != "none":
+            grouped[str(r["line"])].append(r)
+
+    rows: List[Dict[str, Any]] = []
+    for line, rs in sorted(grouped.items(), key=lambda kv: len(kv[1]), reverse=True):
+        audits = [audit_single_result(r, going) for r in rs]
+        valid_count = sum(1 for a in audits if a["valid"])
+        check_totals: Dict[str, Dict[str, int]] = defaultdict(lambda: {"pass": 0, "fail": 0})
+        notes_counter: Counter[str] = Counter()
+        for a in audits:
+            for check_name, ok in a["checks"].items():
+                check_totals[check_name]["pass" if ok else "fail"] += 1
+            for note in a["notes"]:
+                notes_counter[note] += 1
+
+        examples = []
+        for r, a in zip(rs, audits):
+            examples.append({
+                "found_stage": r.get("found_stage"),
+                "active": r.get("active"),
+                "actions_used": r.get("actions_used"),
+                "final_hand_size": r.get("final_hand_size"),
+                "final_deck_size": r.get("final_deck_size"),
+                "audit_valid": a["valid"],
+                "checks": a["checks"],
+                "log": r.get("log", [])[:30],
+            })
+            if len(examples) >= examples_per_line:
+                break
+
+        rows.append({
+            "line": line,
+            "count": len(rs),
+            "percent_of_trials": pct(len(rs) / n_trials) if n_trials else 0.0,
+            "audit_valid_count": valid_count,
+            "audit_invalid_count": len(rs) - valid_count,
+            "verdict": "ok" if valid_count == len(rs) else "review",
+            "checks": dict(check_totals),
+            "notes": [{"note": k, "count": v} for k, v in notes_counter.most_common()],
+            "examples": examples,
+        })
+    return rows
+
+
+def write_line_audit_csv(path: str, scenarios: List[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["scenario", "going", "line", "count", "percent_of_trials", "verdict", "audit_valid_count", "audit_invalid_count", "checks", "notes"],
+        )
+        writer.writeheader()
+        for scenario in scenarios:
+            for row in scenario.get("line_audit", []) or []:
+                writer.writerow({
+                    "scenario": scenario.get("scenario"),
+                    "going": scenario.get("going"),
+                    "line": row.get("line"),
+                    "count": row.get("count"),
+                    "percent_of_trials": row.get("percent_of_trials"),
+                    "verdict": row.get("verdict"),
+                    "audit_valid_count": row.get("audit_valid_count"),
+                    "audit_invalid_count": row.get("audit_invalid_count"),
+                    "checks": json.dumps(row.get("checks", {}), ensure_ascii=False),
+                    "notes": json.dumps(row.get("notes", []), ensure_ascii=False),
+                })
+
+
+def target_finding_card_diagnostics(deck: List[Dict[str, Any]], target_norm: str) -> List[Dict[str, Any]]:
+    """Summarize cards that the current policy thinks can help find the target."""
+    rows = []
+    unique_cards = []
+    seen = set()
+    for c in deck:
+        cid = card_id(c)
+        if cid in seen:
+            continue
+        seen.add(cid)
+        unique_cards.append(c)
+    counts = Counter(card_id(c) for c in deck)
+    for c in unique_cards:
+        direct = card_directly_searches_target(c, target_norm, deck)
+        draw = card_draw_power(c)
+        has_search = card_has_search(c)
+        cost = card_known_discard_cost(c)
+        if not (direct or draw or has_search or cost):
+            continue
+        rows.append({
+            "card_id": card_id(c),
+            "name": card_name(c),
+            "count": counts[card_id(c)],
+            "supertype": card_supertype(c),
+            "subtypes": card_subtypes(c),
+            "is_supporter": is_supporter(c),
+            "directly_searches_target": direct,
+            "has_search": has_search,
+            "draw_power_heuristic": draw,
+            "known_discard_cost": cost,
+            "playable_going_first_if_in_hand": card_can_be_played_from_hand(c, "first", supporter_used=False),
+            "playable_going_second_if_in_hand": card_can_be_played_from_hand(c, "second", supporter_used=False),
+        })
+    rows.sort(key=lambda r: (r["directly_searches_target"], r["draw_power_heuristic"], r["count"], r["name"]), reverse=True)
+    return rows
+
+
+def write_summary_csv(path: str, scenario_summaries: List[Dict[str, Any]]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["scenario", "going", "trials", "successes", "percent", "ci95_low", "ci95_high", "opening_percent", "draw_for_turn_percent", "actions_percent", "all_prized_percent", "avg_mulligans"],
+        )
+        writer.writeheader()
+        for s in scenario_summaries:
+            sm = s["summary"]
+            writer.writerow({
+                "scenario": s["scenario"],
+                "going": s["going"],
+                "trials": sm["trials"],
+                "successes": sm["successes"],
+                "percent": sm["percent"],
+                "ci95_low": sm["ci95_percent"]["low"],
+                "ci95_high": sm["ci95_percent"]["high"],
+                "opening_percent": sm["found_in_opening_hand"]["percent"],
+                "draw_for_turn_percent": sm["found_on_draw_for_turn"]["percent"],
+                "actions_percent": sm["found_after_actions"]["percent"],
+                "all_prized_percent": sm["all_target_copies_prized"]["percent"],
+                "avg_mulligans": sm["average_mulligans"],
+            })
+
+
+def run_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], going: str, target_norm: str) -> Dict[str, Any]:
+    rng = random.Random(args.seed + (0 if going == "first" else 10_000_000))
+    results = [
+        simulate_one_trial(
+            deck=deck,
+            rng=rng,
+            target_norm=target_norm,
+            going=going,
+            hand_size=args.hand_size,
+            prize_count=args.prizes,
+            use_mulligans=not args.no_mulligans,
+            draw_for_turn=not args.no_draw_for_turn,
+            max_actions=args.max_actions,
+            enable_chain_search=args.chain_search,
+        )
+        for _ in range(args.trials)
+    ]
+    examples = []
+    for r in results:
+        if r["found"] and r["line"] != "none":
+            examples.append({"line": r["line"], "found_stage": r["found_stage"], "log": r["log"][:20]})
+        if len(examples) >= args.example_lines:
+            break
+    summary = summarize_trials(results)
+    line_audit = build_line_audit(results, going, args.trials, examples_per_line=args.line_audit_examples)
+    return {
+        "scenario": f"turn1_find_{args.target_name}_{going}",
+        "going": going,
+        "summary": summary,
+        "line_audit": line_audit,
+        "examples": examples,
+    }
+
+
+
+def default_downloads_file(filename: str) -> str:
+    """Return a sensible default output path in the user's Downloads folder.
+
+    On Windows this becomes C:/Users/<user>/Downloads/<filename>.
+    If Downloads cannot be found, fall back to the current working directory.
+    """
+    downloads = os.path.join(os.path.expanduser("~"), "Downloads")
+    if not os.path.isdir(downloads):
+        downloads = os.getcwd()
+    return os.path.join(downloads, filename)
+
+
+def write_result_json(path: str, result: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+
+
+def print_compact_console_summary(result: Dict[str, Any], args: argparse.Namespace) -> None:
+    """Avoid dumping the giant JSON to PowerShell/terminal."""
+    print("passed:", result.get("passed"))
+    if result.get("error"):
+        print("error:", result.get("error"))
+    if result.get("warning"):
+        print("warning:", result.get("warning"))
+
+    deck_summary = result.get("deck_summary") or {}
+    if deck_summary:
+        print("deck_size:", deck_summary.get("deck_size"))
+        print("target_copies:", deck_summary.get("target_copies"))
+        print("basic_pokemon:", deck_summary.get("basic_pokemon"))
+
+    unresolved = result.get("unresolved") or []
+    print("unresolved:", unresolved)
+
+    scenarios = result.get("scenarios") or []
+    if scenarios:
+        rows = []
+        for scenario in scenarios:
+            sm = scenario.get("summary", {})
+            rows.append((
+                scenario.get("going"),
+                sm.get("percent"),
+                (sm.get("ci95_percent") or {}).get("low"),
+                (sm.get("ci95_percent") or {}).get("high"),
+                (sm.get("found_in_opening_hand") or {}).get("percent"),
+                (sm.get("found_on_draw_for_turn") or {}).get("percent"),
+                (sm.get("found_after_actions") or {}).get("percent"),
+            ))
+        print("scenario_summary:", rows)
+
+        print("top_success_lines:")
+        for scenario in scenarios:
+            sm = scenario.get("summary", {})
+            print(" ", scenario.get("going"), (sm.get("top_success_lines") or [])[:10])
+
+    print("full_json:", os.path.abspath(args.out))
+    print("summary_csv:", os.path.abspath(args.csv_out))
+    print("line_audit_csv:", os.path.abspath(args.line_audit_csv))
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Turn 1 target-card finder with going-first/going-second restrictions and simple optimal play.")
+    ap.add_argument("--compiled", default="data/compiled_cards/auto/compiled_cards_all.json", help="Compiled card JSON. Can be all compiled cards or complete-card seed.")
+    ap.add_argument("--decklist", required=True, help="Decklist file: txt, csv, or json.")
+    ap.add_argument("--target-name", required=True, help="Target card name/id substring to find by end of turn 1.")
+    ap.add_argument("--going", choices=["first", "second", "both"], default="both")
+    ap.add_argument("--trials", type=int, default=20000)
+    ap.add_argument("--seed", type=int, default=123)
+    ap.add_argument("--hand-size", type=int, default=7)
+    ap.add_argument("--prizes", type=int, default=6)
+    ap.add_argument("--max-actions", type=int, default=20)
+    ap.add_argument("--no-mulligans", action="store_true")
+    ap.add_argument("--no-draw-for-turn", action="store_true")
+    ap.add_argument("--complete-only", action="store_true", help="Use only parser-status complete cards for decklist resolution/effects.")
+    ap.add_argument("--chain-search", action="store_true", help="Allow search cards to fetch another playable draw/search enabler if they cannot directly find the target.")
+    ap.add_argument("--example-lines", type=int, default=5)
+    ap.add_argument("--line-audit-examples", type=int, default=2, help="Number of detailed sample logs to keep per successful action line in the line audit.")
+    ap.add_argument("--out", default=default_downloads_file("turn1_target_finder.json"), help="Full JSON report path. Defaults to Downloads.")
+    ap.add_argument("--csv-out", default=default_downloads_file("turn1_target_finder_summary.csv"), help="Compact scenario summary CSV path. Defaults to Downloads.")
+    ap.add_argument("--line-audit-csv", default=default_downloads_file("turn1_target_finder_line_audit.csv"), help="Line audit CSV path. Defaults to Downloads.")
+    args = ap.parse_args()
+
+    if load_compiled_cards is None:
+        raise RuntimeError("Could not import tcgsim. Make sure this script is inside your project and src/tcgsim exists.")
+
+    cards = load_compiled_cards(args.compiled)
+    if args.complete_only:
+        cards = filter_complete_cards(cards)
+
+    raw_decklist = parse_decklist(args.decklist)
+    deck, unresolved = resolve_decklist(raw_decklist, cards)
+    target_norm = norm(args.target_name)
+
+    result: Dict[str, Any] = {
+        "passed": False,
+        "compiled_source": args.compiled,
+        "decklist_source": args.decklist,
+        "target_name": args.target_name,
+        "target_norm": target_norm,
+        "trials": args.trials,
+        "seed": args.seed,
+        "assumptions": {
+            "first_player_can_draw_for_turn": not args.no_draw_for_turn,
+            "going_first_cannot_play_supporter_on_turn_1": True,
+            "going_first_cannot_attack_on_turn_1": True,
+            "going_second_can_play_supporter_on_turn_1": True,
+            "focus": "Turn-1 target finding from hand/setup using relevant Trainer effects plus key Pokémon abilities for this deck.",
+            "policy": "greedy best-first: direct target search > exact deck combos such as Ciphermaniac + Run Errand and Meowth -> Supporter > generic useful Pokémon Abilities > large draw > smaller draw/thinning.",
+            "chain_search_enabled": args.chain_search,
+            "basic_energy_proxies": "Enabled automatically when vanilla Basic Energy printings are absent from compiled JSON.",
+            "line_audit": "Enabled. Combo lines such as Ultra Ball, Run Errand, Teal Dance, Meowth ex, and Ciphermaniac are audited against simulated logs for required evidence.",
+            "exact_probability_integration": "Enabled. src/probability.py supplies exact legal-opening, natural draw, mulligan, and prize baselines; simulation estimates the conditional action layer.",
+        },
+        "decklist_entries": [{"count": c, "name": n} for c, n in raw_decklist],
+        "unresolved": unresolved,
+    }
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+
+    if unresolved:
+        result["error"] = "Some decklist entries could not be resolved against the compiled card file."
+        result["resolved_deck_size"] = len(deck)
+        write_result_json(args.out, result)
+        print_compact_console_summary(result, args)
+        sys.exit(2)
+
+    if len(deck) != 60:
+        result["warning"] = f"Resolved deck has {len(deck)} cards, not 60. The script will still run, but probabilities may not represent a legal deck."
+
+    target_copies = sum(1 for c in deck if target_matches(c, target_norm))
+    basic_count = sum(1 for c in deck if is_basic_pokemon(c))
+    result["deck_summary"] = {
+        "deck_size": len(deck),
+        "target_copies": target_copies,
+        "basic_pokemon": basic_count,
+        "energy": sum(1 for c in deck if is_energy(c)),
+        "basic_energy_proxies": sum(1 for c in deck if c.get("parser_status") == "proxy_basic_energy"),
+        "trainer": sum(1 for c in deck if is_trainer(c)),
+        "top_cards": [{"name": k, "count": v} for k, v in Counter(card_name(c) for c in deck).most_common(25)],
+    }
+    result["target_finding_card_diagnostics"] = target_finding_card_diagnostics(deck, target_norm)
+    result["raw_hypergeometric_reference"] = {
+        "note": "Reference only. These are unconditioned raw 60-card calculations; prefer exact_legal_hand_baselines below for game-start probabilities.",
+        "opening_hand_has_target_percent": pct(hypergeom_at_least_one(len(deck), target_copies, args.hand_size)),
+        "opening_hand_has_no_basic_percent": pct(hypergeom_zero(len(deck), basic_count, args.hand_size)),
+        "at_least_one_target_prized_unconditional_percent": pct(hypergeom_at_least_one(len(deck), target_copies, args.prizes)),
+        "all_target_copies_prized_unconditional_percent": pct((ncr(target_copies, target_copies) * ncr(len(deck) - target_copies, args.prizes - target_copies) / ncr(len(deck), args.prizes)) if 0 < target_copies <= args.prizes <= len(deck) else 0.0),
+    }
+    result["exact_legal_hand_baselines"] = build_exact_probability_baselines(
+        deck=deck,
+        target_norm=target_norm,
+        hand_size=args.hand_size,
+        prize_count=args.prizes,
+        draw_for_turn=not args.no_draw_for_turn,
+        max_mulligans=6,
+    )
+
+    if target_copies <= 0:
+        result["error"] = "Target card was not found in the resolved decklist."
+        write_result_json(args.out, result)
+        print_compact_console_summary(result, args)
+        sys.exit(3)
+
+    goings = ["first", "second"] if args.going == "both" else [args.going]
+    scenarios = [run_scenario(args, deck, going, target_norm) for going in goings]
+    add_exact_plus_simulation_fields(scenarios, result.get("exact_legal_hand_baselines", {}))
+    result["scenarios"] = scenarios
+    result["passed"] = True
+
+    write_result_json(args.out, result)
+    write_summary_csv(args.csv_out, scenarios)
+    write_line_audit_csv(args.line_audit_csv, scenarios)
+    print_compact_console_summary(result, args)
+
+
+if __name__ == "__main__":
+    main()

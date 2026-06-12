@@ -2289,6 +2289,172 @@ def compile_simple_text(text: str, source_section: str) -> tuple[list[dict[str, 
     if re.fullmatch(r"Flip 2 coins\. If both of them are tails, this attack does nothing\.?,?", t, re.I):
         return [{"op": "coin_flip", "player": "self", "count": 2, "target_id": "coin_results", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_results", "if": "all_tails", "then": [{"op": "attack_does_nothing", "source_text": original}], "source_text": original}], []
 
+
+    # v0.9: generic costed / conditional activated Ability patterns.
+    # Example: Lunar Cycle — "Once during your turn, if you have Solrock in play,
+    # you may discard a Basic Fighting Energy card from your hand in order to use
+    # this Ability. Draw 3 cards. You can't use more than 1 Lunar Cycle Ability each turn."
+    m = re.fullmatch(
+        r"Once during your turn(?: \(before your attack\))?, if you have ([A-Za-z0-9éÉ' .\-]+) in play, you may discard (?:a|an|1) Basic ([A-Za-z]+) Energy card from your hand in order to use this Ability\. Draw (\d+) cards?\. You can't use more than (?:1|one) ([A-Za-z0-9éÉ' .\-]+) Ability each turn\.?,?",
+        t,
+        re.I,
+    )
+    if m:
+        required_pokemon = normalize_space(m.group(1))
+        energy_type = m.group(2).capitalize()
+        draw_n = int(m.group(3))
+        ability_name = normalize_space(m.group(4))
+        return [{
+            "op": "register_usage_limit",
+            "scope": "per_player_turn",
+            "limit": 1,
+            "group": ability_name + " Ability",
+            "ability_name": ability_name,
+            "source_text": original,
+        }, {
+            "op": "play_condition",
+            "condition": {
+                "requires_pokemon_in_play": {
+                    "player": "self",
+                    "name": required_pokemon,
+                }
+            },
+            "required_to_play": True,
+            "source_text": original,
+        }, {
+            "op": "discard_cards",
+            "player": "self",
+            "source_zone": "hand",
+            "selection": {
+                "mode": "exact",
+                "value": 1,
+                "filter": {
+                    "supertype": "Energy",
+                    "subtypes": ["Basic"],
+                    "types": [energy_type],
+                    "energy_type": energy_type,
+                },
+            },
+            "destination": "self.discard",
+            "cost": True,
+            "required_to_play": True,
+            "source_text": original,
+        }, {
+            "op": "draw_cards",
+            "player": "self",
+            "amount": amount_exact(draw_n),
+            "optional": True,
+            "source_text": original,
+        }], []
+
+    m = re.fullmatch(
+        r"Once during your turn(?: \(before your attack\))?, you may discard (?:a|an|1) Basic ([A-Za-z]+) Energy card from your hand in order to use this Ability\. Draw (\d+) cards?\. You can't use more than (?:1|one) ([A-Za-z0-9éÉ' .\-]+) Ability each turn\.?,?",
+        t,
+        re.I,
+    )
+    if m:
+        energy_type = m.group(1).capitalize()
+        draw_n = int(m.group(2))
+        ability_name = normalize_space(m.group(3))
+        return [{
+            "op": "register_usage_limit",
+            "scope": "per_player_turn",
+            "limit": 1,
+            "group": ability_name + " Ability",
+            "ability_name": ability_name,
+            "source_text": original,
+        }, {
+            "op": "discard_cards",
+            "player": "self",
+            "source_zone": "hand",
+            "selection": {
+                "mode": "exact",
+                "value": 1,
+                "filter": {
+                    "supertype": "Energy",
+                    "subtypes": ["Basic"],
+                    "types": [energy_type],
+                    "energy_type": energy_type,
+                },
+            },
+            "destination": "self.discard",
+            "cost": True,
+            "required_to_play": True,
+            "source_text": original,
+        }, {
+            "op": "draw_cards",
+            "player": "self",
+            "amount": amount_exact(draw_n),
+            "optional": True,
+            "source_text": original,
+        }], []
+
+    m = re.fullmatch(
+        r"Once during your turn(?: \(before your attack\))?, if you have ([A-Za-z0-9éÉ' .\-]+) in play, you may draw (\d+) cards?\. You can't use more than (?:1|one) ([A-Za-z0-9éÉ' .\-]+) Ability each turn\.?,?",
+        t,
+        re.I,
+    )
+    if m:
+        required_pokemon = normalize_space(m.group(1))
+        draw_n = int(m.group(2))
+        ability_name = normalize_space(m.group(3))
+        return [{
+            "op": "register_usage_limit",
+            "scope": "per_player_turn",
+            "limit": 1,
+            "group": ability_name + " Ability",
+            "ability_name": ability_name,
+            "source_text": original,
+        }, {
+            "op": "play_condition",
+            "condition": {
+                "requires_pokemon_in_play": {
+                    "player": "self",
+                    "name": required_pokemon,
+                }
+            },
+            "required_to_play": True,
+            "source_text": original,
+        }, {
+            "op": "draw_cards",
+            "player": "self",
+            "amount": amount_exact(draw_n),
+            "optional": True,
+            "source_text": original,
+        }], []
+
+    m = re.fullmatch(
+        r"Once during your turn(?: \(before your attack\))?, you may discard (?:a|1) cards? from your hand in order to use this Ability\. Draw (\d+) cards?\. You can't use more than (?:1|one) ([A-Za-z0-9éÉ' .\-]+) Ability each turn\.?,?",
+        t,
+        re.I,
+    )
+    if m:
+        draw_n = int(m.group(1))
+        ability_name = normalize_space(m.group(2))
+        return [{
+            "op": "register_usage_limit",
+            "scope": "per_player_turn",
+            "limit": 1,
+            "group": ability_name + " Ability",
+            "ability_name": ability_name,
+            "source_text": original,
+        }, {
+            "op": "discard_cards",
+            "player": "self",
+            "source_zone": "hand",
+            "selection": {"mode": "exact", "value": 1, "filter": {"any_card": True}},
+            "destination": "self.discard",
+            "cost": True,
+            "required_to_play": True,
+            "source_text": original,
+        }, {
+            "op": "draw_cards",
+            "player": "self",
+            "amount": amount_exact(draw_n),
+            "optional": True,
+            "source_text": original,
+        }], []
+
     # Simple once-per-turn draw ability.
     if re.fullmatch(r"Once during your turn \(before your attack\), you may draw a card\.?,?", t, re.I):
         return [{"op": "draw_cards", "player": "self", "amount": amount_exact(1), "optional": True, "usage_limit": {"scope": "per_turn_per_copy", "max": 1}, "source_text": original}], []
@@ -3318,7 +3484,7 @@ def main() -> None:
     parser.add_argument("--only-with-text", action="store_true")
     parser.add_argument("--standard-only", action="store_true")
     parser.add_argument("--max-groups", type=int, default=None)
-    parser.add_argument("--compiler-version", default="0.8.0")
+    parser.add_argument("--compiler-version", default="0.9.0")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
