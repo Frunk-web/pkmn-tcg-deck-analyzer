@@ -874,3 +874,248 @@ def p_all_copies_still_prized_after_x_prizes_taken(
         card_count=card_count,
         prize_count=remaining_prize_count,
     )
+
+
+# ============================================================
+# Custom starting-hand statement probabilities
+# ============================================================
+
+
+def _route_required_counts(route: Iterable[int]) -> dict[int, int]:
+    """Return required copy counts by selected-card index for one AND route.
+
+    Repeated indices are meaningful. Example: [0, 0, 1] means at least
+    two copies of selected card 0 and at least one copy of selected card 1.
+    """
+    required: dict[int, int] = {}
+    for i in route:
+        i = int(i)
+        required[i] = required.get(i, 0) + 1
+    return required
+
+
+def _dnf_statement_satisfied(
+    selected_draws: tuple[int, ...],
+    success_routes: Iterable[Iterable[int]],
+) -> bool:
+    """Return True if any AND-route is satisfied.
+
+    A route is a collection of selected-card indices. The full statement is an
+    OR of routes. Each route is an AND of required cards.
+
+    Examples:
+      X AND Y           -> [[0, 1]]
+      X OR Y            -> [[0], [1]]
+      X AND X           -> [[0, 0]] requiring 2 copies of X
+      (X AND X) OR Y    -> [[0, 0], [1]]
+    """
+    for route in success_routes:
+        required = _route_required_counts(route)
+        if not required:
+            continue
+        if all(0 <= i < len(selected_draws) and selected_draws[i] >= needed for i, needed in required.items()):
+            return True
+    return False
+
+
+def _enumerate_selected_draw_states(
+    card_counts: list[int],
+    card_is_basic: list[bool],
+    hand_size: int,
+) -> list[tuple[tuple[int, ...], int, int, int]]:
+    """Enumerate selected-card draw states for an opening hand.
+
+    Returns tuples:
+      (selected_draw_counts, selected_total_drawn, selected_basic_drawn, ways)
+    """
+    states: list[tuple[tuple[int, ...], int, int, int]] = []
+
+    def rec(index: int, draws: list[int], total_drawn: int, basic_drawn: int, ways: int) -> None:
+        if total_drawn > hand_size:
+            return
+        if index == len(card_counts):
+            states.append((tuple(draws), total_drawn, basic_drawn, ways))
+            return
+
+        max_draw = min(int(card_counts[index]), hand_size - total_drawn)
+        for k in range(max_draw + 1):
+            draw_ways = C(int(card_counts[index]), k)
+            if draw_ways <= 0:
+                continue
+            draws.append(k)
+            rec(
+                index + 1,
+                draws,
+                total_drawn + k,
+                basic_drawn + (k if card_is_basic[index] else 0),
+                ways * draw_ways,
+            )
+            draws.pop()
+
+    rec(0, [], 0, 0, 1)
+    return states
+
+
+def p_dnf_statement_given_legal_opening(
+    deck_size: int,
+    basic_count: int,
+    card_counts: Iterable[int],
+    card_is_basic: Iterable[bool],
+    success_routes: Iterable[Iterable[int]],
+    hand_size: int = 7,
+    include_turn_draw: bool = False,
+) -> float:
+    """Exact probability for a custom starting-hand Boolean statement.
+
+    The statement is represented in disjunctive normal form:
+      OR of AND-routes.
+
+    Examples:
+      X AND Y           -> [[0, 1]]
+      X OR Y            -> [[0], [1]]
+      X AND X           -> [[0, 0]] requiring 2 copies of X
+      (X AND Y) OR Z    -> [[0, 1], [2]]
+      (A AND B) OR (C AND D) -> [[0, 1], [2, 3]]
+
+    The probability is conditioned on keeping a legal opening hand, meaning the
+    opening 7 contains at least one Basic Pokémon. If include_turn_draw=True,
+    the opening 7 must still be legal first, then one natural card is drawn.
+
+    This intentionally models only natural opening-hand/draw access. It does not
+    include search effects, Supporters, Items, Abilities, or other turn actions.
+    """
+    counts = [int(c) for c in card_counts]
+    basics = [bool(x) for x in card_is_basic]
+    routes = [tuple(int(i) for i in route) for route in success_routes if tuple(route)]
+
+    if len(counts) != len(basics):
+        raise ValueError("card_counts and card_is_basic must have the same length.")
+    if len(counts) > 8:
+        raise ValueError("Custom starting-hand statements support up to 8 selected cards.")
+    if not routes:
+        return float("nan")
+    if any(c < 0 for c in counts):
+        raise ValueError("Card counts must be non-negative.")
+    if sum(counts) > deck_size:
+        raise ValueError("Selected card counts exceed deck size.")
+
+
+    for route in routes:
+        required = _route_required_counts(route)
+        for i, needed in required.items():
+            if i < 0 or i >= len(counts):
+                raise ValueError(f"Route contains invalid selected-card index {i}.")
+            if needed > counts[i]:
+                raise ValueError(
+                    f"Statement requires {needed} copies of selected card index {i}, "
+                    f"but the deck only contains {counts[i]}."
+                )
+
+    legal_total = legal_opening_hand_count(deck_size, basic_count, hand_size)
+    if legal_total <= 0:
+        return float("nan")
+
+    selected_total_count = sum(counts)
+    selected_basic_count = sum(c for c, is_basic in zip(counts, basics) if is_basic)
+    other_basic_count = basic_count - selected_basic_count
+    other_non_basic_count = deck_size - basic_count - (selected_total_count - selected_basic_count)
+
+    if other_basic_count < 0 or other_non_basic_count < 0:
+        raise ValueError("Selected card counts/basic flags are inconsistent with deck totals.")
+
+    states = _enumerate_selected_draw_states(counts, basics, hand_size)
+
+    if not include_turn_draw:
+        success_total = 0
+        for selected_draws, selected_total_drawn, selected_basic_drawn, ways in states:
+            if not _dnf_statement_satisfied(selected_draws, routes):
+                continue
+            remaining_slots = hand_size - selected_total_drawn
+            for other_basic_drawn in range(min(other_basic_count, remaining_slots) + 1):
+                other_non_basic_drawn = remaining_slots - other_basic_drawn
+                if other_non_basic_drawn < 0 or other_non_basic_drawn > other_non_basic_count:
+                    continue
+                if selected_basic_drawn + other_basic_drawn <= 0:
+                    continue
+                success_total += (
+                    ways
+                    * C(other_basic_count, other_basic_drawn)
+                    * C(other_non_basic_count, other_non_basic_drawn)
+                )
+        return _safe_div(success_total, legal_total)
+
+    # Ordered model: choose a legal opening hand, then one draw from the remaining deck.
+    total_ordered_legal = legal_total * (deck_size - hand_size)
+    success_ordered = 0
+
+    for selected_draws, selected_total_drawn, selected_basic_drawn, ways in states:
+        remaining_slots = hand_size - selected_total_drawn
+        for other_basic_drawn in range(min(other_basic_count, remaining_slots) + 1):
+            other_non_basic_drawn = remaining_slots - other_basic_drawn
+            if other_non_basic_drawn < 0 or other_non_basic_drawn > other_non_basic_count:
+                continue
+            if selected_basic_drawn + other_basic_drawn <= 0:
+                continue
+
+            hand_ways = (
+                ways
+                * C(other_basic_count, other_basic_drawn)
+                * C(other_non_basic_count, other_non_basic_drawn)
+            )
+            if hand_ways <= 0:
+                continue
+
+            if _dnf_statement_satisfied(selected_draws, routes):
+                success_ordered += hand_ways * (deck_size - hand_size)
+                continue
+
+            completing_draw_choices = 0
+            for i, count in enumerate(counts):
+                remaining_i = count - selected_draws[i]
+                if remaining_i <= 0:
+                    continue
+                new_draws = list(selected_draws)
+                new_draws[i] += 1
+                if _dnf_statement_satisfied(tuple(new_draws), routes):
+                    completing_draw_choices += remaining_i
+
+            success_ordered += hand_ways * completing_draw_choices
+
+    return _safe_div(success_ordered, total_ordered_legal)
+
+
+def custom_starting_hand_statement_probabilities(
+    deck_size: int,
+    basic_count: int,
+    card_counts: Iterable[int],
+    card_is_basic: Iterable[bool],
+    success_routes: Iterable[Iterable[int]],
+    hand_size: int = 7,
+) -> dict[str, float]:
+    """Return opening-only and draw-for-turn exact probabilities."""
+    opening = p_dnf_statement_given_legal_opening(
+        deck_size=deck_size,
+        basic_count=basic_count,
+        card_counts=card_counts,
+        card_is_basic=card_is_basic,
+        success_routes=success_routes,
+        hand_size=hand_size,
+        include_turn_draw=False,
+    )
+    after_draw = p_dnf_statement_given_legal_opening(
+        deck_size=deck_size,
+        basic_count=basic_count,
+        card_counts=card_counts,
+        card_is_basic=card_is_basic,
+        success_routes=success_routes,
+        hand_size=hand_size,
+        include_turn_draw=True,
+    )
+    return {
+        "opening_hand_probability": opening,
+        "opening_hand_percent": round(100 * opening, 4),
+        "after_turn_draw_probability": after_draw,
+        "after_turn_draw_percent": round(100 * after_draw, 4),
+        "draw_for_turn_increment_probability": after_draw - opening,
+        "draw_for_turn_increment_percent": round(100 * (after_draw - opening), 4),
+    }
