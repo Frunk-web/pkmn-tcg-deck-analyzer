@@ -24,6 +24,240 @@ def normalize_space(text: Any) -> str:
 
 
 FAMILIES: list[tuple[str, str, str, list[re.Pattern[str]]]] = [
+
+    (
+        "global_retreat_cost_rule",
+        "medium",
+        "Global or conditional retreat-cost rules should compile as board-wide retreat-cost modifiers.",
+        [
+            re.compile(r"each player pays .* less to retreat", re.I),
+            re.compile(r"each player pays .* more to retreat", re.I),
+            re.compile(r"must pay an additional .* to retreat", re.I),
+            re.compile(r"additional .* to retreat", re.I),
+            re.compile(r"Retreat Cost of each Pokémon", re.I),
+            re.compile(r"Retreat Cost .* except for", re.I),
+        ],
+    ),
+    (
+        "tool_or_attachment_return_replacement",
+        "medium",
+        "Tool and attachment replacement/lifecycle effects should compile as attachment replacement rules.",
+        [
+            re.compile(r"when .* is attached .* retreats, discard .* instead", re.I),
+            re.compile(r"if this card is discarded from play, put it into your hand instead", re.I),
+            re.compile(r"when this card is removed from a Pokémon", re.I),
+            re.compile(r"discard .* instead of discarding Energy", re.I),
+        ],
+    ),
+    (
+        "opponent_hand_shuffle_disruption",
+        "low",
+        "Opponent hand reveal/shuffle/bottom-deck disruption should compile as hand-disruption operations.",
+        [
+            re.compile(r"choose .* random cards? from your opponent's hand", re.I),
+            re.compile(r"opponent reveals .* shuffles .* into .* deck", re.I),
+            re.compile(r"choose a card .* put it on the bottom of .* deck", re.I),
+            re.compile(r"opponent shuffles .* hand into .* deck", re.I),
+        ],
+    ),
+    (
+        "special_condition_global_immunity_or_recovery",
+        "none",
+        "Global Special Condition recovery or immunity effects should compile as status-condition rule modifiers.",
+        [
+            re.compile(r"each Pokémon .* recovers from all Special Conditions", re.I),
+            re.compile(r"can't be affected by any Special Conditions", re.I),
+            re.compile(r"recovers from all Special Conditions", re.I),
+            re.compile(r"remove a Special Condition", re.I),
+        ],
+    ),
+    (
+        "pokemon_power_global_lock",
+        "high",
+        "Pokémon Power / Poké-Power / Poké-Body global locks should compile as ability-lock rule modifiers.",
+        [
+            re.compile(r"all Pokémon Powers stop working", re.I),
+            re.compile(r"can't use any Poké-Powers or Poké-Bodies", re.I),
+            re.compile(r"have no Abilities", re.I),
+            re.compile(r"no Trainer cards can be played.*power stops working", re.I),
+        ],
+    ),
+    (
+        "basic_fossil_pokemon_rule",
+        "medium",
+        "Fossil cards played as Basic Pokémon should compile as special in-play Trainer/Pokémon rules.",
+        [
+            re.compile(r"play .* Fossil as if it were a Basic Pokémon", re.I),
+            re.compile(r"counts as a Colorless Pokémon.*Trainer card", re.I),
+            re.compile(r"doesn't count as a Knocked Out Pokémon", re.I),
+        ],
+    ),
+    (
+        "castform_form_switch_search",
+        "high",
+        "Castform-style form-search and switch abilities should compile as search-deck plus replace/switch-in-play effects.",
+        [
+            re.compile(r"search your deck for .*Castform.*switch it with", re.I),
+            re.compile(r"Temperamental Weather", re.I),
+            re.compile(r"shuffle .* back into your deck.*can't use more than", re.I),
+        ],
+    ),
+    (
+        "conditional_status_damage_bonus",
+        "none",
+        "Damage bonuses based on the Defending/Active Pokémon status or evolution state should compile as conditional damage modifiers.",
+        [
+            re.compile(r"if the Defending Pokémon is affected by a Special Condition", re.I),
+            re.compile(r"if .* Active Pokémon is Confused", re.I),
+            re.compile(r"if the Defending Pokémon is an Evolved Pokémon", re.I),
+            re.compile(r"if the Defending Pokémon is a Stage 2", re.I),
+            re.compile(r"if the Defending Pokémon already has at least", re.I),
+        ],
+    ),
+    (
+        "damage_counter_reflect_or_retaliation",
+        "none",
+        "Effects that place counters on the attacker after being damaged should compile as retaliation damage-counter triggers.",
+        [
+            re.compile(r"if .* is damaged by .* attack.*put .* damage counters? on the Attacking Pokémon", re.I),
+            re.compile(r"during your opponent's next turn.*damaged by an attack.*put .* damage counters", re.I),
+            re.compile(r"damage counters on the Attacking Pokémon equal to the damage", re.I),
+        ],
+    ),
+    (
+        "damage_counter_mass_placement",
+        "none",
+        "Mass damage-counter placement should compile as spread damage-counter operations.",
+        [
+            re.compile(r"put \d+ damage counters? on each of your opponent", re.I),
+            re.compile(r"put .* damage counters? on each of your opponent", re.I),
+            re.compile(r"count the number .* put that many damage counters", re.I),
+            re.compile(r"until .* remaining HP is", re.I),
+            re.compile(r"until it is .* HP away from being Knocked Out", re.I),
+        ],
+    ),
+    (
+        "weakness_resistance_global_rule",
+        "none",
+        "Weakness and Resistance global modifiers should compile as board-wide battle modifiers.",
+        [
+            re.compile(r"apply Weakness .* ×2", re.I),
+            re.compile(r"has no Resistance", re.I),
+            re.compile(r"has no Weakness", re.I),
+            re.compile(r"don't apply Weakness and Resistance", re.I),
+            re.compile(r"don't apply Weakness or Resistance", re.I),
+        ],
+    ),
+    (
+        "stadium_or_tool_discard",
+        "medium",
+        "Effects that discard Stadiums or Pokémon Tools should compile as tool/stadium discard operations.",
+        [
+            re.compile(r"if your opponent has a Stadium in play, discard it", re.I),
+            re.compile(r"discard all Pokémon Tool cards", re.I),
+            re.compile(r"choose up to .* Pokémon Tools .* discard", re.I),
+            re.compile(r"discard that Stadium", re.I),
+        ],
+    ),
+    (
+        "prize_visibility_or_play_condition",
+        "medium",
+        "Prize-card visibility and prize-count play restrictions should compile as prize rules or play conditions.",
+        [
+            re.compile(r"Prize cards face up", re.I),
+            re.compile(r"play with .* Prize cards face up", re.I),
+            re.compile(r"only if you have more Prize cards remaining", re.I),
+            re.compile(r"if you have more Prize cards remaining", re.I),
+        ],
+    ),
+    (
+        "old_pokemon_power_status_gated",
+        "high",
+        "Old Pokémon Powers gated by Special Conditions should compile as activated/static abilities with status-based play conditions.",
+        [
+            re.compile(r"This power can't be used if .* (?:Asleep|Confused|Paralyzed|affected by a Special Condition)", re.I),
+            re.compile(r"as often as you like during your turn.*This power can't be used", re.I),
+            re.compile(r"once during your turn \(before your attack\).*This power can't be used", re.I),
+        ],
+    ),
+
+    (
+        "own_pokemon_bounce_to_hand",
+        "medium",
+        "Effects returning your own Pokémon and attached cards to hand should compile as own-board bounce / move-zone operations.",
+        [
+            re.compile(r"put 1 of your Pokémon and all attached cards into your hand", re.I),
+            re.compile(r"return 1 of your Pokémon and all cards attached to it to your hand", re.I),
+            re.compile(r"shuffle this Pokémon and all attached cards into your deck", re.I),
+            re.compile(r"put .* and all attached cards .* into your hand", re.I),
+        ],
+    ),
+    (
+        "deck_mill_or_topdeck_discard",
+        "low",
+        "Effects discarding cards from the top of a deck should compile as mill / deck-discard operations.",
+        [
+            re.compile(r"discard \d+ cards? from the top of .* deck", re.I),
+            re.compile(r"discard .* from the top of .* deck", re.I),
+            re.compile(r"for each heads, discard \d+ cards? from the top", re.I),
+            re.compile(r"discard the top card from .* deck", re.I),
+        ],
+    ),
+    (
+        "opponent_item_supporter_trainer_lock",
+        "medium",
+        "Effects preventing Item/Supporter/Trainer play should compile as temporary trainer-lock rule modifiers.",
+        [
+            re.compile(r"opponent can't play any Item cards", re.I),
+            re.compile(r"opponent can't play any Supporter cards", re.I),
+            re.compile(r"opponent can't play any Trainer cards", re.I),
+            re.compile(r"no Trainer cards can be played", re.I),
+        ],
+    ),
+    (
+        "opponent_attack_damage_reduction",
+        "none",
+        "Effects reducing damage from attacks should compile as delayed or continuous damage-reduction modifiers.",
+        [
+            re.compile(r"attacks used by your opponent.*do \d+ less damage", re.I),
+            re.compile(r"damage done to .* by attacks is reduced by \d+", re.I),
+            re.compile(r"during your opponent's next turn.*damage .* reduced by", re.I),
+            re.compile(r"does \d+ less damage", re.I),
+        ],
+    ),
+    (
+        "copy_or_grant_attack_access",
+        "medium",
+        "Effects that let a Pokémon use another attack should compile as attack-copy / granted-attack access rules.",
+        [
+            re.compile(r"can use the attacks? of", re.I),
+            re.compile(r"can also use the attack on this card", re.I),
+            re.compile(r"may use this card's attack instead of its own", re.I),
+            re.compile(r"can use any attack from its previous Evolutions", re.I),
+        ],
+    ),
+    (
+        "delayed_knockout_or_prize_bonus",
+        "none",
+        "Delayed KO and bonus-prize effects should compile as delayed knockout / prize rule modifiers.",
+        [
+            re.compile(r"will be Knocked Out", re.I),
+            re.compile(r"take 1 more Prize", re.I),
+            re.compile(r"take .* more Prize", re.I),
+            re.compile(r"Knocked Out by damage.*take", re.I),
+        ],
+    ),
+    (
+        "special_energy_attachment_restriction",
+        "high",
+        "Special Energy attachment restrictions and replacement effects should compile as energy attachment constraints/modifiers.",
+        [
+            re.compile(r"can only be attached to", re.I),
+            re.compile(r"if this card is attached to anything other than", re.I),
+            re.compile(r"attached to a Pokémon.*provides Colorless Energy.*switch", re.I),
+            re.compile(r"return an Energy card attached to that Pokémon to your hand", re.I),
+        ],
+    ),
     # ------------------------------------------------------------------
     # Specific high-frequency / high-clarity battle families first.
     # Ordering matters: the first matching family becomes primary.
@@ -240,6 +474,188 @@ FAMILIES: list[tuple[str, str, str, list[re.Pattern[str]]]] = [
             re.compile(r"discard the top card from your opponent's deck", re.I),
             re.compile(r"discard the top \d+ cards? of .* deck", re.I),
             re.compile(r"put the top card of .* deck .* discard", re.I),
+        ],
+    ),
+
+    (
+        "item_or_trainer_lock",
+        "none",
+        "Item/Trainer/Supporter lock effects are persistent battle/control rules and should be split from generic Trainer card text.",
+        [
+            re.compile(r"can't play any Item cards?", re.I),
+            re.compile(r"can't play any Trainer cards?", re.I),
+            re.compile(r"can't play any Supporter cards?", re.I),
+            re.compile(r"cannot play any Item cards?", re.I),
+            re.compile(r"cannot play any Trainer cards?", re.I),
+            re.compile(r"No Trainer cards can be played", re.I),
+            re.compile(r"opponent can't play any .* cards? from (?:their|his or her) hand", re.I),
+        ],
+    ),
+    (
+        "ability_or_pokemon_power_lock",
+        "medium",
+        "Ability / Poké-Power / Poké-Body lock effects are global or conditional rule modifiers.",
+        [
+            re.compile(r"have no Abilities", re.I),
+            re.compile(r"has no Abilities", re.I),
+            re.compile(r"can't use any Pok[ée]-Powers?", re.I),
+            re.compile(r"can't use any Pok[ée]-Bodies?", re.I),
+            re.compile(r"Pok[ée]mon Powers? stop working", re.I),
+            re.compile(r"no Pok[ée]mon Powers?", re.I),
+            re.compile(r"prevent all effects of .* Abilities", re.I),
+            re.compile(r"Colorless Pokémon .* have no Abilities", re.I),
+        ],
+    ),
+    (
+        "prize_rule_or_visibility",
+        "medium",
+        "Prize-card visibility, play restrictions, and bonus-prize effects should compile as prize/rule modifiers.",
+        [
+            re.compile(r"Prize cards? face up", re.I),
+            re.compile(r"turn all of your Prize cards? face up", re.I),
+            re.compile(r"plays? with .* Prize cards? face up", re.I),
+            re.compile(r"more Prize cards? remaining than your opponent", re.I),
+            re.compile(r"take 1 more Prize card", re.I),
+            re.compile(r"doesn't count as a Knocked Out Pokémon", re.I),
+        ],
+    ),
+    (
+        "fossil_as_basic_pokemon_rule",
+        "medium",
+        "Old Fossil Trainer cards that play as Basic Pokémon have multi-zone identity rules and should be split out explicitly.",
+        [
+            re.compile(r"play .* Fossil as if it were a Basic Pokémon", re.I),
+            re.compile(r"counts as a .* Pokémon \(as well as a Trainer card\)", re.I),
+            re.compile(r"has no attacks of its own, can't retreat", re.I),
+            re.compile(r"At any time during your turn before your attack, you may discard .* Fossil", re.I),
+        ],
+    ),
+    (
+        "tool_attachment_or_lifecycle_rule",
+        "medium",
+        "Tool attachment, ownership, removal, and lifecycle rules should compile as attachment constraints / delayed discard rules.",
+        [
+            re.compile(r"Attach .* to 1 of your Pokémon", re.I),
+            re.compile(r"Attach this .* Tool", re.I),
+            re.compile(r"doesn't already have a Pok[ée]mon Tool", re.I),
+            re.compile(r"When this card is removed from a Pokémon", re.I),
+            re.compile(r"If this card is discarded from play, put it into your hand", re.I),
+            re.compile(r"can only be attached to", re.I),
+            re.compile(r"if this card is attached to anything other than", re.I),
+            re.compile(r"discard .* at the end of your turn", re.I),
+            re.compile(r"discard this card at the end of your turn", re.I),
+        ],
+    ),
+    (
+        "tool_attack_or_vstar_grant",
+        "medium",
+        "Tools that grant attacks or VSTAR Powers are copy/granted-action effects distinct from attack-cost modifiers.",
+        [
+            re.compile(r"can use the VSTAR Power on this card", re.I),
+            re.compile(r"may use this card's attack instead of its own", re.I),
+            re.compile(r"can also use the attack on this card", re.I),
+            re.compile(r"can use any attack from its previous Evolutions", re.I),
+        ],
+    ),
+    (
+        "tool_or_attachment_damage_modifier",
+        "none",
+        "Damage or stat modifiers granted by attached Tools should compile as continuous modifiers.",
+        [
+            re.compile(r"attacks? of the Pokémon this card is attached to do \d+ more damage", re.I),
+            re.compile(r"Attacks used by the Pokémon this card is attached to do \d+ more damage", re.I),
+            re.compile(r"Pokémon this card is attached to gets \+\d+ HP", re.I),
+            re.compile(r"Pokémon this card is attached to has no Weakness", re.I),
+            re.compile(r"Retreat Cost of the Pokémon this card is attached to", re.I),
+            re.compile(r"If this Pokémon has a Pokémon Tool card attached", re.I),
+        ],
+    ),
+    (
+        "global_stat_or_type_rule_modifier",
+        "medium",
+        "Global Stadium/Tool rules that change HP, Weakness, Resistance, healing, or types should compile as continuous board modifiers.",
+        [
+            re.compile(r"gets? \+\d+ HP", re.I),
+            re.compile(r"Apply Weakness .* as ×?x?2", re.I),
+            re.compile(r"has no Resistance", re.I),
+            re.compile(r"Pokémon .* can't be healed", re.I),
+            re.compile(r"can't be healed", re.I),
+            re.compile(r"all Special Energy attached .* provide Colorless Energy", re.I),
+            re.compile(r"provide Colorless Energy and have no other effect", re.I),
+        ],
+    ),
+    (
+        "topdeck_look_choose_or_reorder",
+        "high",
+        "Top-deck look / choose / reorder effects should compile as deck peek, selection, reorder, or conditional draw operations.",
+        [
+            re.compile(r"Look at the top card of your deck", re.I),
+            re.compile(r"Look at the top \d+ cards? of your deck", re.I),
+            re.compile(r"put them back in any order", re.I),
+            re.compile(r"choose 1 of them, and put it into your hand", re.I),
+            re.compile(r"reveal .* you find there and put it into your hand", re.I),
+            re.compile(r"put the other cards? .* back", re.I),
+        ],
+    ),
+    (
+        "discard_pile_to_hand_or_deck_recovery",
+        "medium",
+        "Discard-pile recovery to hand/deck should be separated from generic Energy movement.",
+        [
+            re.compile(r"put .* from your discard pile into your hand", re.I),
+            re.compile(r"put .* cards? .* from your discard pile into your hand", re.I),
+            re.compile(r"put .* Energy .* from your discard pile into your hand", re.I),
+            re.compile(r"shuffle .* from your discard pile into your deck", re.I),
+            re.compile(r"from your discard pile into your deck", re.I),
+            re.compile(r"for each heads, put .* from your discard pile into your hand", re.I),
+        ],
+    ),
+    (
+        "bench_from_discard_or_deck",
+        "high",
+        "Effects that put Pokémon directly onto the Bench from deck/discard should compile as zone-to-bench movement.",
+        [
+            re.compile(r"put .* Pokémon from your discard pile onto your Bench", re.I),
+            re.compile(r"put .* onto your Bench", re.I),
+            re.compile(r"put them onto your Bench", re.I),
+            re.compile(r"put up to \d+ .* onto your Bench", re.I),
+            re.compile(r"put .* Basic Pokémon .* onto .* Bench", re.I),
+            re.compile(r"Treat the new Benched Pokémon as Basic Pokémon", re.I),
+        ],
+    ),
+    (
+        "delayed_knockout_or_prize_bonus",
+        "none",
+        "Delayed KO and prize-bonus effects are battle resolution rules.",
+        [
+            re.compile(r"At the end of your opponent's next turn, .* Knocked Out", re.I),
+            re.compile(r"will be Knocked Out", re.I),
+            re.compile(r"if .* Knocked Out by damage .* take 1 more Prize", re.I),
+            re.compile(r"Knocked Out by damage .* search your deck", re.I),
+        ],
+    ),
+    (
+        "self_damage_or_recoil",
+        "none",
+        "Self-damage / recoil clauses should compile as self-targeted damage or damage counters.",
+        [
+            re.compile(r"does \d+ damage to itself", re.I),
+            re.compile(r"does \d+ damage to 1 of your Benched Pokémon", re.I),
+            re.compile(r"does .* damage to .* your Benched", re.I),
+            re.compile(r"put .* damage counters? .* this Pokémon", re.I),
+        ],
+    ),
+    (
+        "conditional_attack_availability",
+        "none",
+        "Effects that make an attack unusable under a condition should compile as attack availability restrictions.",
+        [
+            re.compile(r"you can't use this attack", re.I),
+            re.compile(r"can't use this attack during your next turn", re.I),
+            re.compile(r"this attack does nothing", re.I),
+            re.compile(r"if .* evolved during this turn, this attack does nothing", re.I),
+            re.compile(r"if .* isn't Burned, this attack does nothing", re.I),
+            re.compile(r"if you go second, you can't use this attack during your first turn", re.I),
         ],
     ),
     # ------------------------------------------------------------------
@@ -543,9 +959,13 @@ def main() -> None:
         count = int(item.get("count", 0) or 0)
         primary, all_families, turn1_relevance, turn1_note = classify_text(text)
         priority = priority_for(count, primary, all_families, turn1_relevance)
+        recognition_status = "unknown_unclassified" if primary == "other_long_tail" else "recognized_family"
+        compiler_readiness = "recognized_not_executable" if primary != "other_long_tail" else "unrecognized_review_needed"
         classified_rows.append({
             "count": count,
             "priority": priority,
+            "recognition_status": recognition_status,
+            "compiler_readiness": compiler_readiness,
             "turn1_relevance": turn1_relevance,
             "primary_family": primary,
             "all_families": "|".join(all_families),
@@ -561,7 +981,7 @@ def main() -> None:
     write_csv(
         out_dir / "remaining_unparsed_text_classified.csv",
         classified_rows,
-        ["count", "priority", "turn1_relevance", "primary_family", "all_families", "turn1_note", "text"],
+        ["count", "priority", "recognition_status", "compiler_readiness", "turn1_relevance", "primary_family", "all_families", "turn1_note", "text"],
     )
 
     family_rows = []
@@ -635,6 +1055,24 @@ def main() -> None:
             ],
         )
 
+    recognized_weighted = sum(int(r.get("count", 0) or 0) for r in classified_rows if r.get("primary_family") != "other_long_tail")
+    unknown_weighted = sum(int(r.get("count", 0) or 0) for r in classified_rows if r.get("primary_family") == "other_long_tail")
+    recognized_unique = sum(1 for r in classified_rows if r.get("primary_family") != "other_long_tail")
+    unknown_unique = sum(1 for r in classified_rows if r.get("primary_family") == "other_long_tail")
+
+    recognition_summary = {
+        "note": "This is reporting-only recognition. It does not change compiler complete/partial status and should not be treated as simulator-executable coverage.",
+        "complete_executable_cards": (coverage.get("status_counts") or {}).get("complete"),
+        "partial_cards": (coverage.get("status_counts") or {}).get("partial"),
+        "recognized_but_not_executable_weighted_top_unparsed": recognized_weighted,
+        "unknown_unclassified_weighted_top_unparsed": unknown_weighted,
+        "recognized_but_not_executable_unique_top_unparsed": recognized_unique,
+        "unknown_unclassified_unique_top_unparsed": unknown_unique,
+    }
+
+    with (out_dir / "effect_recognition_summary.json").open("w", encoding="utf-8") as f:
+        json.dump(recognition_summary, f, ensure_ascii=False, indent=2)
+
     summary = {
         "source_coverage": str(args.coverage),
         "source_review_queue": str(args.review_queue) if args.review_queue.exists() else None,
@@ -645,10 +1083,12 @@ def main() -> None:
         "family_summary": family_rows,
         "review_queue_family_counts": review_family_counts.most_common(),
         "review_queue_turn1_relevance_counts": review_turn1_counts.most_common(),
+        "recognition_summary": recognition_summary,
         "outputs": {
             "remaining_unparsed_text_classified": str(out_dir / "remaining_unparsed_text_classified.csv"),
             "remaining_effect_family_summary": str(out_dir / "remaining_effect_family_summary.csv"),
             "review_queue_classified": str(out_dir / "review_queue_classified.csv") if review_rows else None,
+            "effect_recognition_summary": str(out_dir / "effect_recognition_summary.json"),
         },
     }
 
@@ -659,6 +1099,7 @@ def main() -> None:
         "status_counts": summary["status_counts"],
         "coverage": summary["coverage"],
         "turn1_relevance_weighted_counts": summary["turn1_relevance_weighted_counts"],
+        "recognition_summary": recognition_summary,
         "top_family_summary": family_rows[:15],
         "outputs": summary["outputs"],
     }, ensure_ascii=False, indent=2))
