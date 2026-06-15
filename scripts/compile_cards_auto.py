@@ -362,6 +362,251 @@ def compile_rule_box(text: str) -> list[dict[str, Any]] | None:
     }]
 
 
+
+# v0.21: template-driven strict compiler layer.
+# These helpers intentionally keep the existing meaning of "complete": a text is
+# marked complete only when it is represented by concrete structured steps. The
+# goal is to cover repeated parameterized templates instead of adding one-off
+# regexes for each card sentence.
+def compile_template_driven_text(text: str, original: str, source_section: str) -> tuple[list[dict[str, Any]], list[str]] | None:
+    t = normalize_space(text)
+    t_rule = re.sub(r"^Rules:\s*", "", t, flags=re.I).strip()
+
+    def step(op: str, **kwargs: Any) -> dict[str, Any]:
+        payload = {"op": op, **kwargs}
+        payload.setdefault("source_text", original)
+        return payload
+
+    # ------------------------------------------------------------------
+    # Template: generic heal / remove damage counters.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Heal (\d+) damage from (.+?)\.?,?", t_rule, re.I)
+    if m:
+        amount = int(m.group(1))
+        target_txt = m.group(2).strip()
+        target = "from_text"
+        if re.search(r"your Active Pokémon", target_txt, re.I):
+            target = "self.active"
+        elif re.search(r"each of your Pokémon|your Pokémon", target_txt, re.I):
+            target = "self.in_play"
+        elif re.search(r"each Pokémon", target_txt, re.I):
+            target = "all.in_play"
+        return [step("heal_damage", target=target, amount=amount, target_text=target_txt)], []
+
+    m = re.fullmatch(r"Heal (\d+) damage and remove a Special Condition from your Active Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [
+            step("heal_damage", target="self.active", amount=int(m.group(1))),
+            step("remove_special_condition", target="self.active", amount={"mode": "all"}),
+        ], []
+
+    m = re.fullmatch(r"Remove (\d+) damage counters? from (.+?)\.?,?", t_rule, re.I)
+    if m:
+        amount = int(m.group(1))
+        target_txt = m.group(2).strip()
+        target = "self.in_play" if re.search(r"each of your|your", target_txt, re.I) else "from_text"
+        return [step("remove_damage_counters", target=target, amount=amount, target_text=target_txt)], []
+
+    m = re.fullmatch(r"Remove (\d+) damage counter from each of your Pokémon that has any damage counters on it\.?,?", t_rule, re.I)
+    if m:
+        return [step("remove_damage_counters", target="self.in_play", amount=int(m.group(1)), condition={"has_damage_counters": True})], []
+
+    # ------------------------------------------------------------------
+    # Template: Weakness / Resistance suppression and direct damage.
+    # ------------------------------------------------------------------
+    if re.fullmatch(r"Don't apply Weakness and Resistance\.?,?", t_rule, re.I):
+        return [step("modify_damage_calculation", apply_weakness=False, apply_resistance=False, scope="current_attack")], []
+
+    m = re.fullmatch(r"(?:Choose 1 of your opponent's Pokémon\. )?This attack does (\d+) damage to (?:1 of your opponent's Pokémon|that Pokémon)(?: that has any damage counters on it)?\. Don't apply Weakness and Resistance for this attack\.?.*", t_rule, re.I)
+    if m:
+        return [
+            step("choose_target", player="self", target_id="chosen_opponent_pokemon", zone="opponent.in_play", filter={"supertype": "Pokémon"}, amount=amount_exact(1)),
+            step("deal_damage", target_ref="chosen_opponent_pokemon", amount=int(m.group(1)), apply_weakness_resistance=False),
+        ], []
+
+    m = re.fullmatch(r"(?:This attack also does|Does|This attack does) (\d+) damage to (?:each|1 of your opponent's) Benched Pokémon.*\(Don't apply Weakness and Resistance for Benched Pokémon\.\).*", t_rule, re.I)
+    if m:
+        target = "opponent.bench" if re.search(r"each", t_rule, re.I) else "chosen_opponent_benched_pokemon"
+        steps = []
+        if target != "opponent.bench":
+            steps.append(step("choose_target", player="self", target_id=target, zone="opponent.bench", filter={"supertype": "Pokémon"}, amount=amount_exact(1)))
+            target_ref = target
+        else:
+            target_ref = target
+        steps.append(step("deal_damage", target_ref=target_ref, amount=int(m.group(1)), apply_weakness_resistance=False))
+        return steps, []
+
+    m = re.fullmatch(r"(?:This attack also does|Does) (\d+) damage to (?:1 of )?your Benched Pokémon\. \(Don't apply Weakness and Resistance for Benched Pokémon\.\)\.?,?", t_rule, re.I)
+    if m:
+        return [
+            step("choose_target", player="self", target_id="chosen_self_benched_pokemon", zone="self.bench", filter={"supertype": "Pokémon"}, amount=amount_exact(1)),
+            step("deal_damage", target_ref="chosen_self_benched_pokemon", amount=int(m.group(1)), apply_weakness_resistance=False),
+        ], []
+
+    # ------------------------------------------------------------------
+    # Template: damage counters / reflection / retaliation.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Put (\d+) damage counters? on each of your opponent's Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [step("place_damage_counters", target="opponent.in_play", amount=int(m.group(1)))], []
+
+    m = re.fullmatch(r"Put (\d+) damage counters? on (?:1 of your opponent's Benched Pokémon|the Defending Pokémon)\.?,?", t_rule, re.I)
+    if m:
+        target = "opponent.bench" if "Benched" in t_rule else "opponent.active"
+        return [step("place_damage_counters", target=target, amount=int(m.group(1)))], []
+
+    m = re.fullmatch(r"If (?:the Pokémon )?this card is attached to is (?:your Active Pokémon|in the Active Spot) and is damaged by an attack from your opponent's Pokémon .* put (\d+) damage counters on the Attacking Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [step("register_triggered_effect", trigger="attached_pokemon_damaged_by_opponent_attack", condition={"attached_pokemon_is_active": True}, then=[{"op": "place_damage_counters", "target": "attacking_pokemon", "amount": int(m.group(1)), "source_text": original}])], []
+
+    # ------------------------------------------------------------------
+    # Template: coin damage plus status / attack fail / self-damage.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Flip (\d+) coins?\. This attack does (\d+) damage times the number of heads\. If (?:either of the coins is heads|you get (\d+) or more heads), (?:the Defending Pokémon|Dark Vileplume) is now (Asleep|Confused|Paralyzed|Poisoned|Burned).*", t_rule, re.I)
+    if m:
+        coin_count = int(m.group(1))
+        status = m.group(4)
+        threshold = int(m.group(3) or 1)
+        return [
+            step("coin_flip", player="self", count=coin_count, target_id="coin_results"),
+            step("set_attack_damage_from_coin_heads", coin_results_ref="coin_results", amount_per_heads=int(m.group(2))),
+            step("branch_on_coin_heads", result_ref="coin_results", heads_at_least=threshold, then=[status_condition_step(status, "opponent.active", original)]),
+        ], []
+
+    m = re.fullmatch(r"Flip a coin\. If tails, (?:this attack does nothing|this Pokémon can't attack during your next turn)\.?(?: If heads, during your opponent's next turn, prevent all damage from and effects of attacks done to this Pokémon\.)?", t_rule, re.I)
+    if m:
+        then_heads = []
+        if "If heads" in t_rule:
+            then_heads.append({"op": "register_delayed_modifier", "modifier_id": "prevent_damage_and_effects_next_turn", "target": "self_attacking_pokemon", "duration": {"until": "end_of_opponent_next_turn"}, "modification": {"prevent_attack_damage": True, "prevent_attack_effects": True}, "source_text": original})
+        steps = [step("coin_flip", player="self", count=1, target_id="coin_result"), step("branch_on_result", result_ref="coin_result", if_="tails", **{"then": [{"op": "attack_does_nothing", "source_text": original}]})]
+        if then_heads:
+            steps.append(step("branch_on_result", result_ref="coin_result", if_="heads", **{"then": then_heads}))
+        return steps, []
+
+    m = re.fullmatch(r"Flip a coin\. If tails, ([A-Za-z' -]+|this Pokémon) does (\d+) damage to itself\.?,?", t_rule, re.I)
+    if m:
+        return [step("coin_flip", player="self", count=1, target_id="coin_result"), step("branch_on_result", result_ref="coin_result", if_="tails", **{"then": [{"op": "deal_damage", "target": "self_attacking_pokemon", "amount": int(m.group(2)), "source_text": original}]})], []
+
+    # ------------------------------------------------------------------
+    # Template: future damage bonuses and prevention/reduction.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"(?:During your next turn|Until the end of your next turn), if an attack damages? the Defending Pokémon .* that attack does (\d+) more damage(?: to the Defending Pokémon)?\.?,?", t_rule, re.I)
+    if m:
+        return [step("register_delayed_modifier", modifier_id="future_damage_bonus_mark", target="opponent.active", duration={"until": "end_of_self_next_turn"}, modification={"attack_damage_delta": int(m.group(1)), "applies_when_damaged_by_attack": True})], []
+
+    m = re.fullmatch(r"During your opponent's next turn, (?:any damage done to .* by attacks is reduced by|attacks used by .* do) (\d+) less damage.*", t_rule, re.I)
+    if m:
+        return [step("register_delayed_modifier", modifier_id="opponent_next_turn_damage_reduction", target="from_text", duration={"until": "end_of_opponent_next_turn"}, modification={"attack_damage_delta": -int(m.group(1))})], []
+
+    m = re.fullmatch(r"Whenever your opponent plays a Supporter card from their hand, prevent all effects of that card done to this Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [step("register_continuous_modifier", modifier_id="prevent_opponent_supporter_effects_to_this_pokemon", target="self", modification={"prevent_supporter_effects_from_opponent": True})], []
+
+    # ------------------------------------------------------------------
+    # Template: search / look / reveal / put into hand or bench.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Look at the top (\d+) cards? of your deck\. You may reveal (?:a|an) ([A-Za-z ]+?) card you find there and put it into your hand\. Shuffle the other cards back into your deck\.?,?", t_rule, re.I)
+    if m:
+        return [
+            step("look_at_top_cards", player="self", amount=int(m.group(1)), target_id="looked_cards"),
+            step("choose_cards", player="self", target_id="chosen_from_looked", zone="looked_cards", filter={"from_text": m.group(2)}, amount=amount_up_to(1), reveal=True),
+            step("move_card", cards_ref="chosen_from_looked", destination="self.hand"),
+            step("shuffle_deck", player="self"),
+        ], []
+
+    m = re.fullmatch(r"Look at the top card of your deck\. You may (?:discard that card|put that card into your hand\. If you don't, discard that card and draw a card)\.?,?", t_rule, re.I)
+    if m:
+        return [step("look_at_top_cards", player="self", amount=1, target_id="top_card"), step("choose_topdeck_action", player="self", options=["put_into_hand", "discard", "draw_card_after_discard"], source_text=original)], []
+
+    m = re.fullmatch(r"Once during each player's turn, that player may search their deck for an? ([A-Za-z ]+?) Pokémon, reveal it, and put it into their hand\. Then, that player shuffles their deck\.?,?", t_rule, re.I)
+    if m:
+        return [step("register_player_turn_action", action={"op": "search_deck", "filter": {"supertype": "Pokémon", "from_text": m.group(1)}, "destination": "player.hand", "reveal": True, "source_text": original}, usage_limit={"scope": "per_player_turn", "limit": 1})], []
+
+    m = re.fullmatch(r"Search your deck for up to (\d+) basic Energy cards, reveal them, and put them into your hand\. Shuffle your deck afterward\.?,?", t_rule, re.I)
+    if m:
+        return [step("search_deck", player="self", target_id="searched_basic_energy", filter={"supertype": "Energy", "subtypes": ["Basic"]}, amount=amount_up_to(int(m.group(1))), reveal=True, destination="self.hand"), step("shuffle_deck", player="self")], []
+
+    m = re.fullmatch(r"Search your deck for (?:Omanyte, Kabuto, or any Basic Pokémon|any number of Basic Pokémon).*put .* onto your Bench.*Shuffle your deck.*", t_rule, re.I)
+    if m:
+        return [step("search_deck", player="self", target_id="searched_basic_pokemon", filter={"supertype": "Pokémon", "subtypes": ["Basic"], "from_text": original}, amount={"mode": "from_text"}, destination="self.bench"), step("shuffle_deck", player="self")], []
+
+    # ------------------------------------------------------------------
+    # Template: energy attach/move/recover/provide.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Attach (?:a|an|up to (\d+)) basic ([A-Za-z]+ )?Energy card(?:s)? from your hand to 1 of your Benched Pokémon\.?,?", t_rule, re.I)
+    if m:
+        filt = {"supertype": "Energy", "subtypes": ["Basic"]}
+        if m.group(2):
+            filt["types"] = [m.group(2).strip().capitalize()]
+        return [step("choose_cards", player="self", target_id="chosen_energy_from_hand", zone="self.hand", filter=filt, amount=amount_up_to(int(m.group(1) or 1))), step("attach_card", cards_ref="chosen_energy_from_hand", target="self.bench.pokemon")], []
+
+    m = re.fullmatch(r"(?:Once during your turn .* you may )?attach (?:1 |an? |up to (\d+) )?([A-Za-z]+|basic)? ?Energy card(?:s)? from your discard pile to (?:1 of your Benched [A-Za-z]* ?Pokémon|this Pokémon|your Benched Pokémon in any way you like)\.?.*", t_rule, re.I)
+    if m:
+        filt = {"supertype": "Energy"}
+        n = int(m.group(1) or 1)
+        kind = (m.group(2) or "").strip().capitalize()
+        if kind and kind.lower() != "basic":
+            filt["types"] = [kind]
+        elif kind.lower() == "basic":
+            filt["subtypes"] = ["Basic"]
+        return [step("choose_cards", player="self", target_id="chosen_energy_from_discard", zone="self.discard", filter=filt, amount=amount_up_to(n)), step("attach_card", cards_ref="chosen_energy_from_discard", target="self.in_play.pokemon")], []
+
+    m = re.fullmatch(r"Move a basic Energy (?:card )?attached to 1 of your Pokémon to another of your Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [step("move_attached_energy", player="self", source="self.in_play.pokemon", destination="self.in_play.pokemon", filter={"supertype": "Energy", "subtypes": ["Basic"]}, amount=amount_exact(1))], []
+
+    if re.fullmatch(r"As long as this card is attached to a Pokémon, it provides Colorless Energy.*", t_rule, re.I):
+        return [step("register_attached_energy_provider", provided_energy=["Colorless"], condition={"while_attached_to": "Pokémon"})], []
+
+    if re.fullmatch(r"All Special Energy attached to Pokémon .* provide Colorless Energy and have no other effect\.?,?", t_rule, re.I):
+        return [step("register_continuous_modifier", modifier_id="special_energy_provides_colorless_only", target="all.in_play.attached_energy", filter={"subtypes": ["Special"]}, modification={"provided_energy": ["Colorless"], "suppress_other_effects": True})], []
+
+    # ------------------------------------------------------------------
+    # Template: gust/switch/return/disruption.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Switch in 1 of your opponent's Benched Pokémon to the Active Spot\. If you do, switch your Active Pokémon with 1 of your Benched Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [step("switch_active", player="opponent", selection="self_choice_from_opponent_bench"), step("switch_active", player="self", selection="self_choice_from_self_bench")], []
+
+    m = re.fullmatch(r"Flip a coin\. If heads, switch in 1 of your opponent's Benched Pokémon to the Active Spot\.?,?", t_rule, re.I)
+    if m:
+        return [step("coin_flip", player="self", count=1, target_id="coin_result"), step("branch_on_result", result_ref="coin_result", if_="heads", **{"then": [{"op": "switch_active", "player": "opponent", "selection": "self_choice_from_opponent_bench", "source_text": original}]})], []
+
+    m = re.fullmatch(r"Put 1 of your Pokémon and all attached cards into your hand\.?,?", t_rule, re.I)
+    if m:
+        return [step("choose_target", player="self", target_id="chosen_self_pokemon", zone="self.in_play", filter={"supertype": "Pokémon"}, amount=amount_exact(1)), step("move_zone_to_zone", target_ref="chosen_self_pokemon_and_attached_cards", destination="self.hand")], []
+
+    # ------------------------------------------------------------------
+    # Template: locks, rule modifiers, prize visibility, attack access.
+    # ------------------------------------------------------------------
+    m = re.fullmatch(r"Your opponent can't play any (Item|Trainer|Supporter) cards? from (?:their|his or her) hand during (?:their|his or her) next turn\.?,?", t_rule, re.I)
+    if m:
+        return [step("register_delayed_modifier", modifier_id="opponent_card_type_lock_next_turn", target="opponent", duration={"until": "end_of_opponent_next_turn"}, modification={"cannot_play_card_type": m.group(1).capitalize()})], []
+
+    if re.fullmatch(r"All Pokémon Powers stop working until the end of your opponent's next turn\.?,?", t_rule, re.I):
+        return [step("register_delayed_modifier", modifier_id="all_pokemon_powers_disabled", target="all.in_play", duration={"until": "end_of_opponent_next_turn"}, modification={"disable_pokemon_powers": True})], []
+
+    if re.fullmatch(r"Each (?:player's )?.*Pokémon.*can't use any (?:Poké-Powers|Poké-Bodies|Abilities).*", t_rule, re.I):
+        return [step("register_continuous_modifier", modifier_id="ability_power_body_lock", target="all.in_play", filter={"from_text": original}, modification={"disable_abilities_or_powers": True})], []
+
+    if re.fullmatch(r"Each player pays Colorless less to retreat .*", t_rule, re.I) or re.fullmatch(r"The Retreat Cost of each Pokémon in play .* is Colorless (?:more|less)\.?,?", t_rule, re.I):
+        delta = -1 if "less" in t_rule.lower() else 1
+        return [step("register_continuous_modifier", modifier_id="global_retreat_cost_modifier", target="all.in_play", filter={"from_text": original}, modification={"retreat_cost_delta_colorless": delta})], []
+
+    if re.fullmatch(r"Turn all of your Prize cards face up\. .*", t_rule, re.I):
+        return [step("register_continuous_modifier", modifier_id="self_prizes_face_up", target="self", duration={"until": "end_of_game"}, modification={"prize_cards_face_up": True})], []
+
+    if re.fullmatch(r"You can play this card only if you have more Prize cards remaining than your opponent\.?,?", t_rule, re.I):
+        return [step("play_condition", condition={"self.prize_cards_remaining_gt_opponent": True})], []
+
+    if re.fullmatch(r"Attach this card to 1 of your Pokémon in play\. That Pokémon may use this card's attack instead of its own\.?,?", t_rule, re.I):
+        return [step("attach_card", card="this_card", target="self.pokemon"), step("register_granted_attack", source_card="this_card", target="attached_pokemon")], []
+
+    if re.fullmatch(r"The Pokémon V this card is attached to can use the VSTAR Power on this card\.?,?", t_rule, re.I):
+        return [step("register_granted_vstar_power", source_card="this_card", target="attached_pokemon_v")], []
+
+    return None
+
 def compile_simple_text(text: str, source_section: str) -> tuple[list[dict[str, Any]], list[str]]:
     """
     Pattern-based compiler.
@@ -4112,6 +4357,344 @@ def compile_simple_text(text: str, source_section: str) -> tuple[list[dict[str, 
 
 
 
+    # --- v0.17 broad safe-coverage bundle: post-classifier v0.5 remnants ---
+    # The v0.5 long-tail classifier split the remaining "other" bucket into
+    # older Trainer/Tool/Stadium rules, top-deck manipulation, Energy movement,
+    # global locks/modifiers, and coin-based mill/recovery. Keep these patterns
+    # conservative and encode unclear wording as structured reference/modifier ops.
+
+    # Mill / discard cards from top of opponent's deck, including per-coin-heads variants.
+    m = re.fullmatch(r"Flip (\d+) coins?\. For each heads, discard (\d+) cards? from the top of your opponent's deck\.?,?", t, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": int(m.group(1)), "target_id": "coin_results", "source_text": original}, {"op": "discard_cards_from_deck_per_coin_heads", "player": "opponent", "cards_per_heads": int(m.group(2)), "coin_results_ref": "coin_results", "destination": "discard", "source_text": original}], []
+
+    m = re.fullmatch(r"Discard (\d+) cards? from the top of your opponent's deck\.?,?", t, re.I)
+    if m:
+        return [{"op": "discard_cards_from_deck", "player": "opponent", "amount": amount_exact(int(m.group(1))), "destination": "discard", "source_text": original}], []
+
+    # Generic top-deck look / choose / reorder effects.
+    if re.fullmatch(r"Look at the top card of your deck\. You may discard that card\.?,?", t, re.I):
+        return [{"op": "look_at_top_cards", "player": "self", "amount": 1, "target_id": "top_card", "source_text": original}, {"op": "choose_mode", "player": "self", "choices": [{"label": "discard_top_card", "steps": [{"op": "move_card", "cards_ref": "top_card", "destination": "self.discard", "source_text": original}]}, {"label": "leave_top_card", "steps": []}], "source_text": original}], []
+
+    if re.fullmatch(r"Look at the top card of your deck\. You may put that card into your hand\. If you don't, discard that card and draw a card\.?,?", t, re.I):
+        return [{"op": "look_at_top_cards", "player": "self", "amount": 1, "target_id": "top_card", "source_text": original}, {"op": "choose_mode", "player": "self", "choices": [{"label": "put_top_card_into_hand", "steps": [{"op": "move_card", "cards_ref": "top_card", "destination": "self.hand", "source_text": original}]}, {"label": "discard_top_card_and_draw", "steps": [{"op": "move_card", "cards_ref": "top_card", "destination": "self.discard", "source_text": original}, {"op": "draw_cards", "player": "self", "amount": 1, "source_text": original}]}], "source_text": original}], []
+
+    m = re.fullmatch(r"Look at the top (\d+) cards of your deck and put them back in any order\.?,?", t, re.I)
+    if m:
+        return [{"op": "look_at_top_cards", "player": "self", "amount": int(m.group(1)), "target_id": "looked_cards", "source_text": original}, {"op": "reorder_cards", "player": "self", "cards_ref": "looked_cards", "destination": "self.deck.top", "source_text": original}], []
+
+    m = re.fullmatch(r"Look at the top (\d+) cards of your deck\. You may reveal (?:a|an) (Pokémon|Energy|Supporter|Item) card you find there and put it into your hand\. Shuffle the other cards back into your deck\.?,?", t, re.I)
+    if m:
+        kind = m.group(2).capitalize()
+        filt = {"supertype": "Trainer" if kind in {"Supporter", "Item"} else kind}
+        if kind in {"Supporter", "Item"}:
+            filt["subtypes"] = [kind]
+        return [{"op": "look_at_top_cards", "player": "self", "amount": int(m.group(1)), "target_id": "looked_cards", "source_text": original}, {"op": "choose_cards", "player": "self", "target_id": "chosen_card", "from_ref": "looked_cards", "filter": filt, "amount": amount_up_to(1), "reveal": True, "source_text": original}, {"op": "move_card", "cards_ref": "chosen_card", "destination": "self.hand", "source_text": original}, {"op": "shuffle_cards_into_deck", "player": "self", "cards_ref": "looked_cards - chosen_card", "source_text": original}], []
+
+    m = re.fullmatch(r"Look at the top (\d+) cards of your deck, choose (\d+) of them, and put (?:it|them) into your hand\. Put the other cards back on top of your deck\. Shuffle your deck afterward\.?,?", t, re.I)
+    if m:
+        return [{"op": "look_at_top_cards", "player": "self", "amount": int(m.group(1)), "target_id": "looked_cards", "source_text": original}, {"op": "choose_cards", "player": "self", "target_id": "chosen_cards_to_hand", "from_ref": "looked_cards", "filter": {"any_card": True}, "amount": amount_exact(int(m.group(2))), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_cards_to_hand", "destination": "self.hand", "source_text": original}, {"op": "move_card", "cards_ref": "looked_cards - chosen_cards_to_hand", "destination": "self.deck.top", "source_text": original}, {"op": "shuffle_deck", "player": "self", "source_text": original}], []
+
+    # Energy movement / recovery variants still appearing in the tail.
+    if re.fullmatch(r"Move a basic Energy(?: card)? from 1 of your Pokémon to another of your Pokémon\.?,?", t, re.I):
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_basic_energy", "zone": "attached_to:self.in_play", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "amount": amount_exact(1), "source_text": original}, {"op": "choose_target", "player": "self", "target_id": "chosen_destination_pokemon", "zone": "self.in_play", "filter": {"supertype": "Pokémon"}, "amount": amount_exact(1), "source_text": original}, {"op": "move_energy", "cards_ref": "chosen_basic_energy", "destination_ref": "chosen_destination_pokemon", "source_text": original}], []
+
+    m = re.fullmatch(r"Once during each player's turn, that player may put a basic Energy card from their discard pile into their hand\.?,?", t, re.I)
+    if m:
+        return [{"op": "register_activated_effect", "scope": "each_player_turn", "usage_limit": 1, "effect": [{"op": "choose_cards", "player": "turn_player", "target_id": "chosen_basic_energy", "zone": "turn_player.discard", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "amount": amount_exact(1), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_basic_energy", "destination": "turn_player.hand", "source_text": original}], "source_text": original}], []
+
+    m = re.fullmatch(r"Flip (\d+) coins?\. For each heads, put (?:a|1) Basic Energy card from your discard pile into your hand\. If you don't have that many basic Energy cards in your discard pile, put all of them into your hand\.?,?", t, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": int(m.group(1)), "target_id": "coin_results", "source_text": original}, {"op": "move_cards_from_discard_to_hand_per_coin_heads", "player": "self", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "coin_results_ref": "coin_results", "source_text": original}], []
+
+    # Attach basic Energy variants.
+    m = re.fullmatch(r"Attach a basic Energy card from your hand to 1 of your Benched Pokémon\.?,?", t, re.I)
+    if m:
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_basic_energy", "zone": "self.hand", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "amount": amount_exact(1), "source_text": original}, {"op": "choose_target", "player": "self", "target_id": "chosen_benched_pokemon", "zone": "self.bench", "filter": {"supertype": "Pokémon"}, "amount": amount_exact(1), "source_text": original}, {"op": "attach_card", "cards_ref": "chosen_basic_energy", "target_ref": "chosen_benched_pokemon", "source_text": original}], []
+
+    m = re.fullmatch(r"Attach a basic ([A-Za-z]+) Energy card from your discard pile to 1 of your Benched ([A-Za-z]+) Pokémon\.?,?", t, re.I)
+    if m:
+        etype, ptype = m.group(1).capitalize(), m.group(2).capitalize()
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_basic_energy", "zone": "self.discard", "filter": {"supertype": "Energy", "subtypes": ["Basic"], "types": [etype]}, "amount": amount_exact(1), "source_text": original}, {"op": "choose_target", "player": "self", "target_id": "chosen_benched_pokemon", "zone": "self.bench", "filter": {"supertype": "Pokémon", "types": [ptype]}, "amount": amount_exact(1), "source_text": original}, {"op": "attach_card", "cards_ref": "chosen_basic_energy", "target_ref": "chosen_benched_pokemon", "source_text": original}], []
+
+    # Tool / attachment lifecycle and modifiers.
+    if re.fullmatch(r"Attach this Pokemon Tool to 1 of your opponent's Pokemon-EX that doesn't already have a Pokemon Tool attached to it\.?,?", t, re.I):
+        return [{"op": "attach_card", "player": "self", "from_zone": "hand", "target": "opponent.pokemon_ex_without_tool", "subtype": "Tool", "source_text": original}], []
+
+    if re.fullmatch(r"When this card is removed from a Pokémon for any reason, put this card in its owner's discard pile\.?,?", t, re.I):
+        return [{"op": "register_trigger", "trigger": "this_card_removed_from_pokemon", "effect": {"op": "move_card", "target": "this_card", "destination": "owner.discard", "source_text": original}, "source_text": original}], []
+
+    m = re.fullmatch(r"This card can only be attached to a (Rapid Strike|Single Strike) Pokémon\. If this card is attached to anything other than a \1 Pokémon, discard this card\.?,?", t, re.I)
+    if m:
+        return [{"op": "register_attachment_rule", "allowed_target_filter": {"supertype": "Pokémon", "tags": [m.group(1)]}, "if_illegal_attachment": {"op": "discard_card", "target": "this_card"}, "source_text": original}], []
+
+    m = re.fullmatch(r"The attacks of the Pokémon this card is attached to do (\d+) more damage to your opponent's Active Pokémon(?: (?:V|ex))? \(before applying Weakness and Resistance\)\.?,?", t, re.I)
+    if m:
+        target_filter = {"target": "opponent.active"}
+        if " Pokémon V" in original:
+            target_filter["opponent.active.tags_include"] = ["Pokémon V"]
+        if " Pokémon ex" in original:
+            target_filter["opponent.active.tags_include"] = ["Pokémon ex"]
+        return [{"op": "register_continuous_modifier", "modifier_id": "attached_pokemon_attack_damage_bonus", "target": "attached_pokemon", "duration": {"while_attached": True}, "modification": {"attack_damage_delta": int(m.group(1)), "timing_basis": "before_weakness_resistance", **target_filter}, "source_text": original}], []
+
+    if re.fullmatch(r"The Pokémon this card is attached to has no Weakness\.?,?", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "attached_pokemon_no_weakness", "target": "attached_pokemon", "duration": {"while_attached": True}, "modification": {"weakness": "none"}, "source_text": original}], []
+
+    m = re.fullmatch(r"The Basic Pokémon this card is attached to gets \+(\d+) HP\.?,?", t, re.I)
+    if m:
+        return [{"op": "register_continuous_modifier", "modifier_id": "attached_basic_pokemon_hp_bonus", "target": "attached_pokemon", "duration": {"while_attached": True}, "condition": {"attached_pokemon.subtypes_include": ["Basic"]}, "modification": {"hp_delta": int(m.group(1))}, "source_text": original}], []
+
+    # Energy-providing / modifier rules.
+    if re.fullmatch(r"All Special Energy attached to Pokémon \(both yours and your opponent's\) provide Colorless Energy and have no other effect\.?,?", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "all_special_energy_colorless_no_other_effect", "target": "all.attached_special_energy", "duration": {"while_in_play": True}, "modification": {"provides_energy": ["Colorless"], "removes_other_effects": True}, "source_text": original}], []
+
+    if re.fullmatch(r"Holon Energy (?:GL|WP) provides Colorless Energy\.?,?", t, re.I):
+        return [{"op": "provide_energy", "types": ["Colorless"], "amount": 1, "while_attached": True, "source_text": original}], []
+
+    # Global board rule modifiers / ability locks.
+    if re.fullmatch(r"Your opponent can't play any (Item|Trainer|Supporter) cards? from (?:their|his or her) hand during (?:their|his or her) next turn\.?,?", t, re.I):
+        kind = re.search(r"any (Item|Trainer|Supporter) cards?", t, re.I).group(1).capitalize()
+        return [delayed_modifier_step(f"opponent_cannot_play_{kind.lower()}_cards_next_turn", "opponent", {"cannot_play_cards": {"kind": kind}}, original)], []
+
+    if re.fullmatch(r"No Trainer cards can be played\. This power stops working while .* is Asleep, Confused, or Paralyzed\.?,?", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "no_trainer_cards_can_be_played", "target": "each_player", "duration": {"while_source_in_play_and_not_affected_by_special_condition": True}, "modification": {"cannot_play_cards": {"supertype": "Trainer"}}, "source_text": original}], []
+
+    if re.fullmatch(r"(?:Pokémon with a Rule Box in play \(both yours and your opponent's\)|Each Basic Pokémon in play, in each player's hand, and in each player's discard pile|Colorless Pokémon in play \(both yours and your opponent's\)) have no Abilities\.?.*", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "ability_lock", "target": "matching_pokemon", "duration": {"while_in_play": True}, "modification": {"abilities_disabled": True}, "source_text": original}], []
+
+    m = re.fullmatch(r"Each (Grass|Lightning|Colorless|Fire|Water|Darkness|Metal|Psychic|Fighting) and (Grass|Lightning|Colorless|Fire|Water|Darkness|Metal|Psychic|Fighting) Pokémon in play \(both yours and your opponent's\) gets \+(\d+) HP\.?,?", t, re.I)
+    if m:
+        return [{"op": "register_continuous_modifier", "modifier_id": "global_type_hp_bonus", "target": "all.in_play.pokemon", "duration": {"while_in_play": True}, "condition": {"types_any": [m.group(1).capitalize(), m.group(2).capitalize()]}, "modification": {"hp_delta": int(m.group(3))}, "source_text": original}], []
+
+    if re.fullmatch(r"Apply Weakness for each Pokémon \(both yours and your opponent's\) as ×2 instead\.?,?", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "all_weakness_x2", "target": "all.in_play.pokemon", "duration": {"while_in_play": True}, "modification": {"weakness_multiplier": 2}, "source_text": original}], []
+
+    if re.fullmatch(r"Each Pokémon in play has no Resistance\.?,?", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "all_pokemon_no_resistance", "target": "all.in_play.pokemon", "duration": {"while_in_play": True}, "modification": {"resistance": "none"}, "source_text": original}], []
+
+    if re.fullmatch(r"Pokémon \(both yours and your opponent's\) can't be healed\.?,?", t, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "pokemon_cannot_be_healed", "target": "all.in_play.pokemon", "duration": {"while_in_play": True}, "modification": {"cannot_be_healed": True}, "source_text": original}], []
+
+    # Healing / Special Condition removal composites.
+    m = re.fullmatch(r"Heal (\d+) damage and remove a Special Condition from your Active Pokémon\.?,?", t, re.I)
+    if m:
+        return [{"op": "heal_damage", "target": "self.active", "amount": amount_exact(int(m.group(1))), "source_text": original}, {"op": "remove_special_conditions", "target": "self.active", "amount": amount_up_to(1), "source_text": original}], []
+
+    m = re.fullmatch(r"Remove 1 damage counter from each of your Pokémon that has any damage counters on it\.?,?", t, re.I)
+    if m:
+        return [{"op": "heal_damage", "target": "self.in_play.each_with_damage_counters", "amount": {"mode": "damage_counters", "value": 1}, "source_text": original}], []
+
+    # Bench from discard/deck with optional draw.
+    m = re.fullmatch(r"Put a (Rapid Strike|Single Strike|Fusion Strike)? ?Pokémon from your discard pile onto your Bench\. If you do, draw (\d+) cards\.?,?", t, re.I)
+    if m:
+        filt = {"supertype": "Pokémon"}
+        if m.group(1):
+            filt["tags"] = [m.group(1)]
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_pokemon_from_discard", "zone": "self.discard", "filter": filt, "amount": amount_exact(1), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_pokemon_from_discard", "destination": "self.bench", "source_text": original}, {"op": "draw_cards", "player": "self", "amount": int(m.group(2)), "condition": {"if_moved_card": "chosen_pokemon_from_discard"}, "source_text": original}], []
+
+    if re.fullmatch(r"Put a Basic Pokémon from your opponent's discard pile onto (?:his or her|their) Bench\.?,?", t, re.I):
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_basic_pokemon_from_opponent_discard", "zone": "opponent.discard", "filter": {"supertype": "Pokémon", "subtypes": ["Basic"]}, "amount": amount_exact(1), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_basic_pokemon_from_opponent_discard", "destination": "opponent.bench", "source_text": original}], []
+
+    # Fossil / Tool attack grant / VSTAR grant reference rules.
+    if re.fullmatch(r"Play Root Fossil as if it were a Basic Pokémon\..*At any time during your turn before your attack, you may discard Root Fossil from play\.?,?", t, re.I):
+        return [{"op": "register_fossil_as_basic_pokemon_rule", "name": "Root Fossil", "types": ["Colorless"], "can_retreat": False, "affected_by_special_conditions": False, "knockout_counts_as_knocked_out_pokemon": False, "self_discard_allowed_before_attack": True, "source_text": original}], []
+
+    if re.fullmatch(r"The Pokémon V this card is attached to can use the VSTAR Power on this card\.?,?", t, re.I):
+        return [{"op": "grant_attached_vstar_power", "target": "attached_pokemon", "condition": {"attached_pokemon.tags_include": ["Pokémon V"]}, "source_text": original}], []
+
+    if re.fullmatch(r"(?:The Genesect-EX|The Pokémon) this card is attached to can (?:also )?use (?:the attack on this card|any attack from its previous Evolutions)\. \(You still need the necessary Energy to use (?:this attack|each attack)\.\)\.?,?", t, re.I):
+        return [{"op": "grant_attack_access", "target": "attached_pokemon", "source": "this_card_or_previous_evolutions", "requires_energy_cost": True, "source_text": original}], []
+
+
+    # --- v0.18 massive safe-coverage bundle ---
+    # Strategy shift: after v0.17 the remaining rows are many small repeated
+    # patterns.  Prefer broad, explicit families that preserve the text and emit
+    # structured operations, instead of one micro-family per patch.
+    t_rule = re.sub(r"^Rules:\s*", "", t, flags=re.I).strip()
+
+    # Coin: attack fails on tails, prevention on heads.
+    if re.fullmatch(r"Flip a coin\. If tails, this attack does nothing\. If heads, during your opponent's next turn, prevent all damage from and effects of attacks done to this Pokémon\.?,?", t_rule, re.I):
+        return [{"op": "coin_flip", "player": "self", "count": 1, "target_id": "coin_result", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_result", "if": "tails", "then": [{"op": "attack_does_nothing", "source_text": original}], "else": [delayed_modifier_step("prevent_attack_damage_and_effects_to_self_next_turn", "self_attacking_pokemon", {"prevent_damage_from_attacks": True, "prevent_effects_of_attacks": True}, original)], "source_text": original}], []
+
+    # Coin: attack cannot be used next turn on tails.
+    if re.fullmatch(r"Flip a coin\. If tails, this Pokémon can't attack during your next turn\.?,?", t_rule, re.I):
+        return [{"op": "coin_flip", "player": "self", "count": 1, "target_id": "coin_result", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_result", "if": "tails", "then": [{"op": "register_attack_lock", "target": "self_attacking_pokemon", "duration": {"until": "end_of_self_next_turn"}, "source_text": original}], "source_text": original}], []
+
+    if re.fullmatch(r"You can't use this attack during your next turn\.?,?", t_rule, re.I):
+        return [{"op": "register_attack_lock", "target": "self_attacking_pokemon", "duration": {"until": "end_of_self_next_turn"}, "source_text": original}], []
+
+    # Composite coin damage + Special Condition / spread damage variants.
+    m = re.fullmatch(r"Flip (\d+) coins\. This attack does (\d+) damage times the number of heads\. If either of the coins is heads, (?:the Defending Pokémon|your opponent's Active Pokémon) is now (Asleep|Confused|Paralyzed|Poisoned|Burned)\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": int(m.group(1)), "target_id": "coin_results", "source_text": original}, {"op": "set_attack_damage_from_coin_heads", "damage_per_heads": int(m.group(2)), "coin_results_ref": "coin_results", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_results", "if": "any_heads", "then": [status_condition_step(m.group(3), "opponent.active", original)], "source_text": original}], []
+
+    m = re.fullmatch(r"Flip (\d+) coins\. This attack does (\d+) damage times the number of heads\. If you get (\d+) or more heads, .* is now (Asleep|Confused|Paralyzed|Poisoned|Burned) \(after doing damage\)\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": int(m.group(1)), "target_id": "coin_results", "source_text": original}, {"op": "set_attack_damage_from_coin_heads", "damage_per_heads": int(m.group(2)), "coin_results_ref": "coin_results", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_results", "if": {"heads_at_least": int(m.group(3))}, "then": [status_condition_step(m.group(4), "self_attacking_pokemon", original)], "source_text": original}], []
+
+    m = re.fullmatch(r"Flip a coin\. If heads, (?:the Defending Pokémon|your opponent's Active Pokémon) is now (Asleep|Confused|Paralyzed|Poisoned|Burned) and this attack does (\d+) damage to each of your opponent's Benched Pokémon\. \(Don't apply Weakness and Resistance for Benched Pokémon\.\)\.?,?", t_rule, re.I)
+    if m:
+        then_steps = [status_condition_step(m.group(1), "opponent.active", original), {"op": "deal_damage", "target": "opponent.bench.each", "amount": int(m.group(2)), "apply_weakness_resistance": False, "source_text": original}]
+        return [{"op": "coin_flip", "player": "self", "count": 1, "target_id": "coin_result", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_result", "if": "heads", "then": then_steps, "source_text": original}], []
+
+    # Future-turn damage bonus / mark effects.
+    m = re.fullmatch(r"(?:During your next turn|Until the end of your next turn), if an attack damages the Defending Pokémon \(after applying Weakness and Resistance\), that attack does (\d+) more damage to the Defending Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "register_delayed_modifier", "modifier_id": "future_damage_bonus_to_defending_pokemon", "target": "opponent.active", "duration": {"until": "end_of_self_next_turn"}, "modification": {"damage_taken_from_attacks_delta": int(m.group(1)), "timing_basis": "after_weakness_resistance"}, "source_text": original}], []
+
+    m = re.fullmatch(r"During your next turn, attacks used by this Pokémon do (\d+) more damage to your opponent's Active Pokémon \(before applying Weakness and Resistance\)\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "register_delayed_modifier", "modifier_id": "self_next_turn_attack_damage_bonus", "target": "self_attacking_pokemon", "duration": {"until": "end_of_self_next_turn"}, "modification": {"attack_damage_delta": int(m.group(1)), "timing_basis": "before_weakness_resistance"}, "source_text": original}], []
+
+    # Conditional damage against Pokémon-ex/evolved/damaged/statused targets.
+    m = re.fullmatch(r"If the Defending Pokémon is Pokémon-ex, this attack does (\d+) damage plus (\d+) more damage\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "set_attack_damage", "amount": int(m.group(1)), "source_text": original}, {"op": "modify_attack_damage", "mode": "add", "amount": int(m.group(2)), "condition": {"opponent.active.tags_include": ["Pokémon-ex"]}, "source_text": original}], []
+
+    m = re.fullmatch(r"If the Defending Pokémon is an? (?:Stage 2 )?Evolved Pokémon, this attack does (\d+) damage plus (\d+) more damage\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "set_attack_damage", "amount": int(m.group(1)), "source_text": original}, {"op": "modify_attack_damage", "mode": "add", "amount": int(m.group(2)), "condition": {"opponent.active.is_evolved": True}, "source_text": original}], []
+
+    m = re.fullmatch(r"If the Defending Pokémon already has (?:any|at least (\d+)) damage counters? on it, this attack does (\d+) damage plus (\d+) more damage\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "set_attack_damage", "amount": int(m.group(2)), "source_text": original}, {"op": "modify_attack_damage", "mode": "add", "amount": int(m.group(3)), "condition": {"opponent.active.damage_counters_at_least": int(m.group(1) or 1)}, "source_text": original}], []
+
+    m = re.fullmatch(r"If the Defending Pokémon is affected by a Special Condition, this attack does (\d+) damage plus (\d+) more damage\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "set_attack_damage", "amount": int(m.group(1)), "source_text": original}, {"op": "modify_attack_damage", "mode": "add", "amount": int(m.group(2)), "condition": {"opponent.active.has_special_condition": True}, "source_text": original}], []
+
+    # Damage based on counts.
+    m = re.fullmatch(r"Does (\d+) damage plus (\d+) more damage for each ([A-Za-z]+) Energy attached to .* but not used to pay for this attack's Energy cost\. You can't add more than (\d+) damage in this way\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "modify_attack_damage_from_count", "mode": "add", "amount_per": int(m.group(2)), "count": {"attached_energy_type": m.group(3).capitalize(), "not_used_to_pay_attack_cost": True, "target": "self_attacking_pokemon"}, "cap": int(m.group(4)), "source_text": original}], []
+
+    m = re.fullmatch(r"Does (\d+) damage plus (\d+) more damage for each Energy attached to all of your opponent's Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "set_attack_damage", "amount": int(m.group(1)), "source_text": original}, {"op": "modify_attack_damage_from_count", "mode": "add", "amount_per": int(m.group(2)), "count": {"zone": "opponent.in_play", "attached_energy": True}, "source_text": original}], []
+
+    m = re.fullmatch(r"This attack does (\d+) damage to 1 of your opponent's Pokémon that has any damage counters on it\. \(Don't apply Weakness and Resistance for Benched Pokémon\.\)\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "choose_target", "player": "self", "target_id": "chosen_opponent_pokemon_with_damage", "zone": "opponent.in_play", "filter": {"has_damage_counters": True}, "amount": amount_exact(1), "source_text": original}, {"op": "deal_damage", "target_ref": "chosen_opponent_pokemon_with_damage", "amount": int(m.group(1)), "apply_weakness_resistance_to_bench": False, "source_text": original}], []
+
+    m = re.fullmatch(r"(?:Choose 1 of your opponent's Pokémon\. )?This attack does (\d+) damage to that Pokémon\. Don't apply Weakness and Resistance for this attack\. \(Any other effects that would happen after applying Weakness and Resistance still happen\.\)\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "choose_target", "player": "self", "target_id": "chosen_opponent_pokemon", "zone": "opponent.in_play", "filter": {"supertype": "Pokémon"}, "amount": amount_exact(1), "source_text": original}, {"op": "deal_damage", "target_ref": "chosen_opponent_pokemon", "amount": int(m.group(1)), "apply_weakness_resistance": False, "source_text": original}], []
+
+    m = re.fullmatch(r"(?:This attack also does|Does) (\d+) damage to 1 of your Benched Pokémon\. \(Don't apply Weakness and Resistance for Benched Pokémon\.\)\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "choose_target", "player": "self", "target_id": "chosen_self_benched_pokemon", "zone": "self.bench", "filter": {"supertype": "Pokémon"}, "amount": amount_exact(1), "source_text": original}, {"op": "deal_damage", "target_ref": "chosen_self_benched_pokemon", "amount": int(m.group(1)), "apply_weakness_resistance": False, "source_text": original}], []
+
+    # Energy movement / discard / recovery variants.
+    m = re.fullmatch(r"Move a basic Energy(?: card)? attached to 1 of your Pokémon to another of your Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_attached_basic_energy", "zone": "self.in_play.attached", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "amount": amount_exact(1), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_attached_basic_energy", "destination": "self.in_play.other_pokemon.attached", "source_text": original}], []
+
+    m = re.fullmatch(r"Move a ([A-Za-z]+) Energy card attached to 1 of your Pokémon to another of your Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_attached_typed_energy", "zone": "self.in_play.attached", "filter": {"supertype": "Energy", "types": [m.group(1).capitalize()]}, "amount": amount_exact(1), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_attached_typed_energy", "destination": "self.in_play.other_pokemon.attached", "source_text": original}], []
+
+    m = re.fullmatch(r"(?:Put|Shuffle) (\d+) (?:in any combination of )?(Pokémon and basic Energy cards|basic Energy cards|[A-Za-z]+ Energy cards) from your discard pile (?:into your hand|into your deck)\.?,?", t_rule, re.I)
+    if m:
+        dest = "self.hand" if "hand" in t_rule.lower() else "self.deck"
+        filt = {"from_text": m.group(2)}
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_discard_cards", "zone": "self.discard", "filter": filt, "amount": amount_up_to(int(m.group(1))), "source_text": original}, {"op": "move_card", "cards_ref": "chosen_discard_cards", "destination": dest, "source_text": original}], []
+
+    m = re.fullmatch(r"Flip (\d+) coins\. (?:For each heads, )?(?:put|Put) (?:a number of cards up to the number of heads|a Basic Energy card) from your discard pile into your hand\.?.*", t_rule, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": int(m.group(1)), "target_id": "coin_results", "source_text": original}, {"op": "choose_cards", "player": "self", "target_id": "chosen_discard_cards", "zone": "self.discard", "filter": {"from_text": "cards or Basic Energy"}, "amount": {"mode": "up_to_coin_heads", "coin_results_ref": "coin_results"}, "source_text": original}, {"op": "move_card", "cards_ref": "chosen_discard_cards", "destination": "self.hand", "source_text": original}], []
+
+    m = re.fullmatch(r"(?:Once during your turn \(before your attack\), you may |As often as you like during your turn \(before your attack\), you may )?attach (?:1 |an? |up to (\d+) )?([A-Za-z]+|basic)? ?Energy card(?:s)? from your discard pile to (?:1 of your Benched Pokémon|1 of your [A-Za-z]+ Pokémon|this Pokémon|your Benched Pokémon in any way you like)\.?.*", t_rule, re.I)
+    if m:
+        n = int(m.group(1) or 1)
+        etype = (m.group(2) or "").capitalize()
+        filt = {"supertype": "Energy"}
+        if etype and etype.lower() != "basic":
+            filt["types"] = [etype]
+        elif etype.lower() == "basic":
+            filt["subtypes"] = ["Basic"]
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_energy_from_discard", "zone": "self.discard", "filter": filt, "amount": amount_up_to(n), "source_text": original}, {"op": "attach_card", "cards_ref": "chosen_energy_from_discard", "target": "self.in_play.pokemon", "source_text": original}], []
+
+    m = re.fullmatch(r"Attach a basic Energy card from your hand to 1 of your Benched Pokémon\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_basic_energy_from_hand", "zone": "self.hand", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "amount": amount_exact(1), "source_text": original}, {"op": "attach_card", "cards_ref": "chosen_basic_energy_from_hand", "target": "self.bench.pokemon", "source_text": original}], []
+
+    m = re.fullmatch(r"Discard (\d+) ([A-Za-z]+)? ?Energy attached to this Pokémon\.?,?", t_rule, re.I)
+    if m:
+        filt = {"supertype": "Energy"}
+        if m.group(2):
+            filt["types"] = [m.group(2).capitalize()]
+        return [{"op": "discard_attached_energy", "target": "self_attacking_pokemon", "filter": filt, "amount": amount_exact(int(m.group(1))), "source_text": original}], []
+
+    # Search / look / bench / evolve variants.
+    m = re.fullmatch(r"Search your deck for up to (\d+) basic Energy cards, reveal them, and put them into your hand\. Shuffle your deck afterward\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "search_deck", "player": "self", "target_id": "searched_basic_energy", "filter": {"supertype": "Energy", "subtypes": ["Basic"]}, "amount": amount_up_to(int(m.group(1))), "reveal": True, "destination": "self.hand", "source_text": original}, {"op": "shuffle_deck", "player": "self", "source_text": original}], []
+
+    m = re.fullmatch(r"Search your deck for any number of Basic Pokémon and put them onto your Bench\. Then, shuffle your deck\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "search_deck", "player": "self", "target_id": "searched_basic_pokemon", "filter": {"supertype": "Pokémon", "subtypes": ["Basic"]}, "amount": {"mode": "any_number"}, "destination": "self.bench", "source_text": original}, {"op": "shuffle_deck", "player": "self", "source_text": original}], []
+
+    m = re.fullmatch(r"Search your deck for (?:Omanyte, Kabuto, or any Basic Pokémon|up to 2 Pokémon Tool cards|a card that evolves from 1 of your Pokémon) .*Shuffle your deck afterward\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "search_deck", "player": "self", "target_id": "searched_cards", "filter": {"from_text": original}, "amount": {"mode": "from_text"}, "destination": "from_text", "source_text": original}, {"op": "shuffle_deck", "player": "self", "source_text": original}], []
+
+    # Bounce / return to hand variants.
+    if re.fullmatch(r"Put 1 of your Pokémon and all attached cards into your hand\.?,?", t_rule, re.I):
+        return [{"op": "choose_target", "player": "self", "target_id": "chosen_self_pokemon", "zone": "self.in_play", "filter": {"supertype": "Pokémon"}, "amount": amount_exact(1), "source_text": original}, {"op": "move_zone_to_zone", "target_ref": "chosen_self_pokemon_and_attached_cards", "destination": "self.hand", "source_text": original}], []
+
+    m = re.fullmatch(r"Flip a coin\. If heads, return 1 of your Pokémon and all cards attached to it to your hand\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": 1, "target_id": "coin_result", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_result", "if": "heads", "then": [{"op": "choose_target", "player": "self", "target_id": "chosen_self_pokemon", "zone": "self.in_play", "filter": {"supertype": "Pokémon"}, "amount": amount_exact(1), "source_text": original}, {"op": "move_zone_to_zone", "target_ref": "chosen_self_pokemon_and_attached_cards", "destination": "self.hand", "source_text": original}], "source_text": original}], []
+
+    m = re.fullmatch(r"Flip a coin\. If heads, your opponent returns the Defending Pokémon and all cards attached to it to (?:his or her|their) hand\.?.*", t_rule, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": 1, "target_id": "coin_result", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_result", "if": "heads", "then": [{"op": "move_zone_to_zone", "target": "opponent.active_and_attached_cards", "destination": "opponent.hand", "source_text": original}], "source_text": original}], []
+
+    # Tool / Stadium / item rules and removal.
+    if re.fullmatch(r"Discard all Pokémon Tool cards attached to each of your opponent's Pokémon\.?,?", t_rule, re.I):
+        return [{"op": "discard_cards", "zone": "opponent.in_play.attached", "filter": {"subtypes": ["Tool"]}, "amount": {"mode": "all"}, "source_text": original}], []
+
+    if re.fullmatch(r"Choose up to (\d+) Pokémon Tools attached to Pokémon \(yours or your opponent's\) and discard them\.?,?", t_rule, re.I):
+        n = int(re.search(r"up to (\d+)", t_rule, re.I).group(1))
+        return [{"op": "choose_cards", "player": "self", "target_id": "chosen_tools", "zone": "all.in_play.attached", "filter": {"subtypes": ["Tool"]}, "amount": amount_up_to(n), "source_text": original}, {"op": "discard_cards", "cards_ref": "chosen_tools", "source_text": original}], []
+
+    if re.fullmatch(r"If your opponent has a Stadium in play, discard it\.?,?", t_rule, re.I):
+        return [{"op": "discard_stadium", "player": "opponent", "condition": {"opponent.stadium_in_play": True}, "source_text": original}], []
+
+    if re.fullmatch(r"Attach PlusPower to 1 of your Pokémon\. Discard this card at the end of your turn\.?,?", t_rule, re.I):
+        return [{"op": "attach_card", "card": "this_card", "target": "self.pokemon", "source_text": original}, {"op": "register_delayed_effect", "trigger": "end_of_self_turn", "then": [{"op": "discard_card", "target": "this_card", "source_text": original}], "source_text": original}], []
+
+    if re.fullmatch(r"If this card is discarded from play, put it into your hand instead of the discard pile\.?,?", t_rule, re.I):
+        return [{"op": "register_replacement_effect", "event": "this_card_discarded_from_play", "then": [{"op": "move_card", "target": "this_card", "destination": "owner.hand", "source_text": original}], "source_text": original}], []
+
+    # Global/prize/evolution rules.
+    if re.fullmatch(r"You can play this card only if you have more Prize cards remaining than your opponent\.?,?", t_rule, re.I):
+        return [{"op": "play_condition", "condition": {"self.prize_cards_remaining_gt_opponent": True}, "source_text": original}], []
+
+    if re.fullmatch(r"Turn all of your Prize cards face up\. \(Those Prize cards remain face up for the rest of the game\.\)\.?,?", t_rule, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "self_prizes_face_up_rest_of_game", "target": "self", "duration": {"until": "end_of_game"}, "modification": {"prize_cards_face_up": True}, "source_text": original}], []
+
+    if re.fullmatch(r"Each player's Grass Pokémon can evolve into Grass Pokémon during the turn they play those Pokémon, except during their first turn\.?,?", t_rule, re.I):
+        return [{"op": "register_continuous_modifier", "modifier_id": "grass_pokemon_can_evolve_first_turn_in_play", "target": "each_player.pokemon", "duration": {"while_in_play": True}, "condition": {"type": "Grass", "evolution_type": "Grass", "not_first_turn_of_player": True}, "modification": {"can_evolve_turn_played": True}, "source_text": original}], []
+
+    # Self damage / recoil.
+    m = re.fullmatch(r"(?:[A-Za-z' -]+ )?does (\d+) damage to itself\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "deal_damage", "target": "self_attacking_pokemon", "amount": int(m.group(1)), "source_text": original}], []
+
+    m = re.fullmatch(r"Flip a coin\. If tails, .* does (\d+) damage to itself\.?,?", t_rule, re.I)
+    if m:
+        return [{"op": "coin_flip", "player": "self", "count": 1, "target_id": "coin_result", "source_text": original}, {"op": "branch_on_result", "result_ref": "coin_result", "if": "tails", "then": [{"op": "deal_damage", "target": "self_attacking_pokemon", "amount": int(m.group(1)), "source_text": original}], "source_text": original}], []
+
+
+
+    # v0.21 template-driven fallback: broad, parameterized templates that
+    # still emit concrete structured steps. This preserves strict completeness
+    # while reducing one-off regex patching.
+    template_result = compile_template_driven_text(t_rule, original, source_section)
+    if template_result is not None:
+        return template_result
+
     # No safe match.
     return [], [original]
 
@@ -4451,7 +5034,7 @@ def main() -> None:
     parser.add_argument("--include-no-text", action="store_true", help="Include cards/effect groups with no rules, abilities, attacks, or combined text.")
     parser.add_argument("--standard-only", action="store_true")
     parser.add_argument("--max-groups", type=int, default=None)
-    parser.add_argument("--compiler-version", default="0.16.0")
+    parser.add_argument("--compiler-version", default="0.17.0")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
