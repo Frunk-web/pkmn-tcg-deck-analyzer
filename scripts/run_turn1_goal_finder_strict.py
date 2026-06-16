@@ -26,10 +26,216 @@ if ROOT not in sys.path:
 
 import run_turn1_goal_finder as gf  # type: ignore
 
+
+
+# -----------------------------
+# v0.3 deck-resolution patches
+# -----------------------------
+# The coverage scanner can match alternate prints by effect source card_id/name,
+# but the base goal finder resolves decklists from card-level identity only. Some
+# deduped compiled cards do not expose every alternate print at card-level, so a
+# valid deck can become deck_size=null / scenarios=[] after all entries resolve
+# to nothing. These patches extend the runtime name index with effect.source
+# metadata and make Basic Energy proxy detection handle ids like sve-6 / mee-6.
+
+_ORIG_TF_BUILD_NAME_INDEX = gf.tf.build_name_index
+_ORIG_TF_RESOLVE_DECKLIST = gf.tf.resolve_decklist
+_ORIG_TF_BASIC_ENERGY_PROXY = gf.tf.basic_energy_proxy_from_request
+
+SET_ALIASES = {
+    "MEG": ["me1"],
+    "POR": ["me3"],
+    "ASC": ["me2pt5"],
+    "TWM": ["sv6"],
+    "SSP": ["sv8"],
+    "SFA": ["sv6pt5"],
+    "MEE": ["sve", "me1"],
+    "JTG": ["sv9"],
+    "BLK": ["zsv10pt5", "sv10pt5", "rsv10pt5"],
+}
+
+ENERGY_ID_HINTS = {
+    "sve1": "Grass", "sve3": "Water", "sve4": "Lightning", "sve5": "Psychic", "sve6": "Fighting",
+    "mee1": "Grass", "mee3": "Water", "mee4": "Lightning", "mee5": "Psychic", "mee6": "Fighting",
+    "sve-1": "Grass", "sve-3": "Water", "sve-4": "Lightning", "sve-5": "Psychic", "sve-6": "Fighting",
+    "mee-1": "Grass", "mee-3": "Water", "mee-4": "Lightning", "mee-5": "Psychic", "mee-6": "Fighting",
+}
+
+TYPE_MAP = {
+    "{G}": "Grass", "{R}": "Fire", "{W}": "Water", "{L}": "Lightning", "{P}": "Psychic",
+    "{F}": "Fighting", "{D}": "Darkness", "{M}": "Metal", "{Y}": "Fairy", "{C}": "Colorless",
+}
+
+
+def _clean_ptcgl_name(name: str) -> str:
+    out = str(name or "").strip().lstrip("\ufeff")
+    for sym, word in TYPE_MAP.items():
+        out = out.replace(sym, word)
+    return " ".join(out.split())
+
+
+def _norm_key(value: Any) -> str:
+    return gf.tf.norm(value)
+
+
+def _effect_sources(card: Any) -> list[dict]:
+    if not isinstance(card, dict):
+        return []
+    out = []
+    for eff in card.get("compiled_effects", []) or card.get("effects", []) or []:
+        if isinstance(eff, dict):
+            src = eff.get("source") or {}
+            if isinstance(src, dict):
+                out.append(src)
+    return out
+
+
+def _source_names_and_ids(card: Any) -> set[str]:
+    names = set()
+    if not isinstance(card, dict):
+        return names
+    for src in _effect_sources(card):
+        for key in ("card_id", "id", "card_name", "name"):
+            val = src.get(key)
+            if val:
+                names.add(str(val))
+    return names
+
+
+def patched_build_name_index(cards: Any):
+    index = _ORIG_TF_BUILD_NAME_INDEX(cards)
+    for c in cards:
+        for name in _source_names_and_ids(c):
+            key = _norm_key(name)
+            if key:
+                index[key].append(c)
+    return index
+
+
+def _parse_ptcgl_requested(requested: str) -> tuple[str, str, str] | None:
+    """Return (name, set_code, number) for strings like 'Meowth ex POR 62'."""
+    parts = str(requested or "").strip().lstrip("\ufeff").split()
+    if len(parts) < 3:
+        return None
+    number = parts[-1]
+    set_code = parts[-2]
+    # avoid treating API ids or short names as PTCGL rows
+    if "-" in requested and len(parts) == 1:
+        return None
+    if not number.replace("-", "").replace("/", "").isalnum():
+        return None
+    if not set_code.isalnum() or len(set_code) > 8:
+        return None
+    name = _clean_ptcgl_name(" ".join(parts[:-2]))
+    if not name:
+        return None
+    return name, set_code.upper(), number
+
+
+def _candidate_requested_keys(requested: str) -> list[str]:
+    requested = str(requested or "").strip().lstrip("\ufeff")
+    keys = []
+    if requested:
+        keys.append(requested)
+    parsed = _parse_ptcgl_requested(requested)
+    if parsed:
+        name, set_code, number = parsed
+        keys.append(name)
+        # exact alias ids when known, e.g. MEG 77 -> me1-77
+        for alias in SET_ALIASES.get(set_code, [set_code.lower()]):
+            keys.append(f"{alias}-{number}")
+    return keys
+
+
+def patched_basic_energy_proxy_from_request(requested: str):
+    raw = str(requested or "").strip().lstrip("\ufeff")
+    raw_lower = raw.lower()
+    compact = "".join(ch for ch in raw_lower if ch.isalnum())
+    typ = ENERGY_ID_HINTS.get(raw_lower) or ENERGY_ID_HINTS.get(compact)
+    if typ:
+        name = f"Basic {typ} Energy"
+        proxy_id = f"proxy-energy-{compact or typ.lower()}"
+        return {
+            "card_id": proxy_id,
+            "representative_card_id": proxy_id,
+            "identity": {
+                "card_id": proxy_id,
+                "name": name,
+                "canonical_name": name,
+                "supertype": "Energy",
+                "subtypes": ["Basic"],
+                "types": [typ],
+            },
+            "gameplay": {},
+            "compiled_effects": [],
+            "parser_status": "proxy_basic_energy",
+            "source": {"proxy_for_decklist_entry": raw},
+            "same_effect_printings": [{"card_id": raw, "id": raw, "name": name}],
+        }
+    parsed = _parse_ptcgl_requested(raw)
+    if parsed:
+        name, set_code, number = parsed
+        # Convert PTCGL-style Basic {F} Energy MEE 6 into a normal energy proxy.
+        if "basic" in name.lower() and "energy" in name.lower():
+            return patched_basic_energy_proxy_from_request(name)
+    return _ORIG_TF_BASIC_ENERGY_PROXY(requested)
+
+
+def patched_resolve_decklist(decklist: Any, cards: Any):
+    index = patched_build_name_index(cards)
+    all_keys = list(index.keys())
+    deck = []
+    unresolved = []
+    for count, requested in decklist:
+        candidates = []
+        tried_keys = []
+        for candidate in _candidate_requested_keys(requested):
+            key = _norm_key(candidate)
+            if not key or key in tried_keys:
+                continue
+            tried_keys.append(key)
+            candidates = index.get(key) or []
+            if candidates:
+                break
+        if not candidates:
+            # conservative substring fallback, same spirit as base resolver
+            for key in tried_keys:
+                hits = [k for k in all_keys if key and key in k]
+                unique = []
+                seen = set()
+                for h in hits:
+                    for c in index[h]:
+                        cid = gf.tf.card_id(c)
+                        if cid not in seen:
+                            unique.append(c)
+                            seen.add(cid)
+                if len(unique) == 1:
+                    candidates = unique
+                    break
+        if not candidates:
+            proxy = patched_basic_energy_proxy_from_request(str(requested))
+            if proxy is not None:
+                for _ in range(int(count)):
+                    deck.append(proxy)
+                continue
+            unresolved.append({"requested_name": requested, "count": count, "tried_keys": tried_keys})
+            continue
+        chosen = candidates[0]
+        for _ in range(int(count)):
+            deck.append(chosen)
+    return deck, unresolved
+
+
+def install_deck_resolution_patches() -> None:
+    gf.tf.build_name_index = patched_build_name_index
+    gf.tf.resolve_decklist = patched_resolve_decklist
+    gf.tf.basic_energy_proxy_from_request = patched_basic_energy_proxy_from_request
+
+
 _orig_score_candidate_for_missing_targets = gf.score_candidate_for_missing_targets
 _orig_execute_action = gf.execute_action
 
-VERSION = "turn1_strict_runtime_wrapper_v0_2"
+VERSION = "turn1_strict_runtime_wrapper_v0_3"
 
 
 def _norm_text(x: Any) -> str:
@@ -261,6 +467,7 @@ def strict_execute_action(st: Any, action: Any, target_norm: str, rng: Any, goin
 
 
 def install() -> None:
+    install_deck_resolution_patches()
     gf.score_candidate_for_missing_targets = strict_score_candidate_for_missing_targets
     gf.execute_action = strict_execute_action
     setattr(gf, "STRICT_TURN1_RUNTIME_SEMANTICS_VERSION", VERSION)

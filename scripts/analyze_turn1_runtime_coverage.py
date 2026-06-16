@@ -8,7 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-VERSION = "runtime_coverage_scanner_v0_6"
+VERSION = "runtime_coverage_scanner_v0_7"
 
 TURN1_RELEVANT_FAMILIES = {
     "random_draw",
@@ -34,6 +34,8 @@ IGNORABLE_FAMILIES = {
     "status_condition",
     "attack_damage_scaling",
     "energy_move",
+    "pokemon_tool_rule",
+    "tool_attack_grant",
 }
 
 
@@ -253,6 +255,12 @@ def classify_families(card: Dict[str, Any], effect: Dict[str, Any]) -> List[str]
         families.add("supporter_rule")
     if ("you can use this card only if" in text or "you may use this card only if" in text or "were knocked out during your opponent's last turn" in text or "opponent took" in text and "prize" in text):
         families.add("conditional_comeback_guard")
+    # Pokémon Tool rules and attack-granting tools are not Turn-1 card-access
+    # effects. They matter for board/attack modelling, not for finding pieces.
+    if "pokémon tool" in text or "pokemon tool" in text:
+        families.add("pokemon_tool_rule")
+    if "can use the attack on this card" in text or "can use the attacks on this card" in text:
+        families.add("tool_attack_grant")
     if "discard" in text and ("draw" in text or "search" in text):
         families.add("costed_draw_or_search")
     if "from your discard pile" in text and "into your hand" in text:
@@ -290,6 +298,8 @@ def is_turn1_relevant(families: Sequence[str], text: str, op_list: Sequence[str]
     # attack-readiness / board-state model and should not pollute this backlog.
     if "attack_effect" in fam_base:
         return False
+    if ("tool_attack_grant" in fam_base or "pokemon_tool_rule" in fam_base) and not (fam_base & {"random_draw", "deck_search_to_hand", "deck_search_to_bench", "topdeck_setup", "top_n_choose", "move_to_hand"}):
+        return False
     # Pure Energy movement is also board-state / attack-readiness, not access to
     # the requested card pieces.
     if fam_base and fam_base <= IGNORABLE_FAMILIES:
@@ -325,6 +335,8 @@ def trust_status(effect: Dict[str, Any], families: Sequence[str]) -> str:
     # before top_n_choose so attacks like Chien-Pao Icicle Loop do not appear as
     # missing top-N executors.
     if "attack_effect" in fam:
+        return "irrelevant_to_turn1_access"
+    if ("tool_attack_grant" in fam or "pokemon_tool_rule" in fam) and not (fam & TURN1_RELEVANT_FAMILIES):
         return "irrelevant_to_turn1_access"
 
     if "supporter_rule" in fam and op_set <= {"reference_global_rule"}:
