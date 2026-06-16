@@ -1,8 +1,8 @@
 """Template-driven compiler helpers for Pokémon TCG card text.
 
-This package is intentionally independent from scripts/compile_cards_auto.py for now.
-The first milestone is to make effect parsing modular and testable before routing
-production compilation through it.
+These helpers are intentionally modular so scripts/compile_cards_auto.py can
+route long-tail clauses through reusable templates instead of growing one-off
+regex blocks forever.
 """
 
 from .engine import TemplateEngine, default_template_engine

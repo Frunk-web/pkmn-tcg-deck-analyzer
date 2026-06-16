@@ -7,7 +7,7 @@ from .templates import TextTemplate, build_templates
 
 
 class TemplateEngine:
-    """Apply reusable text templates to card-effect clauses."""
+    """Apply reusable full-text templates to card-effect clauses."""
 
     def __init__(self, templates: Iterable[TextTemplate] | None = None) -> None:
         self.templates = list(templates if templates is not None else build_templates())
