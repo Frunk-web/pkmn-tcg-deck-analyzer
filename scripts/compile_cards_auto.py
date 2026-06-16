@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,6 +18,27 @@ import pandas as pd
 DEFAULT_INPUT = Path("data/all_cards.csv")
 DEFAULT_OUTPUT_DIR = Path("data/compiled_cards/auto")
 DEFAULT_REPORT_DIR = Path("data/reports")
+
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+try:
+    from src.tcgcompiler import default_template_engine
+except Exception:  # pragma: no cover - keeps legacy script usable without package install
+    default_template_engine = None  # type: ignore[assignment]
+
+_TEMPLATE_ENGINE_CACHE = None
+
+
+def get_modular_template_engine():
+    global _TEMPLATE_ENGINE_CACHE
+    if default_template_engine is None:
+        return None
+    if _TEMPLATE_ENGINE_CACHE is None:
+        _TEMPLATE_ENGINE_CACHE = default_template_engine()
+    return _TEMPLATE_ENGINE_CACHE
 
 
 REQUIRED_COLUMNS = [
@@ -606,6 +628,34 @@ def compile_template_driven_text(text: str, original: str, source_section: str) 
         return [step("register_granted_vstar_power", source_card="this_card", target="attached_pokemon_v")], []
 
     return None
+
+
+def compile_modular_template_engine_text(text: str, original: str, source_section: str) -> tuple[list[dict[str, Any]], list[str]] | None:
+    """Route unresolved clauses through src.tcgcompiler's reusable templates.
+
+    This is strict fallback only: the template engine is called with
+    executable_only=True, and templates are full-text matches. Recognition-only
+    reporting stays in analyze_remaining_effects.py and must not affect
+    complete/partial compiler status.
+    """
+    engine = get_modular_template_engine()
+    if engine is None:
+        return None
+
+    match = engine.match_first(text, executable_only=True)
+    if match is None:
+        return None
+
+    steps: list[dict[str, Any]] = []
+    for raw_step in match.steps:
+        compiled_step = dict(raw_step)
+        compiled_step.setdefault("source_text", original)
+        compiled_step.setdefault("compiled_by", "src.tcgcompiler.template_engine")
+        compiled_step.setdefault("template_id", match.template_id)
+        compiled_step.setdefault("effect_family", match.family)
+        steps.append(compiled_step)
+
+    return steps, []
 
 def compile_simple_text(text: str, source_section: str) -> tuple[list[dict[str, Any]], list[str]]:
     """
@@ -4695,6 +4745,10 @@ def compile_simple_text(text: str, source_section: str) -> tuple[list[dict[str, 
     if template_result is not None:
         return template_result
 
+    modular_template_result = compile_modular_template_engine_text(t_rule, original, source_section)
+    if modular_template_result is not None:
+        return modular_template_result
+
     # No safe match.
     return [], [original]
 
@@ -5034,7 +5088,7 @@ def main() -> None:
     parser.add_argument("--include-no-text", action="store_true", help="Include cards/effect groups with no rules, abilities, attacks, or combined text.")
     parser.add_argument("--standard-only", action="store_true")
     parser.add_argument("--max-groups", type=int, default=None)
-    parser.add_argument("--compiler-version", default="0.17.0")
+    parser.add_argument("--compiler-version", default="0.22.0")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
