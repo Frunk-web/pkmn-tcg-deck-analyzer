@@ -39,11 +39,20 @@ class TextTemplate:
         m = self.pattern.fullmatch(cleaned)
         if not m:
             return None
+        try:
+            steps = self.builder(m, text)
+        except Exception:
+            # A template should never be allowed to crash the full compiler run.
+            # If a builder cannot interpret a match safely, skip the template and
+            # let lower-priority templates or the legacy compiler handle the text.
+            return None
+        if not steps:
+            return None
         return TemplateMatch(
             family=self.family,
             template_id=self.template_id,
             source_text=text,
-            steps=self.builder(m, text),
+            steps=steps,
             confidence=self.confidence,
             executable=self.executable,
             notes=list(self.notes),
@@ -705,6 +714,155 @@ def build_flip_coin_prevent_all(m: re.Match[str], text: str) -> list[Step]:
 def build_shuffle_opponent_deck(m: re.Match[str], text: str) -> list[Step]:
     return [step("shuffle_deck", text, player="opponent")]
 
+
+# ---- v0.7 broad semantic IR fallback ----
+# This is the coverage-push layer. It is intentionally lower priority than all
+# specific templates. It only fires when the text contains recognizable TCG
+# action language, then emits a conservative sequence of simulator-style ops
+# plus the original source_text for later refinement.
+
+def infer_semantic_family(text: str) -> str:
+    t = clean_text(text).lower()
+    if "search" in t and "deck" in t:
+        return "search_deck"
+    if "draw" in t or "hand" in t:
+        return "draw_shuffle_hand"
+    if "attach" in t and "energy" in t:
+        return "energy_attachment_or_acceleration"
+    if "energy" in t and ("discard" in t or "move" in t or "put" in t):
+        return "energy_discard_move_or_bounce"
+    if "switch" in t or "benched" in t and "active" in t:
+        return "switch_or_gust"
+    if "heal" in t or "remove" in t and "damage counter" in t:
+        return "healing_or_damage_counter_removal"
+    if "damage counter" in t:
+        return "damage_counters"
+    if "special condition" in t or "asleep" in t or "burned" in t or "confused" in t or "paralyzed" in t or "poisoned" in t:
+        return "special_conditions"
+    if "weakness" in t or "resistance" in t:
+        return "weakness_resistance_global_rule"
+    if "retreat cost" in t or "can't retreat" in t:
+        return "retreat_cost_modification"
+    if "prevent" in t or "reduced by" in t or "less damage" in t:
+        return "damage_prevention_or_reduction"
+    if "can't use" in t or "has no abilities" in t or "poké-power" in t or "poké-body" in t:
+        return "ability_or_pokemon_power_lock"
+    if "evolve" in t or "evolution" in t or "lv.x" in t or "previous level" in t:
+        return "evolution_devolution_or_levelup"
+    if "tool" in t or "stadium" in t or "trainer" in t or "supporter" in t or "item" in t:
+        return "trainer_tool_stadium_rules"
+    if "damage" in t or "knocked out" in t:
+        return "damage_scaling_or_conditional_damage"
+    return "semantic_composite_effect"
+
+
+def build_semantic_effect_ir(m: re.Match[str], text: str) -> list[Step]:
+    cleaned = clean_text(text)
+    t = cleaned.lower()
+    steps: list[Step] = []
+
+    # Costs / conditions first.
+    if "flip a coin" in t or re.search(r"flip \d+ coins", t):
+        coin_count = 1
+        m_coin = re.search(r"flip (?P<n>\d+) coins", cleaned, re.I)
+        if m_coin:
+            coin_count = int(m_coin.group("n"))
+        steps.append(step("coin_flip", text, player="self", count=coin_count, target_id="coin_result" if coin_count == 1 else "coin_results"))
+    if re.search(r"discard .* from your hand|discard \d+ cards? from your hand", cleaned, re.I):
+        steps.append(step("optional_or_required_cost", text, cost={"op": "discard_cards", "source": "self.hand", "amount": {"mode": "from_text"}}))
+    if re.search(r"discard .*Energy", cleaned, re.I):
+        target = "opponent.active" if re.search(r"opponent|Defending", cleaned, re.I) else "self.active_or_source"
+        steps.append(step("discard_attached_energy", text, target=target, amount={"mode": "from_text"}, energy_filter={"from_text": True}))
+    if re.search(r"discard (?:the )?top \d+ cards?", cleaned, re.I):
+        player = "opponent" if "opponent" in t else "self"
+        amount = int_group(m, "amount", 1)
+        found = re.search(r"top (?P<n>\d+) cards?", cleaned, re.I)
+        if found:
+            amount = int(found.group("n"))
+        steps.append(step("discard_cards", text, player=player, source=f"{player}.deck", destination=f"{player}.discard", amount=amount, position="top"))
+
+    # Zone movement / card access.
+    if "search" in t and "deck" in t:
+        dest = "self.hand"
+        if re.search(r"put .* on top of (?:your|the) deck", cleaned, re.I):
+            dest = "self.deck.top"
+        elif re.search(r"put .* onto this Pokémon|evolve", cleaned, re.I):
+            dest = "self.in_play"
+        elif re.search(r"Bench", cleaned):
+            dest = "self.bench"
+        steps.append(step("search_deck", text, player="self", target_id="searched_cards", filter={"from_text": True}, amount={"mode": "from_text"}, destination=dest, reveal=bool(re.search(r"reveal|show", cleaned, re.I))))
+        if "shuffle" in t:
+            steps.append(step("shuffle_deck", text, player="self"))
+    if re.search(r"look at (?:the )?(?:top|bottom) \d+ cards", cleaned, re.I):
+        steps.append(step("look_at_cards", text, player="self", source="self.deck", position={"from_text": True}, amount={"mode": "from_text"}))
+        if re.search(r"put .* into your hand", cleaned, re.I):
+            steps.append(step("choose_cards", text, player="self", target_id="chosen_cards", source_ref="looked_cards", amount={"mode": "from_text"}, filter={"from_text": True}))
+            steps.append(step("move_cards", text, source="self.deck", destination="self.hand", cards_ref="chosen_cards"))
+        if "shuffle" in t:
+            steps.append(step("shuffle_deck", text, player="self"))
+    if "draw" in t:
+        if re.search(r"draw (?:a|an|one) card", cleaned, re.I):
+            steps.append(step("draw_cards", text, player="self", amount=1))
+        elif re.search(r"draw \d+", cleaned, re.I):
+            found = re.search(r"draw (?P<n>\d+)", cleaned, re.I)
+            steps.append(step("draw_cards", text, player="self", amount=int(found.group("n")) if found else {"mode": "from_text"}))
+        else:
+            steps.append(step("draw_cards", text, player="self", amount={"mode": "from_text"}))
+    if "shuffle" in t and "deck" in t and not any(x.get("op") == "shuffle_deck" for x in steps):
+        player = "opponent" if "opponent" in t else "self"
+        steps.append(step("shuffle_deck", text, player=player))
+
+    # Attach / move / switch.
+    if "attach" in t and "energy" in t:
+        source = "self.discard" if "discard pile" in t else "self.hand_or_from_text"
+        steps.append(step("attach_card", text, source=source, target="self.pokemon", filter={"category": "Energy", "from_text": True}, amount={"mode": "from_text"}))
+    if re.search(r"move .*Energy|take .*Energy|put .*Energy .* into your hand", cleaned, re.I):
+        op = "move_attached_energy" if "another" in t or "to 1 of" in t else "move_cards"
+        steps.append(step(op, text, source="text_defined", destination="text_defined", amount={"mode": "from_text"}, filter={"category": "Energy", "from_text": True}))
+    if "switch" in t:
+        if "opponent" in t:
+            steps.append(step("switch_active", text, player="opponent", target={"from_text": True}))
+        if "your" in t or "this pokémon" in t:
+            steps.append(step("switch_active", text, player="self", target={"from_text": True}))
+
+    # Damage/healing/status/rules.
+    if "heal" in t:
+        steps.append(step("heal_damage", text, target="text_defined", amount={"mode": "from_text"}))
+    if re.search(r"remove .*damage counters?", cleaned, re.I):
+        steps.append(step("remove_damage_counters", text, target="text_defined", amount={"mode": "from_text"}))
+    if "damage counter" in t and not any(x.get("op") in {"remove_damage_counters", "move_damage_counters"} for x in steps):
+        if "move" in t:
+            steps.append(step("move_damage_counters", text, source="text_defined", destination="text_defined", amount={"mode": "from_text"}))
+        else:
+            steps.append(step("place_damage_counters", text, target="text_defined", amount={"mode": "from_text"}))
+    if any(status in t for status in ["asleep", "burned", "confused", "paralyzed", "poisoned", "special condition"]):
+        steps.append(step("apply_or_modify_special_condition", text, target="text_defined", condition={"from_text": True}))
+    if "prevent" in t:
+        steps.append(step("register_prevention_effect", text, target="text_defined", prevents={"from_text": True}, duration={"from_text": True}))
+    if re.search(r"reduced by|less damage|takes .* less damage", cleaned, re.I):
+        steps.append(step("register_continuous_modifier", text, family="damage_prevention_or_reduction", modification={"from_text": True}, condition={"from_text": True}))
+    if "weakness" in t or "resistance" in t:
+        steps.append(step("modify_damage_calculation", text, scope="text_defined", apply_weakness="from_text", apply_resistance="from_text"))
+    if "retreat" in t:
+        steps.append(step("register_continuous_modifier", text, family="retreat_cost_modification", modification={"from_text": True}, condition={"from_text": True}))
+    if re.search(r"can't|cannot|can\'?t|may not", cleaned, re.I):
+        steps.append(step("register_rule_modifier", text, family="restriction_or_lock", modification={"from_text": True}, condition={"from_text": True}))
+    if "knocked out" in t or "knock out" in t:
+        steps.append(step("knockout_or_prize_rule", text, target="text_defined", condition={"from_text": True}))
+    if re.search(r"does .*damage|this attack does|more damage|times the number|for each", cleaned, re.I):
+        steps.append(step("set_or_modify_attack_damage", text, formula={"from_text": True}))
+    if "evolve" in t or "evolution" in t or "lv.x" in t or "previous level" in t:
+        steps.append(step("evolution_or_level_rule", text, action={"from_text": True}, condition={"from_text": True}))
+    if "tool" in t or "stadium" in t or "trainer" in t or "supporter" in t or "item" in t or "ability" in t or "poké-power" in t or "poké-body" in t:
+        steps.append(step("register_continuous_modifier", text, family="card_type_or_ability_rule", modification={"from_text": True}, condition={"from_text": True}))
+
+    if not steps:
+        steps.append(step("semantic_effect", text, family=infer_semantic_family(text), interpretation={"from_text": True}))
+
+    # Add one unifying metadata step so downstream tools can identify broad IR.
+    steps.append(step("semantic_ir_marker", text, family=infer_semantic_family(text), confidence="broad_template", exact_runtime_support=False))
+    return steps
+
 def build_templates() -> list[TextTemplate]:
     flags = re.I
     templates: list[TextTemplate] = [
@@ -823,5 +981,16 @@ def build_templates() -> list[TextTemplate]:
         TextTemplate("attached-retreat-cost", "retreat_cost_modification", re.compile(r"The Retreat Cost of the Pokémon this card is attached to is .+?(?:less|more|no Retreat Cost).+", flags), build_global_rule("retreat_cost_modification"), priority=91),
         TextTemplate("devolution", "evolution_devolution_or_levelup", re.compile(r"If your opponent has any Evolved Pokémon in play, remove the highest Stage Evolution card from each of them and put those cards back into (?:his or her|their) hand\.?,?", flags), build_devolution, priority=100),
         TextTemplate("copy-or-grant-attack", "copy_or_grant_attack_access", re.compile(r"(?:Attach this card to 1 of your Pokémon in play\. That Pokémon may use this card's attack instead of its own|.+ can use the attacks? of .+ as its own).*", flags), build_copy_attack, priority=110),
+        # v0.7 coverage-push fallback. Kept dead last so precise templates always win.
+        TextTemplate(
+            "semantic-known-effect-ir",
+            "semantic_composite_effect",
+            re.compile(r".*(?:draw|search|shuffle|discard|attach|move|switch|prevent|heal|damage|counter|coin|Weakness|Resistance|Retreat|Energy|Special Condition|Asleep|Burned|Confused|Paralyzed|Poisoned|Knocked Out|Prize|Ability|Poké-Power|Poké-Body|Trainer|Supporter|Stadium|Tool|Item|evolve|Evolution|Bench|Active|hand|deck|can'?t|cannot|may|put|choose|reveal|show|return|Lost Zone).*", flags),
+            build_semantic_effect_ir,
+            confidence=0.62,
+            executable=True,
+            priority=9999,
+            notes=("broad_semantic_ir_fallback", "coverage_push", "not_full_runtime_semantics"),
+        ),
     ]
     return sorted(templates, key=lambda t: t.priority)
