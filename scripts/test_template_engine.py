@@ -75,6 +75,15 @@ EXAMPLES = [
     "If this Pokémon is in your hand when you are setting up to play, you may put it face down as your Active Pokémon.",
     "Your Pokémon in play have no Weakness.",
     "The Defending Pokémon can't be healed during your opponent's next turn.",
+    # v0.7 broad semantic IR fallback examples
+    "If this Pokémon is Knocked Out by damage from an attack from your opponent's Pokémon, put it into your hand instead of the discard pile. (Discard all attached cards.)",
+    "Discard 1 Fire Energy card attached to Ninetales in order to use this attack.",
+    "If your opponent has any Benched Pokémon, choose 1 of them and switch it with his or her Active Pokémon.",
+    "Does damage to the Defending Pokémon equal to half the Defending Pokémon's remaining HP (rounded up to the nearest 10).",
+    "Flip a coin. If heads, your opponent can't play Trainer cards during his or her next turn.",
+    "Look at the top 3 cards of either player's deck and rearrange them as you like.",
+    "Search your discard pile for any 1 card, show it to your opponent, and put it on top of your deck.",
+    "Discard up to 2 Energy cards from your hand. For each card you discarded, draw 2 cards.",
 ]
 
 
