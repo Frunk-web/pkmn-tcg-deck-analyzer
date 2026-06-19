@@ -1,3 +1,4 @@
+# TURN1_DIRECT_TARGETFINDER_V40_CACHE_V54
 from __future__ import annotations
 
 """
@@ -772,30 +773,397 @@ def is_basic_fighting_pokemon(card: Dict[str, Any]) -> bool:
     return "fighting" in types
 
 
-def filter_allows_card(filt: Dict[str, Any], card: Dict[str, Any]) -> bool:
-    """Best-effort filter matcher for compiled search/select filters.
+# ---------------------------------------------------------------------
+# TURN1_STRICT_SEARCH_FILTERS_V37
+# ---------------------------------------------------------------------
+# Root fix:
+# Search filters must enforce the actual target class from the card text.
+#
+# Examples:
+# - Buddy-Buddy Poffin: Basic Pokemon with 70 HP or less only.
+# - Irida: Water Pokemon OR Item only.
+# - Shivery Chill: Basic Water Energy only.
+#
+# This replaces the old permissive behavior where raw-text filters could
+# accidentally match any target card.
 
-    This intentionally errs conservative for all-card target finding. A vague
-    search filter should not be allowed to find arbitrary Trainers, because that
-    badly inflates results. Known text-only filters, such as Fighting Gong, are
-    interpreted before the generic structured checks.
+def _turn1_v37_norm(value):
+    try:
+        return norm(value)
+    except Exception:
+        import re as _re
+        import unicodedata as _unicodedata
+
+        s = str(value or "")
+        s = _unicodedata.normalize("NFKD", s)
+        s = "".join(ch for ch in s if not _unicodedata.combining(ch))
+        s = s.lower().replace("’", "'").replace("`", "'")
+        s = _re.sub(r"\s+", " ", s)
+        return s.strip()
+
+
+def _turn1_v37_card_supertype_norm(card):
+    try:
+        return _turn1_v37_norm(card_supertype(card))
+    except Exception:
+        return ""
+
+
+def _turn1_v37_card_name_norm(card):
+    try:
+        return _turn1_v37_norm(card_name(card))
+    except Exception:
+        return ""
+
+
+def _turn1_v37_card_subtypes_norm(card):
+    try:
+        return {_turn1_v37_norm(x) for x in card_subtypes(card)}
+    except Exception:
+        return set()
+
+
+def _turn1_v37_card_types_norm(card):
+    try:
+        return {_turn1_v37_norm(x) for x in card_types(card)}
+    except Exception:
+        return set()
+
+
+def _turn1_v37_is_pokemon(card):
+    return _turn1_v37_card_supertype_norm(card) == "pokemon"
+
+
+def _turn1_v37_is_trainer(card):
+    return _turn1_v37_card_supertype_norm(card) == "trainer"
+
+
+def _turn1_v37_is_energy(card):
+    try:
+        return is_energy(card)
+    except Exception:
+        return _turn1_v37_card_supertype_norm(card) == "energy"
+
+
+def _turn1_v37_is_basic_pokemon(card):
+    try:
+        return is_basic_pokemon(card)
+    except Exception:
+        return _turn1_v37_is_pokemon(card) and "basic" in _turn1_v37_card_subtypes_norm(card)
+
+
+def _turn1_v37_is_basic_energy(card):
+    if not _turn1_v37_is_energy(card):
+        return False
+
+    name_n = _turn1_v37_card_name_norm(card)
+    subtypes = _turn1_v37_card_subtypes_norm(card)
+
+    return "basic" in subtypes or name_n.startswith("basic ")
+
+
+def _turn1_v37_card_hp(card):
+    candidates = []
+
+    if isinstance(card, dict):
+        candidates.append(card.get("hp"))
+        candidates.append(card.get("raw_hp"))
+
+        ident = card.get("identity") or {}
+        gameplay = card.get("gameplay") or {}
+        raw_card = card.get("raw_card") or card.get("source") or {}
+
+        if isinstance(ident, dict):
+            candidates.append(ident.get("hp"))
+
+        if isinstance(gameplay, dict):
+            candidates.append(gameplay.get("hp"))
+
+        if isinstance(raw_card, dict):
+            candidates.append(raw_card.get("hp"))
+
+    for value in candidates:
+        if value is None:
+            continue
+
+        m = re.search(r"\d+", str(value))
+
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+
+    return None
+
+
+_TURN1_V37_TYPE_SYNONYMS = {
+    "grass": ["grass", "g"],
+    "fire": ["fire", "r"],
+    "water": ["water", "w"],
+    "lightning": ["lightning", "electric", "l"],
+    "psychic": ["psychic", "p"],
+    "fighting": ["fighting", "f"],
+    "darkness": ["darkness", "dark", "d"],
+    "metal": ["metal", "steel", "m"],
+    "colorless": ["colorless", "c"],
+}
+
+
+def _turn1_v37_card_has_type(card, typ):
+    typ_n = _turn1_v37_norm(typ)
+    name_n = _turn1_v37_card_name_norm(card)
+    types = _turn1_v37_card_types_norm(card)
+
+    return typ_n in types or typ_n in name_n
+
+
+def _turn1_v37_has_typed_phrase(text, typ, suffix):
+    text = _turn1_v37_norm(text)
+    synonyms = _TURN1_V37_TYPE_SYNONYMS.get(typ, [typ])
+
+    for syn in synonyms:
+        syn = _turn1_v37_norm(syn)
+
+        if f"{syn} {suffix}" in text:
+            return True
+
+        # Handles normalized "{W} Energy" as "w energy".
+        if len(syn) == 1 and f"{syn} {suffix}" in text:
+            return True
+
+    return False
+
+
+def _turn1_v37_hp_limit_from_text(text):
+    text = _turn1_v37_norm(text)
+    m = re.search(r"(\d+)\s*hp\s*or\s*less", text)
+
+    if not m:
+        return None
+
+    try:
+        return int(m.group(1))
+    except Exception:
+        return None
+
+
+def _turn1_v37_hp_ok(card, text):
+    limit = _turn1_v37_hp_limit_from_text(text)
+
+    if limit is None:
+        return True
+
+    hp = _turn1_v37_card_hp(card)
+
+    if hp is None:
+        return False
+
+    return hp <= limit
+
+
+def _turn1_v37_is_pokemon_ex(card):
+    if not _turn1_v37_is_pokemon(card):
+        return False
+
+    name_n = _turn1_v37_card_name_norm(card)
+    subtypes = _turn1_v37_card_subtypes_norm(card)
+
+    return " ex" in f" {name_n}" or "ex" in subtypes
+
+
+def _turn1_v37_trainer_kind(card, kind):
+    kind_n = _turn1_v37_norm(kind)
+
+    if not _turn1_v37_is_trainer(card):
+        return False
+
+    name_n = _turn1_v37_card_name_norm(card)
+    subtypes = _turn1_v37_card_subtypes_norm(card)
+
+    return kind_n in subtypes or kind_n in name_n
+
+
+def _turn1_v37_target_phrase_from_filter_blob(blob):
+    """
+    Extract the searched/selected target phrase.
+
+    Important:
+    For Shivery Chill, the full text includes:
+      "if this Pokemon is in the Active Spot..."
+    We must NOT treat that as a Pokemon search. The target phrase is:
+      "up to 2 Basic Water Energy cards"
+    """
+    b = _turn1_v37_norm(blob)
+
+    patterns = [
+        r"search (?:your|the) deck(?: and (?:your )?discard pile)? for (.*?)(?:, reveal| reveal| and reveal|,? and put|,? put| then shuffle| shuffle|\.|$)",
+        r"look at the top \d+ cards? of your deck.*?reveal (.*?)(?: card| cards|,| and put| put|$)",
+        r"choose (.*?)(?: from (?:your )?deck| from among them|,| and put| put|$)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, b)
+
+        if not m:
+            continue
+
+        phrase = m.group(1)
+        phrase = re.sub(r"^(up to|exactly)?\s*\d+\s+", "", phrase)
+        phrase = re.sub(r"^(a|an|any|one|two)\s+", "", phrase)
+        phrase = phrase.strip()
+
+        if phrase:
+            return phrase
+
+    return b
+
+
+def _turn1_v37_raw_text_filter_decision(filt, card):
+    """
+    Return:
+      True  -> raw text explicitly allows this card
+      False -> raw text explicitly excludes this card
+      None  -> not enough raw-text info; use structured fallback
+    """
+    if not isinstance(filt, dict):
+        return None
+
+    blob = filter_text_blob(filt)
+
+    if not blob:
+        return None
+
+    has_raw_text = any(k in filt for k in ["raw_text", "source_text", "text"])
+    has_search_language = any(
+        phrase in _turn1_v37_norm(blob)
+        for phrase in [
+            "search your deck",
+            "look at the top",
+            "reveal",
+            "choose",
+            "put them into your hand",
+            "put it into your hand",
+            "put them onto your bench",
+            "put it onto your bench",
+        ]
+    )
+
+    if not has_raw_text and not has_search_language:
+        return None
+
+    target = _turn1_v37_target_phrase_from_filter_blob(blob)
+    t = _turn1_v37_norm(target)
+
+    tests = []
+
+    # -----------------------------
+    # Energy filters
+    # -----------------------------
+    for typ in _TURN1_V37_TYPE_SYNONYMS:
+        if _turn1_v37_has_typed_phrase(t, typ, "energy"):
+            if "basic" in t:
+                tests.append(lambda c, typ=typ: _turn1_v37_is_basic_energy(c) and _turn1_v37_card_has_type(c, typ))
+            else:
+                tests.append(lambda c, typ=typ: _turn1_v37_is_energy(c) and _turn1_v37_card_has_type(c, typ))
+
+    if "basic energy" in t:
+        tests.append(lambda c: _turn1_v37_is_basic_energy(c))
+    elif "energy" in t and not tests:
+        tests.append(lambda c: _turn1_v37_is_energy(c))
+
+    # -----------------------------
+    # Pokemon filters
+    # -----------------------------
+    for typ in _TURN1_V37_TYPE_SYNONYMS:
+        if _turn1_v37_has_typed_phrase(t, typ, "pokemon"):
+            if "basic" in t:
+                tests.append(
+                    lambda c, typ=typ, target=t: (
+                        _turn1_v37_is_basic_pokemon(c)
+                        and _turn1_v37_card_has_type(c, typ)
+                        and _turn1_v37_hp_ok(c, target)
+                    )
+                )
+            else:
+                tests.append(
+                    lambda c, typ=typ, target=t: (
+                        _turn1_v37_is_pokemon(c)
+                        and _turn1_v37_card_has_type(c, typ)
+                        and _turn1_v37_hp_ok(c, target)
+                    )
+                )
+
+    if "pokemon ex" in t:
+        tests.append(lambda c: _turn1_v37_is_pokemon_ex(c))
+
+    if "basic pokemon" in t:
+        tests.append(lambda c, target=t: _turn1_v37_is_basic_pokemon(c) and _turn1_v37_hp_ok(c, target))
+    elif "pokemon" in t and not any(word in t for word in ["energy", "supporter", "item", "stadium"]):
+        tests.append(lambda c, target=t: _turn1_v37_is_pokemon(c) and _turn1_v37_hp_ok(c, target))
+
+    # -----------------------------
+    # Trainer filters
+    # -----------------------------
+    if "supporter" in t:
+        tests.append(lambda c: _turn1_v37_trainer_kind(c, "supporter"))
+
+    if "item" in t:
+        tests.append(lambda c: _turn1_v37_trainer_kind(c, "item"))
+
+    if "stadium" in t:
+        tests.append(lambda c: _turn1_v37_trainer_kind(c, "stadium"))
+
+    if "tool" in t:
+        tests.append(lambda c: _turn1_v37_trainer_kind(c, "tool") or _turn1_v37_trainer_kind(c, "pokemon tool"))
+
+    if "trainer" in t and not any(word in t for word in ["supporter", "item", "stadium", "tool"]):
+        tests.append(lambda c: _turn1_v37_is_trainer(c))
+
+    # -----------------------------
+    # Generic "any card" filters
+    # -----------------------------
+    if not tests and ("any card" in t or t in {"card", "a card"}):
+        return True
+
+    if tests:
+        return any(test(card) for test in tests)
+
+    # Conservative fallback:
+    # If this was clearly a search/select raw-text filter but we could not
+    # classify its target, do not let it find arbitrary cards.
+    if has_search_language:
+        return False
+
+    return None
+
+
+def filter_allows_card(filt: Dict[str, Any], card: Dict[str, Any]) -> bool:
+    """Strict filter matcher for compiled search/select filters.
+
+    v0.37: raw search text is now interpreted as an actual target restriction,
+    not as a vague permission to find anything.
     """
     if not filt:
         return True
 
+    raw_decision = _turn1_v37_raw_text_filter_decision(filt, card)
+
+    if raw_decision is not None:
+        return bool(raw_decision)
+
     blob = filter_text_blob(filt)
 
     # Fighting Gong: "Search your deck for a Basic Fighting Energy card or a
-    # Basic Fighting Pokemon...". The compiler may store this only in raw_text.
-    # Accept only those two categories.
+    # Basic Fighting Pokemon...". Kept as explicit fallback.
     if ("basic fighting energy" in blob or "basic f energy" in blob or "basic {f} energy" in blob) and (
         "basic fighting pokemon" in blob or "basic f pokemon" in blob or "basic {f} pokemon" in blob
     ):
         return is_basic_fighting_energy(card) or is_basic_fighting_pokemon(card)
 
-    # Similar single-category text filters.
     if "basic fighting energy" in blob or "basic f energy" in blob or "basic {f} energy" in blob:
         return is_basic_fighting_energy(card)
+
     if "basic fighting pokemon" in blob or "basic f pokemon" in blob or "basic {f} pokemon" in blob:
         return is_basic_fighting_pokemon(card)
 
@@ -803,33 +1171,41 @@ def filter_allows_card(filt: Dict[str, Any], card: Dict[str, Any]) -> bool:
         return True
 
     st = filt.get("supertype") or filt.get("card_supertype")
-    if st and str(st) != card_supertype(card):
+    if st and _turn1_v37_norm(st) != _turn1_v37_card_supertype_norm(card):
         return False
 
-    # subtype can be string or list. Require at least one match if provided.
     sub = filt.get("subtype") or filt.get("subtypes")
     if sub:
-        needed = {str(x) for x in (sub if isinstance(sub, list) else [sub])}
-        if not (needed & set(card_subtypes(card))):
+        needed = {_turn1_v37_norm(x) for x in (sub if isinstance(sub, list) else [sub])}
+        if not (needed & _turn1_v37_card_subtypes_norm(card)):
             return False
 
     types = filt.get("types") or filt.get("type")
     if types:
-        needed = {str(x) for x in (types if isinstance(types, list) else [types])}
-        if not (needed & set(card_types(card))):
+        needed = {_turn1_v37_norm(x) for x in (types if isinstance(types, list) else [types])}
+        if not (needed & _turn1_v37_card_types_norm(card)):
             return False
 
     name_contains = filt.get("name_contains") or filt.get("name")
-    if name_contains and norm(name_contains) not in norm(card_name(card)):
+    if name_contains and _turn1_v37_norm(name_contains) not in _turn1_v37_card_name_norm(card):
         return False
 
-    # Common broad filters expressed in text/flags.
-    if filt.get("basic_pokemon") and not is_basic_pokemon(card):
+    hp_max = filt.get("hp_max") or filt.get("max_hp")
+    if hp_max is not None:
+        hp = _turn1_v37_card_hp(card)
+        try:
+            if hp is None or hp > int(hp_max):
+                return False
+        except Exception:
+            return False
+
+    if filt.get("basic_pokemon") and not _turn1_v37_is_basic_pokemon(card):
         return False
-    if filt.get("energy") and not is_energy(card):
+
+    if filt.get("energy") and not _turn1_v37_is_energy(card):
         return False
+
     return True
-
 
 def search_amount(step: Dict[str, Any]) -> int:
     for key in ("amount", "count", "max_cards", "number"):
@@ -3175,5 +3551,746 @@ def main() -> None:
     print_compact_console_summary(result, args)
 
 
+
+
+# -----------------------------------------------------------------------------
+# TURN1_COMPILED_EFFECT_RUNTIME_V39
+# -----------------------------------------------------------------------------
+# Root fix:
+# Use the compiled effect/search filters and printed/source text to decide:
+# - what a search effect can actually find
+# - whether an Ability is available from Active / Bench / when-played-from-hand
+# - whether a Basic Pokemon should be chosen Active at setup for an active-only
+#   ability that can satisfy the current target
+#
+# This is intentionally generic. It is not a Chien-Pao/Lumineon special case.
+#
+# Conservative retreat policy:
+# This patch does NOT assume a free retreat. Active-only abilities are usable only
+# when the source Pokemon is actually Active. A later board-action layer can model
+# attach-energy + retreat-cost + once-per-turn retreat, but until then this patch
+# prevents illegal active-only Ability lines instead of inventing them.
+
+
+def _turn1_v39_norm(value):
+    import re as _re
+    import unicodedata as _unicodedata
+
+    s = str(value or "")
+    s = _unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not _unicodedata.combining(ch))
+    s = s.lower().replace("’", "'").replace("`", "'")
+    s = _re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _turn1_v39_card_name(card):
+    try:
+        return card_name(card)
+    except Exception:
+        if isinstance(card, dict):
+            ident = card.get("identity") or {}
+            return (
+                card.get("name")
+                or card.get("card_name")
+                or ident.get("name")
+                or ident.get("canonical_name")
+                or ""
+            )
+        return ""
+
+
+def _turn1_v39_card_supertype(card):
+    try:
+        return card_supertype(card)
+    except Exception:
+        if isinstance(card, dict):
+            ident = card.get("identity") or {}
+            return str(card.get("supertype") or ident.get("supertype") or "")
+        return ""
+
+
+def _turn1_v39_card_subtypes(card):
+    try:
+        return list(card_subtypes(card))
+    except Exception:
+        vals = []
+        if isinstance(card, dict):
+            ident = card.get("identity") or {}
+            for obj in (card, ident):
+                for key in ("subtype", "subtypes", "trainerType"):
+                    v = obj.get(key)
+                    if isinstance(v, list):
+                        vals.extend(str(x) for x in v)
+                    elif v:
+                        vals.append(str(v))
+        return vals
+
+
+def _turn1_v39_card_types(card):
+    try:
+        return list(card_types(card))
+    except Exception:
+        vals = []
+        if isinstance(card, dict):
+            ident = card.get("identity") or {}
+            for obj in (card, ident):
+                v = obj.get("types") or obj.get("type")
+                if isinstance(v, list):
+                    vals.extend(str(x) for x in v)
+                elif v:
+                    vals.append(str(v))
+        return vals
+
+
+def _turn1_v39_card_hp(card):
+    import re as _re
+
+    candidates = []
+    if isinstance(card, dict):
+        candidates.extend([card.get("hp"), card.get("raw_hp")])
+        for key in ("identity", "gameplay", "raw_card", "source"):
+            obj = card.get(key)
+            if isinstance(obj, dict):
+                candidates.extend([obj.get("hp"), obj.get("raw_hp")])
+
+    for value in candidates:
+        if value is None:
+            continue
+        m = _re.search(r"\d+", str(value))
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+    return None
+
+
+_TURN1_V39_TYPES = {
+    "grass": ["grass", "g"],
+    "fire": ["fire", "r"],
+    "water": ["water", "w"],
+    "lightning": ["lightning", "electric", "l"],
+    "psychic": ["psychic", "p"],
+    "fighting": ["fighting", "f"],
+    "darkness": ["darkness", "dark", "d"],
+    "metal": ["metal", "steel", "m"],
+    "colorless": ["colorless", "c"],
+}
+
+
+def _turn1_v39_is_pokemon(card):
+    return _turn1_v39_norm(_turn1_v39_card_supertype(card)) in {"pokemon", "pokémon"}
+
+
+def _turn1_v39_is_trainer(card):
+    return _turn1_v39_norm(_turn1_v39_card_supertype(card)) == "trainer"
+
+
+def _turn1_v39_is_energy(card):
+    try:
+        return is_energy(card)
+    except Exception:
+        return _turn1_v39_norm(_turn1_v39_card_supertype(card)) == "energy"
+
+
+def _turn1_v39_is_basic_pokemon(card):
+    try:
+        return is_basic_pokemon(card)
+    except Exception:
+        return _turn1_v39_is_pokemon(card) and "basic" in {_turn1_v39_norm(x) for x in _turn1_v39_card_subtypes(card)}
+
+
+def _turn1_v39_is_basic_energy(card):
+    if not _turn1_v39_is_energy(card):
+        return False
+    name_n = _turn1_v39_norm(_turn1_v39_card_name(card))
+    subs = {_turn1_v39_norm(x) for x in _turn1_v39_card_subtypes(card)}
+    return "basic" in subs or name_n.startswith("basic ")
+
+
+def _turn1_v39_has_type(card, typ):
+    typ_n = _turn1_v39_norm(typ)
+    name_n = _turn1_v39_norm(_turn1_v39_card_name(card))
+    types = {_turn1_v39_norm(x) for x in _turn1_v39_card_types(card)}
+    aliases = _TURN1_V39_TYPES.get(typ_n, [typ_n])
+    return any(_turn1_v39_norm(a) in types or _turn1_v39_norm(a) in name_n for a in aliases)
+
+
+def _turn1_v39_trainer_kind(card, kind):
+    if not _turn1_v39_is_trainer(card):
+        return False
+    kind_n = _turn1_v39_norm(kind)
+    name_n = _turn1_v39_norm(_turn1_v39_card_name(card))
+    subs = {_turn1_v39_norm(x) for x in _turn1_v39_card_subtypes(card)}
+    return kind_n in subs or kind_n in name_n
+
+
+def _turn1_v39_is_pokemon_ex(card):
+    if not _turn1_v39_is_pokemon(card):
+        return False
+    name_n = _turn1_v39_norm(_turn1_v39_card_name(card))
+    subs = {_turn1_v39_norm(x) for x in _turn1_v39_card_subtypes(card)}
+    return name_n.endswith(" ex") or " ex " in f" {name_n} " or "ex" in subs
+
+
+def _turn1_v39_hp_ok(card, target_text):
+    import re as _re
+
+    t = _turn1_v39_norm(target_text)
+    m = _re.search(r"(\d+)\s*hp\s*or\s*less", t)
+    if not m:
+        return True
+    hp = _turn1_v39_card_hp(card)
+    if hp is None:
+        return False
+    try:
+        return hp <= int(m.group(1))
+    except Exception:
+        return False
+
+
+def _turn1_v39_phrase_has_typed_target(phrase, typ, noun):
+    p = _turn1_v39_norm(phrase)
+    for alias in _TURN1_V39_TYPES.get(typ, [typ]):
+        a = _turn1_v39_norm(alias)
+        if f"{a} {noun}" in p:
+            return True
+    return False
+
+
+def _turn1_v39_search_target_phrase(blob):
+    """Extract what the effect searches/chooses/reveals, not ability conditions."""
+    import re as _re
+
+    b = _turn1_v39_norm(blob)
+    patterns = [
+        r"search (?:your|the) deck(?: and (?:your )?discard pile)? for (.*?)(?:, reveal| reveal| and reveal|,? and put|,? put| then shuffle| shuffle|\.|$)",
+        r"look at the top \d+ cards? of your deck.*?reveal (.*?)(?: card| cards|,| and put| put|$)",
+        r"choose (.*?)(?: from (?:your )?deck| from among them|,| and put| put|$)",
+    ]
+    for pat in patterns:
+        m = _re.search(pat, b)
+        if not m:
+            continue
+        phrase = m.group(1)
+        phrase = _re.sub(r"^(up to|exactly)?\s*\d+\s+", "", phrase).strip()
+        phrase = _re.sub(r"^(a|an|any|one|two)\s+", "", phrase).strip()
+        if phrase:
+            return phrase
+    return b
+
+
+def _turn1_v39_filter_raw_decision(filt, card):
+    if not isinstance(filt, dict):
+        return None
+    blob = filter_text_blob(filt)
+    if not blob:
+        return None
+
+    blob_n = _turn1_v39_norm(blob)
+    has_raw = any(k in filt for k in ("raw_text", "source_text", "text"))
+    has_search_language = any(
+        p in blob_n
+        for p in (
+            "search your deck",
+            "look at the top",
+            "reveal",
+            "choose",
+            "put them into your hand",
+            "put it into your hand",
+            "put them onto your bench",
+            "put it onto your bench",
+        )
+    )
+    if not has_raw and not has_search_language:
+        return None
+
+    target = _turn1_v39_search_target_phrase(blob)
+    t = _turn1_v39_norm(target)
+    tests = []
+
+    # Energy target filters.
+    for typ in _TURN1_V39_TYPES:
+        if _turn1_v39_phrase_has_typed_target(t, typ, "energy"):
+            if "basic" in t:
+                tests.append(lambda c, typ=typ: _turn1_v39_is_basic_energy(c) and _turn1_v39_has_type(c, typ))
+            else:
+                tests.append(lambda c, typ=typ: _turn1_v39_is_energy(c) and _turn1_v39_has_type(c, typ))
+    if "basic energy" in t:
+        tests.append(lambda c: _turn1_v39_is_basic_energy(c))
+    elif "energy" in t and not tests:
+        tests.append(lambda c: _turn1_v39_is_energy(c))
+
+    # Pokemon target filters.
+    for typ in _TURN1_V39_TYPES:
+        if _turn1_v39_phrase_has_typed_target(t, typ, "pokemon") or _turn1_v39_phrase_has_typed_target(t, typ, "pokémon"):
+            if "basic" in t:
+                tests.append(lambda c, typ=typ, target=t: _turn1_v39_is_basic_pokemon(c) and _turn1_v39_has_type(c, typ) and _turn1_v39_hp_ok(c, target))
+            else:
+                tests.append(lambda c, typ=typ, target=t: _turn1_v39_is_pokemon(c) and _turn1_v39_has_type(c, typ) and _turn1_v39_hp_ok(c, target))
+    if "pokemon ex" in t or "pokémon ex" in t:
+        tests.append(lambda c: _turn1_v39_is_pokemon_ex(c))
+    if "basic pokemon" in t or "basic pokémon" in t:
+        tests.append(lambda c, target=t: _turn1_v39_is_basic_pokemon(c) and _turn1_v39_hp_ok(c, target))
+    elif ("pokemon" in t or "pokémon" in t) and not any(x in t for x in ("energy", "supporter", "item", "stadium", "tool")):
+        tests.append(lambda c, target=t: _turn1_v39_is_pokemon(c) and _turn1_v39_hp_ok(c, target))
+
+    # Trainer target filters.
+    if "supporter" in t:
+        tests.append(lambda c: _turn1_v39_trainer_kind(c, "supporter"))
+    if "item" in t:
+        tests.append(lambda c: _turn1_v39_trainer_kind(c, "item"))
+    if "stadium" in t:
+        tests.append(lambda c: _turn1_v39_trainer_kind(c, "stadium"))
+    if "tool" in t:
+        tests.append(lambda c: _turn1_v39_trainer_kind(c, "tool") or _turn1_v39_trainer_kind(c, "pokemon tool"))
+    if "trainer" in t and not any(x in t for x in ("supporter", "item", "stadium", "tool")):
+        tests.append(lambda c: _turn1_v39_is_trainer(c))
+
+    if not tests and ("any card" in t or t in {"card", "a card"}):
+        return True
+    if tests:
+        return any(test(card) for test in tests)
+    if has_search_language:
+        # Conservative: a compiled/source search filter with unclassified target
+        # cannot search arbitrary cards.
+        return False
+    return None
+
+
+_ORIG_FILTER_ALLOWS_CARD_V39 = filter_allows_card
+
+
+def filter_allows_card(filt, card):
+    decision = _turn1_v39_filter_raw_decision(filt, card)
+    if decision is not None:
+        return bool(decision)
+    return _ORIG_FILTER_ALLOWS_CARD_V39(filt, card)
+
+
+# --------------------------
+# Ability lifecycle handling
+# --------------------------
+
+def _turn1_v39_effect_text(effect):
+    try:
+        return ability_text_blob(effect)
+    except Exception:
+        return str(effect or "")
+
+
+def _turn1_v39_effect_blob(effect):
+    return _turn1_v39_norm(_turn1_v39_effect_text(effect))
+
+
+def _turn1_v39_effect_requires_active(effect):
+    b = _turn1_v39_effect_blob(effect)
+    active_phrases = [
+        "if this pokemon is in the active spot",
+        "if this pokémon is in the active spot",
+        "while this pokemon is in the active spot",
+        "while this pokémon is in the active spot",
+        "as long as this pokemon is in the active spot",
+        "as long as this pokémon is in the active spot",
+        "this pokemon is in the active spot",
+        "this pokémon is in the active spot",
+        "your active pokemon",
+        "your active pokémon",
+    ]
+    return any(p in b for p in active_phrases)
+
+
+def _turn1_v39_effect_is_when_played_to_bench(effect):
+    b = _turn1_v39_effect_blob(effect)
+    return (
+        "when you play this pokemon from your hand onto your bench" in b
+        or "when you play this pokémon from your hand onto your bench" in b
+        or "when you play this card from your hand onto your bench" in b
+    )
+
+
+def _turn1_v39_effect_has_usable_search_or_draw(effect, target_norm, deck):
+    # Direct search must be allowed by compiled/source filters.
+    try:
+        if ability_directly_searches_target(effect, target_norm, deck):
+            return True
+    except Exception:
+        pass
+    # Generic draw/look remains a valid dig action if it can see/draw the target.
+    try:
+        return ability_draw_power(effect) > 0 or any(
+            s.get("op") in {"look_at_top_cards", "look_at_cards", "reorder_cards"}
+            for s in flatten_steps(effect)
+        )
+    except Exception:
+        return False
+
+
+def _turn1_v39_ability_context_ok(effect, st, source, target_norm, context):
+    # context: "in_play" for normal reusable/checkable abilities, "just_benched" after playing source from hand.
+    if _turn1_v39_effect_requires_active(effect) and source is not getattr(st, "active", None):
+        return False
+    if context == "in_play" and _turn1_v39_effect_is_when_played_to_bench(effect):
+        return False
+    if context == "just_benched" and _turn1_v39_effect_requires_active(effect):
+        return False
+    try:
+        if not ability_requirements_can_be_met(effect, st, source):
+            return False
+        if not ability_costs_can_be_paid(effect, st, target_norm):
+            return False
+    except Exception:
+        return False
+    return _turn1_v39_effect_has_usable_search_or_draw(effect, target_norm, st.deck)
+
+
+_ORIG_ABILITY_READY_FOR_TARGET_FINDING_V39 = ability_ready_for_target_finding
+
+
+def ability_ready_for_target_finding(effect, st, source, target_norm):
+    # Normal in-play ability use: no bench-trigger abilities, active-only only from Active.
+    if not _turn1_v39_ability_context_ok(effect, st, source, target_norm, "in_play"):
+        return False
+    return True
+
+
+_ORIG_SCORE_GENERIC_ABILITY_V39 = score_generic_ability
+
+
+def score_generic_ability(st, source, effect, target_norm):
+    if not ability_ready_for_target_finding(effect, st, source, target_norm):
+        return -1.0
+    return _ORIG_SCORE_GENERIC_ABILITY_V39(st, source, effect, target_norm)
+
+
+def _turn1_v39_score_ability_context(st, source, effect, target_norm, context):
+    if not _turn1_v39_ability_context_ok(effect, st, source, target_norm, context):
+        return -1.0
+    if ability_directly_searches_target(effect, target_norm, st.deck):
+        return 8800.0
+    target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
+    if target_remaining <= 0 or not st.deck:
+        return -1.0
+    draw_power = ability_draw_power(effect)
+    if draw_power:
+        return 1000.0 * (1.0 - hypergeom_zero(len(st.deck), target_remaining, min(draw_power, len(st.deck))))
+    return -1.0
+
+
+_ORIG_CAN_BENCH_BASIC_FOR_ABILITY_V39 = can_bench_basic_for_ability
+
+
+def can_bench_basic_for_ability(st, card, target_norm):
+    if not is_basic_pokemon(card):
+        return False
+    if len(st.bench) >= bench_capacity(st):
+        return False
+    if card not in st.hand:
+        return False
+    if target_matches(card, target_norm):
+        return False
+    for eff in ability_effects(card):
+        if _turn1_v39_score_ability_context(st, card, eff, target_norm, "just_benched") > 0:
+            return True
+    return False
+
+
+_ORIG_BENCH_BASIC_ABILITY_SCORE_V39 = bench_basic_ability_score
+
+
+def bench_basic_ability_score(st, card, target_norm, going):
+    if not can_bench_basic_for_ability(st, card, target_norm):
+        return -1.0
+    if is_meowth_ex(card):
+        return score_playable_card(card, st, target_norm, going, True)
+    best = -1.0
+    for eff in ability_effects(card):
+        best = max(best, _turn1_v39_score_ability_context(st, card, eff, target_norm, "just_benched"))
+    return best
+
+
+_ORIG_BENCH_BASIC_FOR_ABILITY_V39 = bench_basic_for_ability
+
+
+def bench_basic_for_ability(st, card, rng, target_norm, going, enable_chain_search):
+    if not can_bench_basic_for_ability(st, card, target_norm):
+        return
+    if is_meowth_ex(card):
+        play_card(st, card, rng, target_norm, going, enable_chain_search)
+        return
+    st.hand.remove(card)
+    st.bench.append(card)
+    st.actions_used += 1
+    st.line.append(card_name(card))
+    stage = f"after_bench_{card_name(card)}"
+    st.log.append({"event": "play_basic_to_bench", "card": card_name(card), "stage": stage})
+    candidates = []
+    for eff in ability_effects(card):
+        score = _turn1_v39_score_ability_context(st, card, eff, target_norm, "just_benched")
+        if score > 0:
+            candidates.append((score, eff))
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, eff = candidates[0]
+        use_generic_ability(st, card, eff, rng, target_norm, going, enable_chain_search)
+
+
+_ORIG_CHOOSE_OPTIMAL_ACTIVE_V39 = choose_optimal_active
+
+
+def choose_optimal_active(opening, target_norm):
+    basics = [c for c in opening if is_basic_pokemon(c)]
+    if not basics:
+        return None
+
+    # Prefer a Basic whose active-only compiled/source Ability can directly help this target.
+    for c in basics:
+        fake_rest = [x for x in opening if x is not c]
+        st = SimState(deck=list(fake_rest), hand=list(fake_rest), prizes=[], active=c)
+        # Use the opening as a small proxy for known cards; this only decides setup Active.
+        for eff in ability_effects(c):
+            if not _turn1_v39_effect_requires_active(eff):
+                continue
+            # For active choice, require the effect target class to match; exact deck copies are checked later.
+            if _turn1_v39_effect_has_usable_search_or_draw(eff, target_norm, list(opening)):
+                return c
+
+    return _ORIG_CHOOSE_OPTIMAL_ACTIVE_V39(opening, target_norm)
+
+
 if __name__ == "__main__":
     main()
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_BLOCK_OPPONENT_DEPENDENT_ACCESS_V40
+# ---------------------------------------------------------------------
+# Broad rule:
+# Cards whose access value depends on the opponent's board/hand/deck are not
+# valid deterministic Turn-1 consistency tools unless the simulator explicitly
+# models that opponent state.
+#
+# Example:
+#   Morty's Conviction:
+#     "Draw a card for each of your opponent's Benched Pokemon."
+#
+# Since this simulator does not currently model opponent bench size, that effect
+# must not be credited as generic draw/access.
+
+
+# ---------------------------------------------------------------------
+# TURN1_DIRECT_TARGETFINDER_V40_CACHE_V54
+# ---------------------------------------------------------------------
+# Direct hot-path fix, not a same-name wrapper.
+#
+# The profiler showed play_card spending most of its time in the v40
+# opponent-dependent-access guard. That guard repeatedly normalized and
+# flattened the same card dictionaries 100k+ times during chain-search.
+#
+# This block gives the original v40 helper functions their own caches and
+# replaces their bodies directly below.
+
+_TURN1_V54_NORM_CACHE = {}
+_TURN1_V54_OPP_DEP_ACCESS_CACHE = {}
+
+
+def _turn1_v54_card_cache_key(card):
+    if isinstance(card, dict):
+        ident = card.get("identity") or {}
+        key = (
+            card.get("card_id")
+            or card.get("representative_card_id")
+            or card.get("id")
+            or ident.get("card_id")
+            or ident.get("id")
+            or ident.get("canonical_id")
+        )
+        if key:
+            return ("id", str(key))
+        name = card.get("name") or card.get("card_name") or ident.get("name") or ident.get("canonical_name")
+        set_code = card.get("set_code") or ident.get("set_code") or card.get("set") or ident.get("set")
+        number = card.get("number") or card.get("collector_number") or ident.get("number") or ident.get("collector_number")
+        if name:
+            return ("name", str(name), str(set_code or ""), str(number or ""))
+    if isinstance(card, str):
+        return ("str", card)
+    return ("obj", id(card))
+
+def _turn1_v40_norm(value):
+    """Cached normalization for the v40 opponent-dependent-access guard."""
+    import re as _re
+    import unicodedata as _unicodedata
+
+    try:
+        key = _turn1_v54_card_cache_key(value)
+        cached = _TURN1_V54_NORM_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        if isinstance(value, str):
+            blob = value
+        else:
+            try:
+                blob = _turn1_v40_flatten_strings(value)
+            except Exception:
+                blob = str(value or "")
+
+        s = _unicodedata.normalize("NFKD", str(blob or ""))
+        s = "".join(ch for ch in s if not _unicodedata.combining(ch))
+        s = s.lower().replace("’", "'").replace("`", "'")
+        s = _re.sub(r"\s+", " ", s).strip()
+
+        if len(_TURN1_V54_NORM_CACHE) < 250000:
+            _TURN1_V54_NORM_CACHE[key] = s
+        return s
+    except Exception:
+        return ""
+
+def _turn1_v40_flatten_strings(obj, max_items=5000):
+    out = []
+    seen = set()
+
+    def rec(x):
+        if len(out) >= max_items:
+            return
+
+        oid = id(x)
+        if oid in seen:
+            return
+        seen.add(oid)
+
+        if isinstance(x, str):
+            if x.strip():
+                out.append(x)
+            return
+
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if isinstance(k, str) and k.strip():
+                    out.append(k)
+                rec(v)
+            return
+
+        if isinstance(x, (list, tuple, set)):
+            for v in x:
+                rec(v)
+
+    rec(obj)
+    return " ".join(out)
+
+
+def _turn1_v40_card_name(card):
+    try:
+        return card_name(card)
+    except Exception:
+        pass
+
+    if isinstance(card, dict):
+        ident = card.get("identity") or {}
+        return (
+            card.get("name")
+            or card.get("card_name")
+            or ident.get("name")
+            or ident.get("canonical_name")
+            or ""
+        )
+
+    return ""
+
+
+def _turn1_v40_is_opponent_state_dependent_access_card(card):
+    """Return True for access cards whose draw/search amount depends on opponent state.
+
+    Direct cached replacement for the original v40 guard. This intentionally
+    focuses on access effects, not generic interaction with the opponent.
+    Example blocked: Morty's Conviction, because its draw count depends on the
+    opponent's Bench.
+    Example not blocked: Iono-style text that affects both players but does not
+    make our access count depend on the opponent's board size.
+    """
+    try:
+        key = _turn1_v54_card_cache_key(card)
+        cached = _TURN1_V54_OPP_DEP_ACCESS_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        blob = _turn1_v40_norm(card)
+
+        has_access = any(
+            token in blob
+            for token in [
+                "draw",
+                "search your deck",
+                "search the deck",
+                "look at the top",
+                "reveal",
+                "choose",
+            ]
+        )
+
+        opponent_dependent = any(
+            token in blob
+            for token in [
+                "for each of your opponent",
+                "for each pokemon your opponent",
+                "for each pokémon your opponent",
+                "for each of your opponents",
+                "opponent's benched pokemon",
+                "opponent's benched pokémon",
+                "opponents benched pokemon",
+                "opponents benched pokémon",
+                "your opponent's benched pokemon",
+                "your opponent's benched pokémon",
+                "your opponents benched pokemon",
+                "your opponents benched pokémon",
+                "number of cards in your opponent's hand",
+                "number of cards in your opponents hand",
+                "number of your opponent's benched",
+                "number of your opponents benched",
+            ]
+        )
+
+        result = bool(has_access and opponent_dependent)
+
+        if len(_TURN1_V54_OPP_DEP_ACCESS_CACHE) < 250000:
+            _TURN1_V54_OPP_DEP_ACCESS_CACHE[key] = result
+        return result
+    except Exception:
+        return False
+
+
+# TURN1_FIX_V54_MISSING_PLAY_CARD_ORIG_V55
+# v54 replaced the helper above this block and accidentally removed
+# the original v40 assignment. Restore the existing v40 play_card
+# link so play_card can call the pre-v40 implementation.
+_ORIG_PLAY_CARD_V40 = play_card
+
+def play_card(*args, **kwargs):
+    card = None
+
+    # Common signature is play_card(st, card, ...). Keep it robust.
+    for value in list(args) + list(kwargs.values()):
+        if isinstance(value, dict) and _turn1_v40_card_name(value):
+            card = value
+            break
+
+    if card is not None and _turn1_v40_is_opponent_state_dependent_access_card(card):
+        st = args[0] if args else kwargs.get("st")
+
+        try:
+            st.events.append(
+                {
+                    "event": "blocked_opponent_dependent_access_v40",
+                    "card": _turn1_v40_card_name(card),
+                    "reason": "Effect depends on opponent state that the Turn-1 simulator does not model.",
+                }
+            )
+        except Exception:
+            pass
+
+        return False
+
+    return _ORIG_PLAY_CARD_V40(*args, **kwargs)
+
