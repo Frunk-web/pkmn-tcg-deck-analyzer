@@ -2,23 +2,59 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List
 import json
+import gzip
+from pathlib import Path
 
 from .state import CardInstance, GameState, PlayerState
 
 
-def load_compiled_cards(path: str) -> List[Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as f:
-        payload = json.load(f)
+def load_compiled_cards(path):
+    # TURN1_GZIP_COMPILED_SEMANTICS
+    """
+    Load compiled card semantics from JSON.
+
+    In local development we usually have:
+      data/compiled_cards/auto/compiled_cards_all.turn1_semantics.json
+
+    On Streamlit Cloud / GitHub we keep the artifact compressed because the raw
+    JSON is larger than GitHub's normal file limit:
+      data/compiled_cards/auto/compiled_cards_all.turn1_semantics.json.gz
+
+    If the requested plain JSON file is missing, automatically fall back to the
+    matching .gz file.
+    """
+    p = Path(path)
+    read_path = p
+
+    if not read_path.exists():
+        gz_path = Path(str(p) + ".gz")
+        if gz_path.exists():
+            read_path = gz_path
+
+    if not read_path.exists():
+        raise FileNotFoundError(f"Compiled card semantics not found: {p} or {p}.gz")
+
+    if read_path.suffix.lower() == ".gz":
+        with gzip.open(read_path, "rt", encoding="utf-8") as f:
+            payload = json.load(f)
+    else:
+        with open(read_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
     if isinstance(payload, list):
         return payload
+
     if isinstance(payload, dict):
-        for key in ("compiled_cards", "cards"):
-            if isinstance(payload.get(key), list):
-                return payload[key]
-        # Some tools emit a single card object.
-        if "card_id" in payload and "compiled_effects" in payload:
-            return [payload]
-    raise ValueError(f"Could not find compiled card list in {path}")
+        for key in ("cards", "data", "records"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+
+        values = [v for v in payload.values() if isinstance(v, dict)]
+        if values:
+            return values
+
+    return payload
 
 
 def filter_complete_cards(cards: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:

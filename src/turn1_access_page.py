@@ -223,7 +223,16 @@ def _reports_dir() -> Path:
 
 
 def _compiled_semantics_path() -> Path:
-    return _repo_root() / "data" / "compiled_cards" / "auto" / "compiled_cards_all.turn1_semantics.json"
+    # TURN1_GZIP_COMPILED_SEMANTICS_PATH
+    plain = _repo_root() / "data" / "compiled_cards" / "auto" / "compiled_cards_all.turn1_semantics.json"
+    if plain.exists():
+        return plain
+
+    gz = Path(str(plain) + ".gz")
+    if gz.exists():
+        return gz
+
+    return plain
 
 
 def _strict_goal_finder_path() -> Path:
