@@ -475,5 +475,124 @@ def install() -> None:
 
 install()
 
+
+
+# ---------------------------------------------------------------------
+# TURN1_UNRESOLVED_TO_INERT_PROXY_V08
+# ---------------------------------------------------------------------
+# For Streamlit runs, unresolved non-goal deck cards should not kill the
+# whole Turn-1 simulation. They become inert placeholder cards:
+# - still occupy deck slots
+# - can be drawn/prized
+# - have no executable effects
+# - conservative instead of inflated
+
+_ORIG_RESOLVE_DECKLIST_AFTER_STRICT_PATCHES_V08 = gf.tf.resolve_decklist
+
+def _turn1_v08_clean_display_name(requested):
+    raw = str(requested or "").strip().lstrip(chr(65279))
+
+    try:
+        parsed = _parse_ptcgl_requested(raw)
+        if parsed:
+            name, _set_code, _number = parsed
+            return name
+    except Exception:
+        pass
+
+    try:
+        cleaned = _clean_ptcgl_name(raw)
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
+
+    # Generic fallback: remove final set/number tokens if present.
+    parts = raw.split()
+    if len(parts) >= 3 and parts[-1].isdigit():
+        return " ".join(parts[:-2]) or raw
+
+    return raw or "Unknown unresolved card"
+
+
+def _turn1_v08_inert_unresolved_proxy(requested):
+    raw = str(requested or "").strip().lstrip(chr(65279))
+    clean_name = _turn1_v08_clean_display_name(raw)
+
+    compact = "".join(ch.lower() for ch in raw if ch.isalnum())[:80] or "unknown"
+    proxy_id = f"proxy-unresolved-{compact}"
+
+    return {
+        "card_id": proxy_id,
+        "representative_card_id": proxy_id,
+        "identity": {
+            "card_id": proxy_id,
+            "name": clean_name,
+            "canonical_name": clean_name,
+            "supertype": "Unresolved",
+            "subtypes": [],
+            "types": [],
+        },
+        "gameplay": {},
+        "compiled_effects": [],
+        "effects": [],
+        "parser_status": "proxy_unresolved_inert",
+        "source": {
+            "proxy_for_decklist_entry": raw,
+            "proxy_reason": "unresolved_deck_card_treated_as_inert_placeholder",
+        },
+        "same_effect_printings": [
+            {
+                "card_id": raw,
+                "id": raw,
+                "name": clean_name,
+            }
+        ],
+    }
+
+
+def _turn1_v08_resolve_decklist_allow_inert_unresolved(decklist, cards):
+    deck, unresolved = _ORIG_RESOLVE_DECKLIST_AFTER_STRICT_PATCHES_V08(decklist, cards)
+
+    if not unresolved:
+        return deck, unresolved
+
+    converted = []
+
+    for item in unresolved:
+        requested = item.get("requested_name") or item.get("name") or "Unknown unresolved card"
+        count = int(item.get("count") or 0)
+
+        if count <= 0:
+            continue
+
+        proxy = _turn1_v08_inert_unresolved_proxy(requested)
+
+        for _ in range(count):
+            deck.append(proxy)
+
+        converted.append(
+            {
+                "requested_name": requested,
+                "count": count,
+                "policy": "converted_to_inert_placeholder",
+                "note": (
+                    "This card was not found in the compiled semantics file, so it was "
+                    "kept as a blank deck card instead of failing the Turn-1 simulation."
+                ),
+            }
+        )
+
+    try:
+        setattr(gf, "TURN1_V08_INERT_UNRESOLVED_CARDS", converted)
+    except Exception:
+        pass
+
+    return deck, []
+
+
+gf.tf.resolve_decklist = _turn1_v08_resolve_decklist_allow_inert_unresolved
+setattr(gf, "TURN1_UNRESOLVED_TO_INERT_PROXY_VERSION", "v0.8")
+
 if __name__ == "__main__":
     gf.main()

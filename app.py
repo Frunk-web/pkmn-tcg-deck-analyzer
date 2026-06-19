@@ -17,6 +17,7 @@ from typing import Iterable
 
 import pandas as pd
 import streamlit as st
+from src.turn1_access_page import render_turn1_access_tab
 
 from src.analysis import analyze_deck_opening_hand, format_probability_table
 from src.charts import (
@@ -1454,10 +1455,11 @@ def main() -> None:
         if summary["deck_size"] != 60:
             st.warning(f"Deck has {summary['deck_size']} cards, not 60.")
 
-        dashboard_tab, starting_tab, gallery_tab, prize_tab, diagnostics_tab = st.tabs(
+        dashboard_tab, starting_tab, turn1_tab, gallery_tab, prize_tab, diagnostics_tab = st.tabs(
             [
                 "Deck Dashboard",
                 "Starting Hand Planner",
+                "Turn 1 Access",
                 "Card Gallery",
                 "Prize Map",
                 "Diagnostics",
@@ -1468,6 +1470,8 @@ def main() -> None:
             render_deck_dashboard(summary, mulligan_df, card_odds_df, parsed_df)
         with starting_tab:
             render_starting_hand_lab(summary, card_odds_df, deck)
+        with turn1_tab:
+            render_turn1_access_tab(summary, card_odds_df, deck)
         with gallery_tab:
             render_gallery(card_odds_df)
         with prize_tab:
