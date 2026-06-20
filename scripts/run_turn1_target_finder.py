@@ -2281,23 +2281,12 @@ def bench_basic_ability_score(st: SimState, card: Dict[str, Any], target_norm: s
 
 
 def search_card_can_find_card(searcher: Dict[str, Any], wanted: Dict[str, Any]) -> bool:
-    """Return True if searcher can fetch wanted from the deck into hand.
-
-    This is used for ability-enabler chains, not just direct target finding. It
-    is intentionally conservative: known broad cards like Ultra Ball and Fighting
-    Gong are handled explicitly, then compiled search filters are checked.
-    """
-    if is_ultra_ball(searcher):
-        return card_supertype(wanted) == "Pokémon"
-    if is_cyrano(searcher):
-        return card_supertype(wanted) == "Pokémon" and "ex" in norm(card_name(wanted))
-    if is_named(searcher, "Fighting Gong"):
-        return is_basic_fighting_energy(wanted) or is_basic_fighting_pokemon(wanted)
-    for step in meaningful_steps(searcher):
-        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
-            if filter_allows_card(extract_filter(step), wanted):
-                return True
-    return False
+    # TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
+    # Broad replacement for the previous filter-only helper. A searcher can find
+    # wanted only if its own effect can legally reach that specific card.
+    if not isinstance(searcher, dict) or not isinstance(wanted, dict):
+        return False
+    return bool(_turn1_v70_source_can_fetch_candidate(searcher, wanted, [wanted]))
 
 
 def ability_missing_basic_requirement_cards_in_deck(effect: Dict[str, Any], st: SimState, source: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2595,21 +2584,252 @@ def draw_cards(st: SimState, n: int, stage: str) -> None:
         st.log.append({"event": "draw_cards", "stage": stage, "amount": len(drawn), "drawn": drawn})
 
 
-def choose_enabler_from_deck(st: SimState, filt: Dict[str, Any], going: str, target_norm: str) -> Optional[Dict[str, Any]]:
-    candidates = [c for c in st.deck if filter_allows_card(filt, c) and card_can_be_played_from_hand(c, going, st.supporter_used)]
+# ---------------------------------------------------------------------
+# TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
+# ---------------------------------------------------------------------
+# Source-bound search legality guard.
+#
+# Why this exists:
+# Earlier scoring correctly learned that Buddy-Buddy Poffin cannot directly
+# search Basic Water Energy, but execution still had two permissive paths:
+#   1. execute_steps() could select a target with filter_allows_card() alone.
+#   2. choose_enabler_from_deck() treated "any card with a search effect" as a
+#      valid chain enabler, even if the source could not search that enabler or
+#      the enabler could not actually reach the target.
+#
+# This block makes all compiled search execution source-bound: a searched card
+# must be reachable by the source card's own effect text/compiled search policy,
+# and an enabler must itself have a real target path. This is deliberately broad
+# and not Buddy-Buddy-specific.
+
+def _turn1_v70_deck_with_candidate(deck, candidate):
+    try:
+        out = list(deck or [])
+    except Exception:
+        out = []
+    if isinstance(candidate, dict) and not any(candidate is c for c in out):
+        out.append(candidate)
+    return out
+
+
+def _turn1_v70_card_name_norm(card):
+    try:
+        return norm(card_name(card))
+    except Exception:
+        return ""
+
+
+def _turn1_v70_find_card_by_name(st, name):
+    name_n = norm(name or "")
+    if not name_n:
+        return None
+
+    zones = []
+    for attr in ("hand", "deck", "discard", "bench", "prizes"):
+        try:
+            value = getattr(st, attr, None)
+            if isinstance(value, list):
+                zones.append(value)
+        except Exception:
+            pass
+
+    try:
+        if getattr(st, "active", None) is not None:
+            zones.append([st.active])
+    except Exception:
+        pass
+
+    for zone in zones:
+        for c in zone:
+            if isinstance(c, dict) and _turn1_v70_card_name_norm(c) == name_n:
+                return c
+    return None
+
+
+def _turn1_v70_current_source_names(st, stage=None):
+    names = []
+
+    try:
+        log = list(getattr(st, "log", []) or [])
+    except Exception:
+        log = []
+
+    # Prefer exact-stage log entries. Ability entries usually carry the actual
+    # source Pokémon in the "source" field, while played cards carry "card".
+    for ev in reversed(log):
+        if not isinstance(ev, dict):
+            continue
+        if stage is not None and ev.get("stage") != stage:
+            continue
+        for key in ("source", "card", "searched_by"):
+            val = ev.get(key)
+            if val:
+                names.append(str(val))
+
+    # Fallback to recent log entries if recursion reused a nested stage.
+    if not names:
+        for ev in reversed(log[-8:]):
+            if not isinstance(ev, dict):
+                continue
+            for key in ("source", "card", "searched_by"):
+                val = ev.get(key)
+                if val:
+                    names.append(str(val))
+
+    # Last fallback: line labels. This may be an ability name, not a card name,
+    # so it is less reliable than the log source fields.
+    try:
+        if getattr(st, "line", None):
+            names.append(str(st.line[-1]))
+    except Exception:
+        pass
+
+    out = []
+    seen = set()
+    for name in names:
+        n = norm(name)
+        if n and n not in seen:
+            out.append(name)
+            seen.add(n)
+    return out
+
+
+def _turn1_v70_current_source_card(st, stage=None, source_card=None):
+    if isinstance(source_card, dict):
+        return source_card
+
+    explicit = getattr(st, "_turn1_current_source_card", None)
+    if isinstance(explicit, dict):
+        return explicit
+
+    for name in _turn1_v70_current_source_names(st, stage=stage):
+        c = _turn1_v70_find_card_by_name(st, name)
+        if isinstance(c, dict):
+            return c
+    return None
+
+
+def _turn1_v70_source_can_fetch_candidate(source_card, candidate, deck):
+    """True iff source_card can legally search/select candidate from deck."""
+    if not isinstance(source_card, dict) or not isinstance(candidate, dict):
+        return None
+
+    # The card-level direct-search checker is the canonical broad policy. It
+    # already handles source-text/HP/Bench restrictions from v67 and specific
+    # fallbacks such as Ultra Ball, Fighting Gong, Energy Search, etc.
+    candidate_deck = _turn1_v70_deck_with_candidate(deck, candidate)
+
+    try:
+        candidate_name = card_name(candidate)
+        if candidate_name and card_directly_searches_target(source_card, norm(candidate_name), candidate_deck):
+            return True
+    except Exception:
+        pass
+
+    try:
+        cid = card_id(candidate)
+        if cid and card_directly_searches_target(source_card, norm(cid), candidate_deck):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _turn1_v70_source_can_select_target_card(st, filt, candidate, target_norm, step=None, stage=None, source_card=None):
+    """Guard direct target selection during search execution."""
+    if not isinstance(candidate, dict) or not target_matches(candidate, target_norm):
+        return False
+
+    src = _turn1_v70_current_source_card(st, stage=stage, source_card=source_card)
+    if isinstance(src, dict):
+        return bool(_turn1_v70_source_can_fetch_candidate(src, candidate, getattr(st, "deck", [])))
+
+    # If source context is unavailable, preserve old behavior rather than
+    # breaking unrelated legacy paths. Most real play/ability searches have log
+    # source context, so this fallback should be rare.
+    try:
+        current_card_name = st.line[-1] if getattr(st, "line", None) else ""
+        if norm(current_card_name) == "ultra ball":
+            return card_supertype(candidate) == "Pokémon"
+    except Exception:
+        pass
+    return filter_allows_card(filt, candidate)
+
+
+def _turn1_v70_source_can_fetch_enabler(st, filt, candidate, target_norm, going, source_card=None, source_step=None, stage=None):
+    """Guard chain-search enabler selection.
+
+    The source must be able to search the enabler, and the enabler must have a
+    real route toward the original target. A generic "has search" flag is not
+    enough; that was the Buddy-Buddy -> Energy leak.
+    """
+    if not isinstance(candidate, dict):
+        return False
+    if not card_can_be_played_from_hand(candidate, going, st.supporter_used):
+        return False
+
+    src = _turn1_v70_current_source_card(st, stage=stage, source_card=source_card)
+    if isinstance(src, dict):
+        if not _turn1_v70_source_can_fetch_candidate(src, candidate, getattr(st, "deck", [])):
+            return False
+    else:
+        if not filter_allows_card(filt, candidate):
+            return False
+
+    direct = bool(card_directly_searches_target(candidate, target_norm, _turn1_v70_deck_with_candidate(getattr(st, "deck", []), candidate)))
+    draw_power = int(card_draw_power(candidate) or 0)
+
+    # Evaluate special non-search play effects without allowing another generic
+    # chain-search hop. This preserves valid enablers like Lillie's/Ciphermaniac
+    # while excluding arbitrary search cards that do not reach the target.
+    try:
+        play_score_no_chain = float(score_playable_card(candidate, st, target_norm, going, False))
+    except Exception:
+        play_score_no_chain = 0.0
+
+    return direct or draw_power > 0 or play_score_no_chain > 0
+
+# END_TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
+
+def choose_enabler_from_deck(
+    st: SimState,
+    filt: Dict[str, Any],
+    going: str,
+    target_norm: str,
+    source_card: Optional[Dict[str, Any]] = None,
+    source_step: Optional[Dict[str, Any]] = None,
+    stage: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    # TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
+    candidates = [
+        c for c in st.deck
+        if _turn1_v70_source_can_fetch_enabler(
+            st,
+            filt,
+            c,
+            target_norm,
+            going,
+            source_card=source_card,
+            source_step=source_step,
+            stage=stage,
+        )
+    ]
     if not candidates:
         return None
-    # Best enabler: direct search first, then larger draw power, then any search.
-    def score(c: Dict[str, Any]) -> Tuple[int, int, int, str]:
-        return (
-            1 if card_directly_searches_target(c, target_norm, st.deck) else 0,
-            card_draw_power(c),
-            1 if card_has_search(c) else 0,
-            card_name(c),
-        )
+
+    def score(c: Dict[str, Any]) -> Tuple[int, int, float, str]:
+        direct = 1 if card_directly_searches_target(c, target_norm, _turn1_v70_deck_with_candidate(st.deck, c)) else 0
+        draw = int(card_draw_power(c) or 0)
+        try:
+            play_score = float(score_playable_card(c, st, target_norm, going, False))
+        except Exception:
+            play_score = 0.0
+        return (direct, draw, play_score, card_name(c))
+
     candidates.sort(key=score, reverse=True)
     best = candidates[0]
-    if score(best)[:3] == (0, 0, 0):
+    if score(best)[:3] == (0, 0, 0.0):
         return None
     return best
 
@@ -2623,6 +2843,7 @@ def execute_steps(
     stage: str,
     enable_chain_search: bool,
 ) -> None:
+    # TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
     for step in steps:
         if st.found:
             return
@@ -2658,34 +2879,47 @@ def execute_steps(
             filt = extract_filter(step)
             amt = search_amount(step)
             selected: List[Dict[str, Any]] = []
-            current_card_name = st.line[-1] if st.line else ""
-            # Direct target search. For Ultra Ball, compiled filters can vary, so
-            # explicitly allow any Pokémon target.
+            source_card = _turn1_v70_current_source_card(st, stage=stage)
+
             def can_select_target(c: Dict[str, Any]) -> bool:
-                if not target_matches(c, target_norm):
-                    return False
-                if norm(current_card_name) == "ultra ball":
-                    return card_supertype(c) == "Pokémon"
-                return filter_allows_card(filt, c)
+                return _turn1_v70_source_can_select_target_card(
+                    st,
+                    filt,
+                    c,
+                    target_norm,
+                    step=step,
+                    stage=stage,
+                    source_card=source_card,
+                )
 
             while len(selected) < amt:
                 chosen = remove_first_matching(st.deck, can_select_target)
                 if chosen is None:
                     break
                 selected.append(chosen)
+
             if selected:
                 st.hand.extend(selected)
                 st.found = True
                 st.found_stage = stage
-                st.log.append({"event": "search_deck_found_target", "stage": stage, "selected": [card_name(c) for c in selected], "filter": filt})
+                st.log.append({"event": "search_deck_found_target", "stage": stage, "selected": [card_name(c) for c in selected], "filter": filt, "source_bound_v70": True})
                 continue
+
             # Optional chain search for a card that can draw/search into target.
             if enable_chain_search:
-                enabler = choose_enabler_from_deck(st, filt, going, target_norm)
+                enabler = choose_enabler_from_deck(
+                    st,
+                    filt,
+                    going,
+                    target_norm,
+                    source_card=source_card,
+                    source_step=step,
+                    stage=stage,
+                )
                 if enabler is not None:
                     st.deck.remove(enabler)
                     st.hand.append(enabler)
-                    st.log.append({"event": "search_deck_found_enabler", "stage": stage, "selected": card_name(enabler), "filter": filt})
+                    st.log.append({"event": "search_deck_found_enabler", "stage": stage, "selected": card_name(enabler), "filter": filt, "source_bound_v70": True})
             continue
 
         if op in {"look_at_top_cards", "look_at_cards"}:
@@ -2698,7 +2932,6 @@ def execute_steps(
         if op == "reorder_cards":
             looked = st.memory_cards.get("looked", [])
             if looked:
-                # Put target first if seen, otherwise preserve order.
                 target_seen = [c for c in looked if target_matches(c, target_norm)]
                 others = [c for c in looked if not target_matches(c, target_norm)]
                 new_top = target_seen + others
@@ -2707,15 +2940,34 @@ def execute_steps(
             continue
 
         if op in {"choose_cards", "put_card_into_hand", "move_card", "move_cards"}:
-            # Best effort: if this step moves/selects from recently looked cards or deck to hand, take the target.
             filt = extract_filter(step)
             source_text = json.dumps(step).lower()
+            source_card = _turn1_v70_current_source_card(st, stage=stage)
             if "hand" in source_text:
-                chosen = remove_first_matching(st.deck, lambda c: target_matches(c, target_norm) and filter_allows_card(filt, c))
+                chosen = remove_first_matching(
+                    st.deck,
+                    lambda c: _turn1_v70_source_can_select_target_card(
+                        st,
+                        filt,
+                        c,
+                        target_norm,
+                        step=step,
+                        stage=stage,
+                        source_card=source_card,
+                    ),
+                )
                 if chosen is None:
                     looked = st.memory_cards.get("looked", [])
                     for c in list(looked):
-                        if target_matches(c, target_norm) and filter_allows_card(filt, c) and c in st.deck:
+                        if c in st.deck and _turn1_v70_source_can_select_target_card(
+                            st,
+                            filt,
+                            c,
+                            target_norm,
+                            step=step,
+                            stage=stage,
+                            source_card=source_card,
+                        ):
                             st.deck.remove(c)
                             chosen = c
                             break
@@ -2723,7 +2975,7 @@ def execute_steps(
                     st.hand.append(chosen)
                     st.found = True
                     st.found_stage = stage
-                    st.log.append({"event": "move_or_choose_target_to_hand", "stage": stage, "selected": card_name(chosen)})
+                    st.log.append({"event": "move_or_choose_target_to_hand", "stage": stage, "selected": card_name(chosen), "source_bound_v70": True})
             continue
 
         if op in {"discard_cards", "discard_card"}:
@@ -2735,7 +2987,6 @@ def execute_steps(
             n = amount_value(step.get("amount") or selection.get("value") or step.get("count"), default=1)
             discarded = []
             for _ in range(max(0, n)):
-                # Never discard the target if already found. Prefer discarding cards with no play effect.
                 candidates = [c for c in st.hand if not target_matches(c, target_norm)]
                 if not candidates:
                     break
@@ -2763,7 +3014,6 @@ def execute_steps(
             continue
 
         if op == "coin_flip_until":
-            # Conservative cap to avoid loops. Count heads before first tails.
             heads = 0
             for _ in range(20):
                 if rng.choice([True, False]):
@@ -2785,7 +3035,6 @@ def execute_steps(
             continue
 
         if op in {"choose_yes_no", "branch_on_choice"}:
-            # For target finding, always choose the branch that gives more actions. This is a heuristic.
             branch = step.get("yes") or step.get("if_yes") or step.get("then") or step.get("steps")
             if branch is not None:
                 execute_steps(st, list(flatten_steps(branch)), rng, target_norm, going, stage, enable_chain_search)
@@ -2797,7 +3046,6 @@ def execute_steps(
                 execute_steps(st, list(flatten_steps(branch)), rng, target_norm, going, stage, enable_chain_search)
             continue
 
-        # Many battle/board ops do not help find a card in hand. They are safe no-ops for this scenario.
         if op in {
             "deal_attack_damage", "deal_damage", "modify_attack_damage", "set_attack_damage_from_coin_heads",
             "set_attack_damage_from_value", "set_attack_damage_per_damage_counter", "place_damage_counters",
@@ -2818,18 +3066,19 @@ def execute_steps(
 
 
 def score_playable_card(card: Dict[str, Any], st: SimState, target_norm: str, going: str, enable_chain_search: bool) -> float:
+    # TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
     if not card_can_be_played_from_hand(card, going, st.supporter_used):
         return -1.0
     if is_meowth_ex(card) and st.last_ditch_used:
         return -1.0
     if not has_enough_discard_fodder(st.hand, card, target_norm):
         return -1.0
-
     target_remaining = sum(1 for c in st.deck if target_matches(c, target_norm))
     if target_remaining <= 0:
         return -1.0
 
-    # Direct target-to-hand lines.
+    # Direct target-to-hand lines. This is the authoritative fast path and
+    # already carries v67 source-text restrictions.
     if card_directly_searches_target(card, target_norm, st.deck):
         if is_ultra_ball(card):
             return 10000.0
@@ -2837,14 +3086,11 @@ def score_playable_card(card: Dict[str, Any], st: SimState, target_norm: str, go
             return 9700.0
         return 9500.0
 
-    # Ciphermaniac only finds the target if followed by immediate draw, primarily Run Errand.
     if is_ciphermaniac(card):
         if going == "second" and not st.supporter_used and can_use_run_errand(st):
             return 9400.0
         return -1.0
 
-    # Meowth ex can bench itself and search a Supporter. Going second it can fetch Cyrano,
-    # or Ciphermaniac if active Kangaskhan can Run Errand afterward.
     if is_meowth_ex(card):
         if st.last_ditch_used or going == "first" or st.supporter_used:
             return -1.0
@@ -2856,12 +3102,10 @@ def score_playable_card(card: Dict[str, Any], st: SimState, target_norm: str, go
             return 4200.0
         return -1.0
 
-    # Lillie's Determination draws 8 on turn 1 when 6 prizes remain.
     if is_lillies_determination(card):
-        deck_size = max(1, len(st.deck) + len(st.hand) - 1)  # after shuffling hand back, Lillie itself is not shuffled in
+        deck_size = max(1, len(st.deck) + len(st.hand) - 1)
         return 4500.0 * (1.0 - hypergeom_zero(deck_size, target_remaining, min(8, deck_size)))
 
-    # Crispin can matter only as deck thinning before Run Errand. Keep it below true draw/search.
     if is_crispin(card):
         if going == "second" and not st.supporter_used and can_use_run_errand(st):
             return 1200.0
@@ -2873,14 +3117,20 @@ def score_playable_card(card: Dict[str, Any], st: SimState, target_norm: str, go
 
     search_score = 0.0
     if enable_chain_search and card_has_search(card):
-        # Can this search find a playable enabler?
         for step in meaningful_steps(card):
             if step.get("op") == "search_deck":
                 filt = extract_filter(step)
-                if choose_enabler_from_deck(st, filt, going, target_norm) is not None:
+                if choose_enabler_from_deck(
+                    st,
+                    filt,
+                    going,
+                    target_norm,
+                    source_card=card,
+                    source_step=step,
+                    stage=f"score_{card_name(card)}",
+                ) is not None:
                     search_score = max(search_score, 250.0)
 
-    # Small preference for look/reorder cards only if they can see at least one target in the known top cards.
     look_score = 0.0
     for step in meaningful_steps(card):
         if step.get("op") in {"look_at_top_cards", "look_at_cards"}:
