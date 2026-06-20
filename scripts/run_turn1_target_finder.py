@@ -2882,7 +2882,7 @@ def execute_steps(
             source_card = _turn1_v70_current_source_card(st, stage=stage)
 
             def can_select_target(c: Dict[str, Any]) -> bool:
-                return _turn1_v70_source_can_select_target_card(
+                return _turn1_v78_runtime_can_select_search_target(
                     st,
                     filt,
                     c,
@@ -5055,4 +5055,512 @@ if _TURN1_V73_ORIG_SOURCE_CAN_FETCH_ENABLER is not None:
         except Exception:
             play_score_no_chain = 0.0
         return direct or draw_power > 0 or play_score_no_chain > 0
+
+# ---------------------------------------------------------------------
+# TURN1_V74_SOURCE_TEXT_DIRECT_SEARCH_GUARD
+# ---------------------------------------------------------------------
+# Root fix for direct-search false positives such as:
+#   Poké Pad -> Wally's Compassion
+#
+# Earlier guards correctly fixed many executor leaks, but
+# card_directly_searches_target() could still return True when a compiled
+# filter was vague (for example {"from_text": True}) and the source card text
+# was not used to enforce the target class. This block makes direct-search
+# reachability source-text aware for all search cards.
+#
+# Examples:
+# - Poké Pad: Pokemon without a Rule Box only; never Supporters.
+# - Buddy-Buddy Poffin: Basic Pokemon with HP cap only; never Energy.
+# - Earthen Vessel / Shivery Chill: Basic typed Energy only.
+# - Fighting Gong: Basic Fighting Energy OR Basic Fighting Pokemon.
+# - Irida-style text: Water Pokemon OR Item.
+# ---------------------------------------------------------------------
+
+_TURN1_V74_ORIG_CARD_DIRECTLY_SEARCHES_TARGET = card_directly_searches_target
+
+
+def _turn1_v74_norm(value):
+    try:
+        return norm(value).replace('pokémon', 'pokemon')
+    except Exception:
+        import re as _re, unicodedata as _unicodedata
+        s = _unicodedata.normalize('NFKD', str(value or ''))
+        s = ''.join(ch for ch in s if not _unicodedata.combining(ch))
+        s = s.lower().replace('pokémon', 'pokemon')
+        s = _re.sub(r'[^a-z0-9{}]+', ' ', s)
+        return _re.sub(r'\s+', ' ', s).strip()
+
+
+def _turn1_v74_blob(obj, depth=0):
+    if obj is None or depth > 5:
+        return ''
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, (int, float, bool)):
+        return str(obj)
+    if isinstance(obj, dict):
+        preferred = (
+            'name', 'card_name', 'text', 'raw_text', 'source_text',
+            'combined_text', 'rules', 'abilities_text', 'attacks_text',
+            'effect_text', 'description', 'filter', 'card_filter',
+            'selection', 'target', 'targets', 'from_text', 'constraints',
+            'supertype', 'subtypes', 'types', 'hp', 'max_hp',
+        )
+        parts = []
+        for k in preferred:
+            if k in obj:
+                parts.append(str(k))
+                parts.append(_turn1_v74_blob(obj.get(k), depth + 1))
+        for k, v in obj.items():
+            if k not in preferred:
+                parts.append(str(k))
+                parts.append(_turn1_v74_blob(v, depth + 1))
+        return ' '.join(p for p in parts if p)
+    if isinstance(obj, (list, tuple, set)):
+        return ' '.join(_turn1_v74_blob(x, depth + 1) for x in obj)
+    return str(obj)
+
+
+def _turn1_v74_card_source_blob(card, filt=None, step=None):
+    parts = []
+    if isinstance(step, dict):
+        for k in ('text', 'raw_text', 'source_text', 'effect_text', 'description'):
+            if step.get(k):
+                parts.append(str(step.get(k)))
+        try:
+            parts.append(step_text(step))
+        except Exception:
+            pass
+        parts.append(_turn1_v74_blob(step))
+    if isinstance(filt, dict):
+        try:
+            parts.append(filter_text_blob(filt))
+        except Exception:
+            pass
+        parts.append(_turn1_v74_blob(filt))
+    if isinstance(card, dict):
+        # Include full source card text only after step/filter text. This catches
+        # generated filters like {"from_text": true}, where the useful search
+        # restriction remains only on the source card object.
+        parts.append(_turn1_v74_blob(card))
+        try:
+            for eff in iter_effects(card):
+                parts.append(_turn1_v74_blob(eff))
+        except Exception:
+            pass
+    return _turn1_v74_norm(' '.join(p for p in parts if p))
+
+
+def _turn1_v74_card_name(card):
+    try:
+        return str(card_name(card))
+    except Exception:
+        if isinstance(card, dict):
+            ident = card.get('identity') or {}
+            return str(card.get('name') or card.get('card_name') or ident.get('name') or '')
+        return ''
+
+
+def _turn1_v74_supertype(card):
+    try:
+        return _turn1_v74_norm(card_supertype(card))
+    except Exception:
+        if isinstance(card, dict):
+            ident = card.get('identity') or {}
+            return _turn1_v74_norm(card.get('supertype') or ident.get('supertype') or '')
+        return ''
+
+
+def _turn1_v74_subtypes(card):
+    try:
+        return {_turn1_v74_norm(x) for x in card_subtypes(card)}
+    except Exception:
+        vals = []
+        if isinstance(card, dict):
+            ident = card.get('identity') or {}
+            for src in (card, ident):
+                if isinstance(src, dict):
+                    v = src.get('subtypes') or src.get('subtype')
+                    if isinstance(v, (list, tuple, set)):
+                        vals.extend(v)
+                    elif v:
+                        vals.append(v)
+        return {_turn1_v74_norm(x) for x in vals}
+
+
+def _turn1_v74_types(card):
+    try:
+        return {_turn1_v74_norm(x) for x in card_types(card)}
+    except Exception:
+        vals = []
+        if isinstance(card, dict):
+            ident = card.get('identity') or {}
+            for src in (card, ident):
+                if isinstance(src, dict):
+                    v = src.get('types')
+                    if isinstance(v, (list, tuple, set)):
+                        vals.extend(v)
+                    elif v:
+                        vals.append(v)
+        return {_turn1_v74_norm(x) for x in vals}
+
+
+def _turn1_v74_hp(card):
+    vals = []
+    if isinstance(card, dict):
+        vals.extend([card.get('hp'), card.get('HP'), card.get('raw_hp')])
+        for k in ('identity', 'gameplay', 'raw_card', 'source'):
+            obj = card.get(k)
+            if isinstance(obj, dict):
+                vals.extend([obj.get('hp'), obj.get('HP'), obj.get('raw_hp')])
+    import re as _re
+    for v in vals:
+        if v is None:
+            continue
+        m = _re.search(r'\d+', str(v))
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+    return None
+
+
+def _turn1_v74_is_pokemon(card):
+    try:
+        return card_supertype(card) == 'Pokémon'
+    except Exception:
+        return _turn1_v74_supertype(card) in {'pokemon', 'pokémon'}
+
+
+def _turn1_v74_is_basic_pokemon(card):
+    try:
+        return bool(is_basic_pokemon(card))
+    except Exception:
+        return _turn1_v74_is_pokemon(card) and 'basic' in _turn1_v74_subtypes(card)
+
+
+def _turn1_v74_is_energy(card):
+    try:
+        return bool(is_energy(card))
+    except Exception:
+        return _turn1_v74_supertype(card) == 'energy'
+
+
+def _turn1_v74_is_basic_energy(card):
+    subs = _turn1_v74_subtypes(card)
+    name = _turn1_v74_norm(_turn1_v74_card_name(card))
+    return _turn1_v74_is_energy(card) and ('basic' in subs or name.startswith('basic '))
+
+
+def _turn1_v74_is_trainer(card):
+    try:
+        return bool(is_trainer(card))
+    except Exception:
+        return _turn1_v74_supertype(card) == 'trainer'
+
+
+def _turn1_v74_is_supporter(card):
+    try:
+        return bool(is_supporter(card))
+    except Exception:
+        return _turn1_v74_is_trainer(card) and 'supporter' in _turn1_v74_subtypes(card)
+
+
+def _turn1_v74_trainer_kind(card, kind):
+    k = _turn1_v74_norm(kind)
+    b = _turn1_v74_norm(_turn1_v74_card_name(card) + ' ' + ' '.join(_turn1_v74_subtypes(card)))
+    if k == 'item':
+        return _turn1_v74_is_trainer(card) and 'item' in b
+    if k == 'tool':
+        return _turn1_v74_is_trainer(card) and 'tool' in b
+    if k == 'stadium':
+        return _turn1_v74_is_trainer(card) and 'stadium' in b
+    if k == 'supporter':
+        return _turn1_v74_is_supporter(card)
+    return _turn1_v74_is_trainer(card)
+
+
+_TURN1_V74_TYPES = {
+    'grass': {'grass', 'g'},
+    'fire': {'fire', 'r'},
+    'water': {'water', 'w'},
+    'lightning': {'lightning', 'electric', 'l'},
+    'psychic': {'psychic', 'p'},
+    'fighting': {'fighting', 'f'},
+    'darkness': {'darkness', 'dark', 'd'},
+    'metal': {'metal', 'steel', 'm'},
+    'colorless': {'colorless', 'c'},
+}
+
+
+def _turn1_v74_card_has_type(card, typ):
+    aliases = _TURN1_V74_TYPES.get(typ, {typ})
+    vals = _turn1_v74_types(card)
+    name = _turn1_v74_norm(_turn1_v74_card_name(card))
+    return bool(vals.intersection(aliases)) or any((a + ' energy') in name for a in aliases)
+
+
+def _turn1_v74_has_rule_box(card):
+    b = _turn1_v74_norm(_turn1_v74_card_name(card) + ' ' + ' '.join(_turn1_v74_subtypes(card)) + ' ' + _turn1_v74_blob(card))
+    if 'rule box' in b:
+        return True
+    # Practical rule-box families. This intentionally errs conservative for
+    # turn-1 access legality.
+    rule_terms = {'ex', 'gx', 'v', 'vmax', 'vstar', 'prism star', 'radiant'}
+    subs = _turn1_v74_subtypes(card)
+    if subs.intersection(rule_terms):
+        return True
+    name = _turn1_v74_norm(_turn1_v74_card_name(card))
+    return any((' ' + t) in (' ' + name) for t in (' ex', ' gx', ' v', ' vmax', ' vstar'))
+
+
+def _turn1_v74_hp_ok(card, text):
+    import re as _re
+    m = _re.search(r'(\d+)\s*hp\s*or\s*less', text)
+    if not m:
+        return True
+    hp = _turn1_v74_hp(card)
+    return hp is not None and hp <= int(m.group(1))
+
+
+def _turn1_v74_source_text_allows_candidate(action_card, filt, target_card, step=None):
+    text = _turn1_v74_card_source_blob(action_card, filt=filt, step=step)
+    if not text:
+        return True
+
+    # If this does not look like a search/select effect, don't make a hard
+    # source-text decision here.
+    searchish = any(x in text for x in (
+        'search your deck', 'search the deck', 'look at the top', 'reveal',
+        'choose', 'put into your hand', 'put it into your hand',
+        'put them into your hand', 'put onto your bench', 'put them onto your bench',
+    ))
+    if not searchish:
+        return True
+
+    tests = []
+
+    # Trainer branches. Avoid treating Pokemon Tool as Pokemon.
+    if 'pokemon tool' in text or 'pokémon tool' in text:
+        tests.append(lambda c: _turn1_v74_trainer_kind(c, 'tool'))
+    if 'supporter' in text:
+        tests.append(lambda c: _turn1_v74_trainer_kind(c, 'supporter'))
+    if 'stadium' in text:
+        tests.append(lambda c: _turn1_v74_trainer_kind(c, 'stadium'))
+    if 'item' in text and 'pokemon' not in text.replace('pokemon tool', ''):
+        tests.append(lambda c: _turn1_v74_trainer_kind(c, 'item'))
+    if 'trainer' in text and not any(x in text for x in ('supporter', 'stadium', 'item', 'tool')):
+        tests.append(lambda c: _turn1_v74_is_trainer(c))
+
+    # Typed Energy / Pokemon branches.
+    for typ, aliases in _TURN1_V74_TYPES.items():
+        if any((a + ' energy') in text or ('{' + a + '} energy') in text for a in aliases):
+            if 'basic' in text:
+                tests.append(lambda c, typ=typ: _turn1_v74_is_basic_energy(c) and _turn1_v74_card_has_type(c, typ))
+            else:
+                tests.append(lambda c, typ=typ: _turn1_v74_is_energy(c) and _turn1_v74_card_has_type(c, typ))
+        if any((a + ' pokemon') in text or ('{' + a + '} pokemon') in text for a in aliases):
+            if 'basic' in text or 'hp or less' in text or 'bench' in text:
+                tests.append(lambda c, typ=typ, text=text: _turn1_v74_is_basic_pokemon(c) and _turn1_v74_card_has_type(c, typ) and _turn1_v74_hp_ok(c, text))
+            else:
+                tests.append(lambda c, typ=typ, text=text: _turn1_v74_is_pokemon(c) and _turn1_v74_card_has_type(c, typ) and _turn1_v74_hp_ok(c, text))
+
+    # Untyped class branches.
+    if 'basic energy' in text:
+        tests.append(lambda c: _turn1_v74_is_basic_energy(c))
+    elif ' energy' in (' ' + text) or text.startswith('energy'):
+        tests.append(lambda c: _turn1_v74_is_energy(c))
+
+    if 'pokemon ex' in text or 'pokémon ex' in text:
+        tests.append(lambda c: _turn1_v74_is_pokemon(c) and 'ex' in _turn1_v74_subtypes(c))
+    if 'basic pokemon' in text or 'basic pokémon' in text or 'hp or less' in text or ('bench' in text and 'pokemon' in text):
+        tests.append(lambda c, text=text: _turn1_v74_is_basic_pokemon(c) and _turn1_v74_hp_ok(c, text))
+    elif 'pokemon' in text and 'pokemon tool' not in text:
+        tests.append(lambda c, text=text: _turn1_v74_is_pokemon(c) and _turn1_v74_hp_ok(c, text))
+
+    # Rule Box exclusion. Poké Pad-style text is usually "doesn't have a Rule
+    # Box". Apply it in addition to the Pokemon test above.
+    excludes_rule_box = (
+        'doesn t have a rule box' in text
+        or "doesn't have a rule box" in text
+        or 'does not have a rule box' in text
+        or 'no rule box' in text
+    )
+
+    if tests:
+        ok = any(test(target_card) for test in tests)
+        if ok and excludes_rule_box and _turn1_v74_has_rule_box(target_card):
+            return False
+        return ok
+
+    # Generic "search for a card" effects are allowed. Otherwise, if the text
+    # is search-like but unclassified, keep the older behavior by returning True.
+    return True
+
+
+def card_directly_searches_target(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+    # TURN1_V74_SOURCE_TEXT_DIRECT_SEARCH_GUARD
+    target_cards = [c for c in deck if target_matches(c, target_norm)]
+    if not target_cards:
+        return False
+
+    # Preserve explicit hard-coded cards, but still avoid Trainer targets for
+    # Pokemon-only special searches through their own predicates.
+    try:
+        if card_specific_directly_searches_target(card, target_norm, deck):
+            return True
+    except Exception:
+        pass
+
+    for step in meaningful_steps(card):
+        if step.get('op') not in {'search_deck', 'choose_cards', 'put_card_into_hand', 'put_card_onto_bench'}:
+            continue
+        filt = extract_filter(step)
+        for tc in target_cards:
+            try:
+                filter_ok = bool(filter_allows_card(filt, tc))
+            except Exception:
+                filter_ok = True
+            if not filter_ok:
+                continue
+            if _turn1_v74_source_text_allows_candidate(card, filt, tc, step=step):
+                return True
+
+    return False
+
+# ---------------------------------------------------------------------
+# TURN1_V78_EXECUTE_STEPS_SOURCE_TEXT_GUARD
+# ---------------------------------------------------------------------
+# Canonical runtime guard for execute_steps(search_deck).
+#
+# The remaining leak after v74/v75/v76 was not card_directly_searches_target
+# and not the goal-aware selector.  The generic execute_steps(search_deck)
+# branch could still accept a candidate through a vague compiled filter such as
+# {"from_text": True}.  That allowed logs like:
+#     source/stage: after_play_Poké Pad
+#     selected: Wally's Compassion
+# even though Poké Pad's own source_text says it searches a Pokémon without a
+# Rule Box.
+#
+# This guard is called directly by execute_steps before remove_first_matching can
+# remove a card from deck.  A candidate is selectable only when:
+#   1. it matches the requested target_norm,
+#   2. the compiled filter allows it,
+#   3. source_text on the exact step allows it, and
+#   4. if a source card can be resolved, that source card can directly fetch it.
+#
+# The important detail is step-level source_text.  It remains available even
+# when source-card inference is stale or points at a previous action.
+
+def _turn1_v78_filter_from_text_only(filt):
+    return isinstance(filt, dict) and bool(filt.get('from_text')) and len(filt) == 1
+
+
+def _turn1_v78_step_has_source_text(step):
+    if not isinstance(step, dict):
+        return False
+    for key in ('source_text', 'text', 'raw_text', 'effect_text', 'description'):
+        try:
+            if step.get(key):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _turn1_v78_runtime_can_select_search_target(st, filt, candidate, target_norm, step=None, stage=None, source_card=None):
+    # TURN1_V78_EXECUTE_STEPS_SOURCE_TEXT_GUARD
+    if not isinstance(candidate, dict):
+        return False
+
+    try:
+        if not target_matches(candidate, target_norm):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if not filter_allows_card(filt, candidate):
+            try:
+                st.log.append({
+                    'event': 'blocked_v78_filter_candidate_mismatch',
+                    'stage': stage,
+                    'candidate': card_name(candidate),
+                    'filter': filt,
+                })
+            except Exception:
+                pass
+            return False
+    except Exception:
+        return False
+
+    # Step-level source text is the most reliable guard for semantic-known
+    # effects like Poké Pad, where the compiled filter may only say
+    # {"from_text": True} but the step carries the real printed source_text.
+    step_text_decision = None
+    if '_turn1_v74_source_text_allows_candidate' in globals():
+        try:
+            step_text_decision = bool(_turn1_v74_source_text_allows_candidate(None, filt, candidate, step=step))
+        except Exception:
+            step_text_decision = None
+
+    if step_text_decision is False:
+        try:
+            st.log.append({
+                'event': 'blocked_v78_step_source_text_candidate_mismatch',
+                'stage': stage,
+                'candidate': card_name(candidate),
+                'filter': filt,
+                'source_text': (step or {}).get('source_text') if isinstance(step, dict) else None,
+            })
+        except Exception:
+            pass
+        return False
+
+    src = None
+    try:
+        src = _turn1_v70_current_source_card(st, stage=stage, source_card=source_card)
+    except Exception:
+        src = source_card if isinstance(source_card, dict) else None
+
+    if isinstance(src, dict):
+        try:
+            ok = bool(_turn1_v70_source_can_fetch_candidate(src, candidate, getattr(st, 'deck', [])))
+        except Exception:
+            ok = False
+        if not ok:
+            try:
+                st.log.append({
+                    'event': 'blocked_v78_source_candidate_mismatch',
+                    'stage': stage,
+                    'source': card_name(src),
+                    'candidate': card_name(candidate),
+                    'filter': filt,
+                })
+            except Exception:
+                pass
+        return ok
+
+    # No source card resolved.  If the step has explicit source_text, the v74
+    # source-text decision is enough.  This preserves legal compiled effects
+    # while blocking vague from_text-only effects with no source context.
+    if _turn1_v78_step_has_source_text(step):
+        return bool(step_text_decision)
+
+    # With a vague from_text-only filter and no source card/text, fail closed:
+    # this is exactly the category that produced illegal cross-type searches.
+    if _turn1_v78_filter_from_text_only(filt):
+        try:
+            st.log.append({
+                'event': 'blocked_v78_missing_source_for_from_text_filter',
+                'stage': stage,
+                'candidate': card_name(candidate),
+                'filter': filt,
+            })
+        except Exception:
+            pass
+        return False
+
+    return True
 
