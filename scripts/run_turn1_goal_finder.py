@@ -10002,3 +10002,303 @@ def _turn1_v22_goal_select_from_deck(
 
     return selected
 # TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_END
+
+
+# TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
+# Canonical source-bound goal selector.
+#
+# This replaces the patch-stack selector path with one readable rule:
+#   candidate must match a missing goal option
+#   AND the actual source card/effect must be able to select that concrete candidate.
+#
+# Regression targets:
+#   Fighting Gong -> Solrock/Lunatone: allowed when candidate is Basic Fighting Pokemon
+#   Poké Pad -> Wally's Compassion: blocked
+#   Buddy-Buddy Poffin -> Energy: blocked
+#   Shivery Chill / Earthen Vessel -> Basic Energy: allowed
+
+def _turn1_clean_norm(value):
+    try:
+        return tf.norm(str(value or ""))
+    except Exception:
+        return str(value or "").lower().strip()
+
+
+def _turn1_clean_card_name(card):
+    try:
+        return tf.card_name(card)
+    except Exception:
+        if isinstance(card, dict):
+            return str(card.get("name") or card.get("card_name") or "")
+        return ""
+
+
+def _turn1_clean_card_supertype(card):
+    try:
+        return str(tf.card_supertype(card) or "")
+    except Exception:
+        if isinstance(card, dict):
+            return str(card.get("supertype") or "")
+        return ""
+
+
+def _turn1_clean_card_types(card):
+    try:
+        return [_turn1_clean_norm(x) for x in tf.card_types(card)]
+    except Exception:
+        if isinstance(card, dict):
+            value = card.get("types") or []
+            if isinstance(value, str):
+                value = [value]
+            return [_turn1_clean_norm(x) for x in value]
+        return []
+
+
+def _turn1_clean_card_subtypes(card):
+    try:
+        return [_turn1_clean_norm(x) for x in tf.card_subtypes(card)]
+    except Exception:
+        if isinstance(card, dict):
+            value = card.get("subtypes") or []
+            if isinstance(value, str):
+                value = [value]
+            return [_turn1_clean_norm(x) for x in value]
+        return []
+
+
+def _turn1_clean_card_hp(card):
+    if not isinstance(card, dict):
+        return None
+    raw = card.get("hp")
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _turn1_clean_card_text_blob(card):
+    parts = []
+    def walk(value, depth=0):
+        if value is None or depth > 5:
+            return
+        if isinstance(value, str):
+            parts.append(value)
+            return
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if isinstance(k, str):
+                    parts.append(k)
+                walk(v, depth + 1)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                walk(item, depth + 1)
+    walk(card)
+    return " ".join(parts)
+
+
+def _turn1_clean_source_text(action_card, filt, source_step):
+    parts = []
+    if isinstance(filt, dict):
+        for key in ("raw_text", "source_text", "text"):
+            if filt.get(key):
+                parts.append(str(filt.get(key)))
+    if isinstance(source_step, dict):
+        for key in ("source_text", "raw_text", "text"):
+            if source_step.get(key):
+                parts.append(str(source_step.get(key)))
+    if isinstance(action_card, dict):
+        for key in ("combined_text", "raw_text", "text", "abilities_text", "attacks_text", "rules"):
+            value = action_card.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, list):
+                parts.extend(str(x) for x in value)
+    return _turn1_clean_norm(" ".join(parts))
+
+
+def _turn1_clean_is_pokemon(card):
+    return _turn1_clean_norm(_turn1_clean_card_supertype(card)) in {"pokemon", "pokémon"}
+
+
+def _turn1_clean_is_trainer(card):
+    return _turn1_clean_norm(_turn1_clean_card_supertype(card)) == "trainer"
+
+
+def _turn1_clean_is_energy(card):
+    return _turn1_clean_norm(_turn1_clean_card_supertype(card)) == "energy"
+
+
+def _turn1_clean_is_basic(card):
+    name = _turn1_clean_norm(_turn1_clean_card_name(card))
+    return "basic" in _turn1_clean_card_subtypes(card) or name.startswith("basic ")
+
+
+def _turn1_clean_has_type(card, type_name):
+    t = _turn1_clean_norm(type_name)
+    name = _turn1_clean_norm(_turn1_clean_card_name(card))
+    return t in _turn1_clean_card_types(card) or f"basic {t} energy" in name
+
+
+def _turn1_clean_has_rule_box(card):
+    blob = _turn1_clean_norm(_turn1_clean_card_text_blob(card))
+    name = _turn1_clean_norm(_turn1_clean_card_name(card))
+    if "rule box" in blob:
+        return True
+    # Conservative rule-box approximation for Pokémon labels.
+    return any(tok in name for tok in [" ex", "-ex", " vmax", " vstar", " v-union", " gx"])
+
+
+def _turn1_clean_text_specific_allows(action_card, candidate, filt, action_name, source_step=None):
+    text = _turn1_clean_source_text(action_card, filt, source_step)
+    name = _turn1_clean_norm(action_name or _turn1_clean_card_name(action_card))
+
+    # Fighting Gong:
+    # Search your deck for a Basic Fighting Energy card or a Basic Fighting Pokemon.
+    if "basic fighting energy" in text and "basic fighting pokemon" in text:
+        if _turn1_clean_is_energy(candidate):
+            return _turn1_clean_is_basic(candidate) and _turn1_clean_has_type(candidate, "fighting")
+        if _turn1_clean_is_pokemon(candidate):
+            return _turn1_clean_is_basic(candidate) and _turn1_clean_has_type(candidate, "fighting")
+        return False
+
+    # Buddy-Buddy Poffin:
+    # up to 2 Basic Pokemon with 70 HP or less onto Bench.
+    if "basic pokemon with 70 hp or less" in text or "basic pokémon with 70 hp or less" in text:
+        hp = _turn1_clean_card_hp(candidate)
+        return _turn1_clean_is_pokemon(candidate) and _turn1_clean_is_basic(candidate) and hp is not None and hp <= 70
+
+    # Poké Pad:
+    # Search for a Pokemon that doesn't have a Rule Box.
+    if "doesn't have a rule box" in text or "does not have a rule box" in text:
+        return _turn1_clean_is_pokemon(candidate) and not _turn1_clean_has_rule_box(candidate)
+
+    # Shivery Chill / similar Basic Water Energy searches.
+    if "basic water energy" in text:
+        return _turn1_clean_is_energy(candidate) and _turn1_clean_is_basic(candidate) and _turn1_clean_has_type(candidate, "water")
+
+    # Earthen Vessel / generic Basic Energy searches.
+    if "basic energy" in text and "basic pokemon" not in text and "basic pokémon" not in text:
+        return _turn1_clean_is_energy(candidate) and _turn1_clean_is_basic(candidate)
+
+    # Generic Pokemon search.
+    if "search your deck for a pokemon" in text or "search your deck for a pokémon" in text:
+        return _turn1_clean_is_pokemon(candidate)
+
+    return None
+
+
+def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, action_name, source_step=None):
+    if not isinstance(candidate, dict):
+        return False
+
+    if action_card is None:
+        return False
+
+    # First apply the structured compiled filter.
+    try:
+        if not _turn1_v22_filter_allows_for_action(filt or {}, candidate, action_name):
+            return False
+    except Exception:
+        return False
+
+    # Then apply explicit text-specific rules when recognizable.
+    specific = _turn1_clean_text_specific_allows(action_card, candidate, filt or {}, action_name, source_step)
+    if specific is not None:
+        return bool(specific)
+
+    # Then use the existing v67 printed/source-text guard.
+    try:
+        if "_turn1_v67_source_text_allows_card" in globals():
+            if not _turn1_v67_source_text_allows_card(
+                filt or {},
+                candidate,
+                action_name,
+                action_card=action_card,
+                source_step=source_step,
+            ):
+                return False
+    except Exception:
+        return False
+
+    # Finally require target_finder's source-card/direct-search agreement.
+    try:
+        return bool(tf.card_directly_searches_target(
+            action_card,
+            tf.norm(_turn1_clean_card_name(candidate)),
+            [candidate],
+        ))
+    except Exception:
+        return False
+
+
+def _turn1_v22_goal_select_from_deck(
+    st: tf.SimState,
+    reqs: Sequence[GoalRequirement],
+    mode: str,
+    tracker: GoalTracker,
+    filt: Dict[str, Any],
+    amount: int,
+    action_name: str,
+    action_card=None,
+    source_step=None,
+) -> List[Dict[str, Any]]:
+    # TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
+    selected: List[Dict[str, Any]] = []
+    if amount <= 0:
+        return selected
+
+    virtual_tracker = GoalTracker()
+    virtual_tracker.mark(tracker.accessed)
+    virtual_tracker.mark(selected)
+
+    while len(selected) < amount:
+        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
+        if not deficits:
+            break
+
+        if mode == "any":
+            ordered_deficits = deficits
+        else:
+            ordered_deficits = sorted(deficits, key=lambda x: (-x[1], x[0].label))
+
+        chosen_idx = None
+        chosen_req = None
+
+        for req, _deficit in ordered_deficits:
+            for idx, candidate in enumerate(st.deck):
+                if not isinstance(candidate, dict):
+                    continue
+
+                if not any(card_matches_option(candidate, opt) for opt in req.options):
+                    continue
+
+                if not _turn1_clean_source_can_select_candidate(
+                    action_card,
+                    candidate,
+                    filt,
+                    action_name,
+                    source_step=source_step,
+                ):
+                    continue
+
+                chosen_idx = idx
+                chosen_req = req
+                break
+
+            if chosen_idx is not None:
+                break
+
+        if chosen_idx is None:
+            break
+
+        chosen = st.deck.pop(chosen_idx)
+        selected.append(chosen)
+        virtual_tracker.mark([chosen])
+
+        if mode == "any" and chosen_req is not None:
+            if _turn1_v22_req_deficit(chosen_req, st, virtual_tracker) <= 0:
+                break
+
+    return selected
+
