@@ -5670,6 +5670,213 @@ def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any
     return out
 
 
+
+
+# ---------------------------------------------------------------------
+# TURN1_V67_BENCH_HP_SEARCH_FILTERS
+# ---------------------------------------------------------------------
+# Broad legality guard for source-text search restrictions.
+#
+# Fixes cases like Buddy-Buddy Poffin where a compiled search filter can be
+# too vague (for example, only saying "Basic"), causing the goal executor to
+# treat Energy as reachable. Printed/source text such as:
+#   "Search your deck for up to 2 Basic Pokemon with 70 HP or less and put
+#    them onto your Bench"
+# means the searched targets must be Basic Pokemon with HP <= 70, never Energy.
+#
+# This is intentionally not a Buddy-Buddy-only special case. It enforces two
+# broad classes of restrictions:
+#   1. cards put onto the Bench must be Pokemon;
+#   2. HP-or-less searches require Pokemon with HP at or below the limit.
+
+def _turn1_v67_norm_text(value: Any) -> str:
+    try:
+        return tf.norm(value)
+    except Exception:
+        return str(value or "").lower().replace("pokémon", "pokemon").strip()
+
+
+def _turn1_v67_flatten_strings(value: Any, depth: int = 0) -> str:
+    if value is None or depth > 4:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        parts = []
+        preferred = [
+            "name", "card_name", "text", "raw_text", "source_text", "combined_text",
+            "rules", "abilities_text", "attacks_text", "effect_text", "description",
+            "filter", "card_filter", "selection", "target", "targets",
+        ]
+        for key in preferred:
+            if key in value:
+                parts.append(_turn1_v67_flatten_strings(value.get(key), depth + 1))
+        for key, val in value.items():
+            if key not in preferred:
+                parts.append(_turn1_v67_flatten_strings(val, depth + 1))
+        return " ".join(p for p in parts if p)
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_turn1_v67_flatten_strings(v, depth + 1) for v in value)
+    return str(value)
+
+
+def _turn1_v67_step_text(step: Any) -> str:
+    parts = []
+    if isinstance(step, dict):
+        for key in ("text", "raw_text", "source_text", "effect_text", "description"):
+            val = step.get(key)
+            if val:
+                parts.append(str(val))
+        try:
+            fn = getattr(tf, "step_text", None)
+            if callable(fn):
+                val = fn(step)
+                if val:
+                    parts.append(str(val))
+        except Exception:
+            pass
+    parts.append(_turn1_v67_flatten_strings(step))
+    return " ".join(p for p in parts if p)
+
+
+def _turn1_v67_action_card_text(action_card: Any) -> str:
+    parts = []
+    if isinstance(action_card, dict):
+        parts.append(_turn1_v67_flatten_strings(action_card))
+        try:
+            for eff in tf.iter_effects(action_card):
+                fn = getattr(tf, "ability_text_blob", None)
+                if callable(fn):
+                    try:
+                        parts.append(str(fn(eff)))
+                    except Exception:
+                        pass
+                parts.append(_turn1_v67_flatten_strings(eff))
+        except Exception:
+            pass
+    return " ".join(p for p in parts if p)
+
+
+def _turn1_v67_filter_blob(filt: Any) -> str:
+    try:
+        return str(tf.filter_text_blob(filt))
+    except Exception:
+        return _turn1_v67_flatten_strings(filt)
+
+
+def _turn1_v67_search_source_blob(filt: Any, action_name: str, action_card: Any = None, source_step: Any = None) -> str:
+    # Prefer the actual search step/filter, but include the full action text as
+    # fallback for under-compiled filters.
+    parts = [
+        str(action_name or ""),
+        _turn1_v67_step_text(source_step),
+        _turn1_v67_filter_blob(filt),
+        _turn1_v67_action_card_text(action_card),
+    ]
+    return _turn1_v67_norm_text(" ".join(p for p in parts if p))
+
+
+def _turn1_v67_card_hp(card: Dict[str, Any]):
+    vals = []
+    if isinstance(card, dict):
+        vals.extend([card.get("hp"), card.get("HP"), card.get("raw_hp")])
+        for key in ("identity", "gameplay", "raw_card", "source"):
+            obj = card.get(key)
+            if isinstance(obj, dict):
+                vals.extend([obj.get("hp"), obj.get("HP"), obj.get("raw_hp")])
+    for val in vals:
+        if val is None:
+            continue
+        m = re.search(r"\d+", str(val))
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+    return None
+
+
+def _turn1_v67_is_pokemon(card: Dict[str, Any]) -> bool:
+    try:
+        return _turn1_v67_norm_text(tf.card_supertype(card)) in {"pokemon", "pokémon"}
+    except Exception:
+        return False
+
+
+def _turn1_v67_is_basic_pokemon(card: Dict[str, Any]) -> bool:
+    try:
+        return bool(tf.is_basic_pokemon(card))
+    except Exception:
+        if not _turn1_v67_is_pokemon(card):
+            return False
+        try:
+            subs = {_turn1_v67_norm_text(x) for x in tf.card_subtypes(card)}
+        except Exception:
+            subs = set()
+        try:
+            name_n = _turn1_v67_norm_text(tf.card_name(card))
+        except Exception:
+            name_n = ""
+        return "basic" in subs or name_n.startswith("basic ")
+
+
+def _turn1_v67_target_phrase_from_search_text(blob: str) -> str:
+    b = _turn1_v67_norm_text(blob)
+    patterns = [
+        r"search (?:your|the) deck(?: and (?:your )?discard pile)? for (.*?)(?:, reveal| reveal| and reveal|,? and put|,? put| then shuffle| shuffle|\.|$)",
+        r"look at the top \d+ cards? of your deck.*?reveal (.*?)(?: card| cards|,| and put| put|$)",
+        r"choose (.*?)(?: from (?:your )?deck| from among them|,| and put| put|$)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, b)
+        if not m:
+            continue
+        phrase = m.group(1)
+        phrase = re.sub(r"^(up to|exactly)?\s*\d+\s+", "", phrase).strip()
+        phrase = re.sub(r"^(a|an|any|one|two)\s+", "", phrase).strip()
+        if phrase:
+            return phrase
+    return b
+
+
+def _turn1_v67_source_text_allows_card(
+    filt: Dict[str, Any],
+    card: Dict[str, Any],
+    action_name: str,
+    action_card: Any = None,
+    source_step: Any = None,
+) -> bool:
+    blob = _turn1_v67_search_source_blob(filt, action_name, action_card, source_step)
+    if not blob:
+        return True
+
+    target = _turn1_v67_target_phrase_from_search_text(blob)
+    target_n = _turn1_v67_norm_text(target)
+
+    # If the searched card is put onto the Bench, the target cannot be Energy
+    # or a Trainer. This catches Buddy-Buddy Poffin and similar Bench-search
+    # effects even when the structured compiler filter is vague.
+    if "onto your bench" in blob or "to your bench" in blob:
+        if not _turn1_v67_is_pokemon(card):
+            return False
+
+    hp_match = re.search(r"(\d+)\s*hp\s*or\s*less", target_n) or re.search(r"(\d+)\s*hp\s*or\s*less", blob)
+    if hp_match:
+        if not _turn1_v67_is_pokemon(card):
+            return False
+        hp = _turn1_v67_card_hp(card)
+        if hp is None or hp > int(hp_match.group(1)):
+            return False
+
+    if "basic pokemon" in target_n or "basic pokémon" in target_n:
+        if not _turn1_v67_is_basic_pokemon(card):
+            return False
+
+    return True
+
+
 def _turn1_v22_goal_select_from_deck(
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -5678,6 +5885,8 @@ def _turn1_v22_goal_select_from_deck(
     filt: Dict[str, Any],
     amount: int,
     action_name: str,
+    action_card=None,
+    source_step=None,
 ) -> List[Dict[str, Any]]:
     """Remove and return up to amount cards from deck that best satisfy the goal."""
     selected: List[Dict[str, Any]] = []
@@ -5708,6 +5917,8 @@ def _turn1_v22_goal_select_from_deck(
                 if not isinstance(c, dict):
                     continue
                 if not _turn1_v22_filter_allows_for_action(filt, c, action_name):
+                    continue
+                if not _turn1_v67_source_text_allows_card(filt, c, action_name, action_card=action_card, source_step=source_step):
                     continue
                 if any(card_matches_option(c, opt) for opt in req.options):
                     chosen_idx = idx
@@ -5944,6 +6155,8 @@ def _turn1_v22_card_goal_search_capacity(
             filt=filt,
             amount=amt,
             action_name=action_name,
+            action_card=card,
+            source_step=step,
         )
         if selected:
             fake_st.hand.extend(selected)
@@ -6139,6 +6352,8 @@ def _turn1_v22_execute_goal_search_card(
                     filt=filt,
                     amount=amt,
                     action_name=action_name,
+                    action_card=card,
+                    source_step=step,
                 )
                 if selected:
                     st.hand.extend(selected)

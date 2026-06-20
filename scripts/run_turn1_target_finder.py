@@ -1228,16 +1228,186 @@ def draw_amount_from_step(step: Dict[str, Any], counts: Optional[Dict[str, int]]
     return int(m.group(1)) if m else 0
 
 
+
+
+# ---------------------------------------------------------------------
+# TURN1_V67_BENCH_HP_SEARCH_FILTERS
+# ---------------------------------------------------------------------
+# Broad source-text legality guard used by direct-search scoring. This prevents
+# vague compiled filters from treating Bench/HP-limited Pokemon searches as
+# Energy access.
+
+def _turn1_v67_norm_text(value):
+    try:
+        return norm(value)
+    except Exception:
+        return str(value or "").lower().replace("pokémon", "pokemon").strip()
+
+
+def _turn1_v67_flatten_strings(value, depth=0):
+    if value is None or depth > 4:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        parts = []
+        preferred = [
+            "name", "card_name", "text", "raw_text", "source_text", "combined_text",
+            "rules", "abilities_text", "attacks_text", "effect_text", "description",
+            "filter", "card_filter", "selection", "target", "targets",
+        ]
+        for key in preferred:
+            if key in value:
+                parts.append(_turn1_v67_flatten_strings(value.get(key), depth + 1))
+        for key, val in value.items():
+            if key not in preferred:
+                parts.append(_turn1_v67_flatten_strings(val, depth + 1))
+        return " ".join(p for p in parts if p)
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_turn1_v67_flatten_strings(v, depth + 1) for v in value)
+    return str(value)
+
+
+def _turn1_v67_card_source_blob(card, filt=None, step=None):
+    parts = []
+    if isinstance(step, dict):
+        for key in ("text", "raw_text", "source_text", "effect_text", "description"):
+            val = step.get(key)
+            if val:
+                parts.append(str(val))
+        try:
+            parts.append(step_text(step))
+        except Exception:
+            pass
+        parts.append(_turn1_v67_flatten_strings(step))
+
+    try:
+        parts.append(filter_text_blob(filt))
+    except Exception:
+        parts.append(_turn1_v67_flatten_strings(filt))
+
+    if isinstance(card, dict):
+        parts.append(_turn1_v67_flatten_strings(card))
+        try:
+            for eff in iter_effects(card):
+                try:
+                    parts.append(ability_text_blob(eff))
+                except Exception:
+                    pass
+                parts.append(_turn1_v67_flatten_strings(eff))
+        except Exception:
+            pass
+
+    return _turn1_v67_norm_text(" ".join(p for p in parts if p))
+
+
+def _turn1_v67_target_phrase_from_search_text(blob):
+    b = _turn1_v67_norm_text(blob)
+    patterns = [
+        r"search (?:your|the) deck(?: and (?:your )?discard pile)? for (.*?)(?:, reveal| reveal| and reveal|,? and put|,? put| then shuffle| shuffle|\.|$)",
+        r"look at the top \d+ cards? of your deck.*?reveal (.*?)(?: card| cards|,| and put| put|$)",
+        r"choose (.*?)(?: from (?:your )?deck| from among them|,| and put| put|$)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, b)
+        if not m:
+            continue
+        phrase = m.group(1)
+        phrase = re.sub(r"^(up to|exactly)?\s*\d+\s+", "", phrase).strip()
+        phrase = re.sub(r"^(a|an|any|one|two)\s+", "", phrase).strip()
+        if phrase:
+            return phrase
+    return b
+
+
+def _turn1_v67_card_hp(card):
+    vals = []
+    if isinstance(card, dict):
+        vals.extend([card.get("hp"), card.get("HP"), card.get("raw_hp")])
+        for key in ("identity", "gameplay", "raw_card", "source"):
+            obj = card.get(key)
+            if isinstance(obj, dict):
+                vals.extend([obj.get("hp"), obj.get("HP"), obj.get("raw_hp")])
+    for val in vals:
+        if val is None:
+            continue
+        m = re.search(r"\d+", str(val))
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+    return None
+
+
+def _turn1_v67_is_pokemon(card):
+    try:
+        return _turn1_v67_norm_text(card_supertype(card)) in {"pokemon", "pokémon"}
+    except Exception:
+        return False
+
+
+def _turn1_v67_is_basic_pokemon(card):
+    try:
+        return bool(is_basic_pokemon(card))
+    except Exception:
+        if not _turn1_v67_is_pokemon(card):
+            return False
+        try:
+            subs = {_turn1_v67_norm_text(x) for x in card_subtypes(card)}
+        except Exception:
+            subs = set()
+        try:
+            name_n = _turn1_v67_norm_text(card_name(card))
+        except Exception:
+            name_n = ""
+        return "basic" in subs or name_n.startswith("basic ")
+
+
+def _turn1_v67_source_text_allows_target(action_card, filt, target_card, step=None):
+    blob = _turn1_v67_card_source_blob(action_card, filt=filt, step=step)
+    if not blob:
+        return True
+
+    target = _turn1_v67_target_phrase_from_search_text(blob)
+    target_n = _turn1_v67_norm_text(target)
+
+    if "onto your bench" in blob or "to your bench" in blob:
+        if not _turn1_v67_is_pokemon(target_card):
+            return False
+
+    hp_match = re.search(r"(\d+)\s*hp\s*or\s*less", target_n) or re.search(r"(\d+)\s*hp\s*or\s*less", blob)
+    if hp_match:
+        if not _turn1_v67_is_pokemon(target_card):
+            return False
+        hp = _turn1_v67_card_hp(target_card)
+        if hp is None or hp > int(hp_match.group(1)):
+            return False
+
+    if "basic pokemon" in target_n or "basic pokémon" in target_n:
+        if not _turn1_v67_is_basic_pokemon(target_card):
+            return False
+
+    return True
+
+
 def card_directly_searches_target(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+    # TURN1_V67_BENCH_HP_SEARCH_FILTERS
     target_cards = [c for c in deck if target_matches(c, target_norm)]
     if not target_cards:
         return False
     if card_specific_directly_searches_target(card, target_norm, deck):
         return True
     for step in meaningful_steps(card):
-        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
+        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand", "put_card_onto_bench"}:
             filt = extract_filter(step)
-            if any(filter_allows_card(filt, tc) for tc in target_cards):
+            if any(
+                filter_allows_card(filt, tc)
+                and _turn1_v67_source_text_allows_target(card, filt, tc, step=step)
+                for tc in target_cards
+            ):
                 return True
     return False
 
