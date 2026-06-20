@@ -6014,7 +6014,6 @@ def _turn1_v22_goal_select_from_deck(
                     )
                     for opt in req.options
                 ):
-                if any(card_matches_option(c, opt) for opt in req.options):
                     chosen_idx = idx
                     chosen_req = req
                     break
