@@ -8,59 +8,6 @@ from pathlib import Path
 from .state import CardInstance, GameState, PlayerState
 
 
-def load_compiled_cards(path):
-    # TURN1_GZIP_COMPILED_SEMANTICS
-    """
-    Load compiled card semantics from JSON.
-
-    In local development we usually have:
-      data/compiled_cards/auto/compiled_cards_all.turn1_semantics.json
-
-    On Streamlit Cloud / GitHub we keep the artifact compressed because the raw
-    JSON is larger than GitHub's normal file limit:
-      data/compiled_cards/auto/compiled_cards_all.turn1_semantics.json.gz
-
-    If the requested plain JSON file is missing, automatically fall back to the
-    matching .gz file.
-    """
-    p = Path(path)
-    read_path = p
-
-    if not read_path.exists():
-        gz_path = Path(str(p) + ".gz")
-        if gz_path.exists():
-            read_path = gz_path
-
-    if not read_path.exists():
-        raise FileNotFoundError(f"Compiled card semantics not found: {p} or {p}.gz")
-
-    if read_path.suffix.lower() == ".gz":
-        with gzip.open(read_path, "rt", encoding="utf-8") as f:
-            payload = json.load(f)
-    else:
-        with open(read_path, "r", encoding="utf-8") as f:
-            payload = json.load(f)
-
-    if isinstance(payload, list):
-        return payload
-
-    if isinstance(payload, dict):
-        for key in ("cards", "data", "records"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return value
-
-        values = [v for v in payload.values() if isinstance(v, dict)]
-        if values:
-            return values
-
-    return payload
-
-
-def filter_complete_cards(cards: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [c for c in cards if c.get("parser", {}).get("status") == "complete"]
-
-
 def build_card_index(cards: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     index: Dict[str, Dict[str, Any]] = {}
     for card in cards:
@@ -117,3 +64,116 @@ def build_two_player_seed_state(card_defs: List[Dict[str, Any]], deck_size: int 
             players[player_id].hand.append(iid)
             cards[iid].zone = "hand"
     return GameState(players=players, cards=cards, rng_seed=seed)
+
+def _looks_like_card_record(x):
+    if not isinstance(x, dict):
+        return False
+    if isinstance(x.get("parser"), dict):
+        return True
+    if isinstance(x.get("identity"), dict):
+        return True
+    return any(k in x for k in (
+        "card_id",
+        "representative_card_id",
+        "same_effect_printings",
+        "name",
+        "card_name",
+        "supertype",
+        "compiled_effects",
+        "effects",
+    ))
+
+
+def _extract_card_records(payload):
+    if isinstance(payload, list):
+        cards = [c for c in payload if _looks_like_card_record(c)]
+        if cards:
+            return cards
+
+    if isinstance(payload, dict):
+        for key in (
+            "cards",
+            "data",
+            "records",
+            "compiled_cards",
+            "card_records",
+            "items",
+            "results",
+        ):
+            value = payload.get(key)
+
+            if isinstance(value, list):
+                cards = [c for c in value if _looks_like_card_record(c)]
+                if cards:
+                    return cards
+
+            if isinstance(value, dict):
+                cards = [c for c in value.values() if _looks_like_card_record(c)]
+                if cards:
+                    return cards
+
+        cards = [c for c in payload.values() if _looks_like_card_record(c)]
+        if cards:
+            return cards
+
+    # Last-resort shallow recursive search for the largest card-looking collection.
+    best = []
+
+    def walk(x, depth=0):
+        nonlocal best
+        if depth > 5:
+            return
+
+        if isinstance(x, list):
+            cards = [c for c in x if _looks_like_card_record(c)]
+            if len(cards) > len(best):
+                best = cards
+            for item in x[:25]:
+                walk(item, depth + 1)
+
+        elif isinstance(x, dict):
+            cards = [c for c in x.values() if _looks_like_card_record(c)]
+            if len(cards) > len(best):
+                best = cards
+            for item in list(x.values())[:25]:
+                walk(item, depth + 1)
+
+    walk(payload)
+
+    if best:
+        return best
+
+    if isinstance(payload, dict):
+        raise ValueError(f"Could not extract card records from compiled payload. Top-level keys: {list(payload.keys())[:20]}")
+
+    raise ValueError(f"Could not extract card records from compiled payload type: {type(payload).__name__}")
+
+def load_compiled_cards(path):
+    # TURN1_GZIP_COMPILED_SEMANTICS_NORMALIZED
+    p = Path(path)
+    read_path = p
+
+    if not read_path.exists():
+        gz_path = Path(str(p) + ".gz")
+        if gz_path.exists():
+            read_path = gz_path
+
+    if not read_path.exists():
+        raise FileNotFoundError(f"Compiled card semantics not found: {p} or {p}.gz")
+
+    if read_path.suffix.lower() == ".gz":
+        with gzip.open(read_path, "rt", encoding="utf-8") as f:
+            payload = json.load(f)
+    else:
+        with open(read_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+    return _extract_card_records(payload)
+
+
+def filter_complete_cards(cards):
+    # TURN1_FILTER_COMPLETE_CARDS_DICT_ONLY
+    return [
+        c for c in cards
+        if isinstance(c, dict) and c.get("parser", {}).get("status") == "complete"
+    ]
