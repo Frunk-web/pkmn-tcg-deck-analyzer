@@ -9388,10 +9388,617 @@ TURN1_HOTPATH_CLASSIFICATION_CACHE_V42 = {
     "cached_helpers": list(_TURN1_V42_CACHED_HELPERS),
 }
 
+# ---------------------------------------------------------------------
+# TURN1_V75_GOAL_SELECTOR_CANDIDATE_SOURCE_GUARD
+# ---------------------------------------------------------------------
+# Final goal-aware deck selector replacement.
+#
+# Why this exists:
+#   Earlier guards fixed card_directly_searches_target(...) and several target
+#   finder execution paths, but the multi-goal deck selector could still choose a
+#   candidate card if it matched the missing goal option and an older/vague filter
+#   path allowed it. That allowed illegal selections such as:
+#       Poké Pad -> Wally's Compassion
+# because the selected card matched the Wally goal, even though Poké Pad can only
+# search Pokémon without a Rule Box.
+#
+# Broad rule:
+#   A goal-aware search may select candidate C only if all three are true:
+#     1. C matches the missing goal option.
+#     2. The exact search filter/source text allows C.
+#     3. The source card itself can legally search C, using C's actual card name.
+#
+# This is not specific to Poké Pad/Wally. It also guards future cases like
+# Pokémon-only searchers selecting Trainers, Trainer-only searchers selecting
+# Energy, Bench/HP-limited searchers selecting Energy, etc.
 
+def _turn1_v75_deck_with_candidate(deck, candidate):
+    try:
+        out = list(deck or [])
+    except Exception:
+        out = []
+    if isinstance(candidate, dict) and not any(candidate is c for c in out):
+        out.append(candidate)
+    return out
+
+
+def _turn1_v75_candidate_target_norm(candidate_card):
+    if not isinstance(candidate_card, dict):
+        return ""
+    try:
+        name = tf.card_name(candidate_card)
+        if name:
+            return tf.norm(name)
+    except Exception:
+        pass
+    try:
+        ident = candidate_card.get('identity') or {}
+        for key in ('name', 'canonical_name', 'card_name'):
+            val = candidate_card.get(key) or ident.get(key)
+            if val:
+                return tf.norm(str(val))
+    except Exception:
+        pass
+    return ""
+
+
+def _turn1_v75_source_card_can_search_candidate(action_card, candidate_card, deck):
+    # Non-card/internal callers keep legacy behavior. Physical played cards must
+    # prove that their own text can search the exact candidate card.
+    if not isinstance(action_card, dict):
+        return True
+    if not isinstance(candidate_card, dict):
+        return False
+
+    candidate_norm = _turn1_v75_candidate_target_norm(candidate_card)
+    if not candidate_norm:
+        return False
+
+    try:
+        candidate_deck = _turn1_v75_deck_with_candidate(deck, candidate_card)
+        return bool(tf.card_directly_searches_target(action_card, candidate_norm, candidate_deck))
+    except Exception:
+        return False
+
+
+def _turn1_v75_action_can_select_goal_candidate(
+    action_card,
+    opt,
+    candidate_card,
+    deck,
+    filt,
+    action_name,
+    source_step=None,
+) -> bool:
+    if not isinstance(candidate_card, dict):
+        return False
+
+    try:
+        if not card_matches_option(candidate_card, opt):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if not _turn1_v22_filter_allows_for_action(filt, candidate_card, action_name):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if not _turn1_v67_source_text_allows_card(
+            filt,
+            candidate_card,
+            action_name,
+            action_card=action_card,
+            source_step=source_step,
+        ):
+            return False
+    except Exception:
+        # If this helper errors, do not silently allow a physical source card to
+        # select an arbitrary goal option. The direct source-card check below is
+        # still required.
+        pass
+
+    if not _turn1_v75_source_card_can_search_candidate(action_card, candidate_card, deck):
+        return False
+
+    return True
+
+
+def _turn1_v22_goal_select_from_deck(
+    st: tf.SimState,
+    reqs: Sequence[GoalRequirement],
+    mode: str,
+    tracker: GoalTracker,
+    filt: Dict[str, Any],
+    amount: int,
+    action_name: str,
+    action_card=None,
+    source_step=None,
+) -> List[Dict[str, Any]]:
+    """Strict goal-aware deck selector.
+
+    This intentionally replaces the earlier v22/v68 selector at runtime. It is
+    used by both goal-search execution and capacity scoring because those call
+    this global function by name.
+    """
+    selected: List[Dict[str, Any]] = []
+    if amount <= 0:
+        return selected
+
+    virtual_tracker = GoalTracker()
+    virtual_tracker.mark(tracker.accessed)
+    virtual_tracker.mark(selected)
+
+    while len(selected) < amount:
+        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
+        if not deficits:
+            break
+
+        chosen_idx = None
+        chosen_req = None
+
+        if mode == "any":
+            ordered_deficits = deficits
+        else:
+            ordered_deficits = sorted(deficits, key=lambda x: (-x[1], x[0].label))
+
+        for req, _deficit in ordered_deficits:
+            for idx, c in enumerate(st.deck):
+                if not isinstance(c, dict):
+                    continue
+
+                if any(
+                    _turn1_v75_action_can_select_goal_candidate(
+                        action_card,
+                        opt,
+                        c,
+                        st.deck,
+                        filt,
+                        action_name,
+                        source_step=source_step,
+                    )
+                    for opt in req.options
+                ):
+                    chosen_idx = idx
+                    chosen_req = req
+                    break
+
+            if chosen_idx is not None:
+                break
+
+        if chosen_idx is None:
+            break
+
+        chosen = st.deck.pop(chosen_idx)
+        selected.append(chosen)
+        virtual_tracker.mark([chosen])
+
+        if mode == "any" and chosen_req is not None:
+            if requirement_satisfied(chosen_req, st, virtual_tracker):
+                break
+
+    return selected
 
 
 if __name__ == "__main__":
     main()
 
 # TURN1_APPLY_V30_BEFORE_SUMMARY
+
+# TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_START
+# Final strict selector override for goal-aware deck searches.
+#
+# Why this exists:
+# Older patch layers can still leave a permissive goal selector alive, allowing a
+# source card to select a goal card if the goal card merely matches the goal and
+# the compiled filter is vague (for example {"from_text": True}). That allowed
+# illegal routes like Poké Pad selecting Wally's Compassion. This override is
+# deliberately source-bound and candidate-bound:
+#   1. the candidate must match the missing goal option,
+#   2. the structured/compiled filter must allow the candidate,
+#   3. the source card's printed/search text must allow the candidate,
+#   4. when available, target_finder's card_directly_searches_target must also
+#      agree using the candidate's concrete card name.
+
+
+def _turn1_v76_norm(value):
+    try:
+        return tf.norm(str(value or ""))
+    except Exception:
+        return str(value or "").lower()
+
+
+def _turn1_v76_collect_text(value, parts, depth=0):
+    if value is None or depth > 6:
+        return
+    if isinstance(value, str):
+        if value.strip():
+            parts.append(value)
+        return
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if isinstance(k, str):
+                parts.append(k)
+            _turn1_v76_collect_text(v, parts, depth + 1)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _turn1_v76_collect_text(item, parts, depth + 1)
+
+
+def _turn1_v76_source_blob(filt, action_name, action_card=None, source_step=None):
+    parts = [str(action_name or "")]
+    _turn1_v76_collect_text(filt, parts)
+    _turn1_v76_collect_text(source_step, parts)
+    if isinstance(action_card, dict):
+        for key in (
+            "combined_text", "rules", "abilities_text", "attacks_text", "text",
+            "raw_text", "raw_abilities", "raw_attacks", "gameplay", "source",
+        ):
+            if key in action_card:
+                _turn1_v76_collect_text(action_card.get(key), parts)
+        try:
+            parts.append(tf.card_name(action_card))
+        except Exception:
+            pass
+    return _turn1_v76_norm(" ".join(p for p in parts if p))
+
+
+def _turn1_v76_card_types(card):
+    out = set()
+    if not isinstance(card, dict):
+        return out
+    for key in ("types", "type", "energy_types"):
+        val = card.get(key)
+        if isinstance(val, str):
+            out.add(_turn1_v76_norm(val))
+        elif isinstance(val, (list, tuple, set)):
+            for x in val:
+                out.add(_turn1_v76_norm(x))
+    for obj_key in ("identity", "gameplay", "raw_card", "source"):
+        obj = card.get(obj_key)
+        if isinstance(obj, dict):
+            for key in ("types", "type", "energy_types"):
+                val = obj.get(key)
+                if isinstance(val, str):
+                    out.add(_turn1_v76_norm(val))
+                elif isinstance(val, (list, tuple, set)):
+                    for x in val:
+                        out.add(_turn1_v76_norm(x))
+    return out
+
+
+def _turn1_v76_has_type(card, typ):
+    typ = _turn1_v76_norm(typ)
+    aliases = {
+        "electric": "lightning",
+        "steel": "metal",
+        "dark": "darkness",
+    }
+    wanted = aliases.get(typ, typ)
+    types = {aliases.get(t, t) for t in _turn1_v76_card_types(card)}
+    try:
+        name_n = _turn1_v76_norm(tf.card_name(card))
+        # Energy card names often encode the type even when types metadata is sparse.
+        if wanted in name_n:
+            types.add(wanted)
+    except Exception:
+        pass
+    return wanted in types
+
+
+def _turn1_v76_is_pokemon(card):
+    try:
+        return _turn1_v76_norm(tf.card_supertype(card)) in {"pokemon", "pokémon"}
+    except Exception:
+        return False
+
+
+def _turn1_v76_is_basic_pokemon(card):
+    try:
+        return bool(tf.is_basic_pokemon(card))
+    except Exception:
+        return _turn1_v76_is_pokemon(card) and "basic" in _turn1_v76_norm(str(card))
+
+
+def _turn1_v76_is_energy(card):
+    try:
+        return bool(tf.is_energy(card))
+    except Exception:
+        try:
+            return _turn1_v76_norm(tf.card_supertype(card)) == "energy"
+        except Exception:
+            return False
+
+
+def _turn1_v76_is_basic_energy(card):
+    try:
+        fn = getattr(tf, "is_basic_energy", None)
+        if callable(fn):
+            return bool(fn(card))
+    except Exception:
+        pass
+    try:
+        return _turn1_v76_is_energy(card) and "basic" in _turn1_v76_norm(tf.card_name(card))
+    except Exception:
+        return False
+
+
+def _turn1_v76_is_supporter(card):
+    try:
+        return bool(tf.is_supporter(card))
+    except Exception:
+        return False
+
+
+def _turn1_v76_is_trainer(card):
+    try:
+        return bool(tf.is_trainer(card))
+    except Exception:
+        try:
+            return _turn1_v76_norm(tf.card_supertype(card)) == "trainer"
+        except Exception:
+            return False
+
+
+def _turn1_v76_trainer_kind(card, kind):
+    kind = _turn1_v76_norm(kind)
+    if not _turn1_v76_is_trainer(card):
+        return False
+    blob_parts = []
+    _turn1_v76_collect_text(card, blob_parts)
+    try:
+        blob_parts.append(tf.card_name(card))
+    except Exception:
+        pass
+    blob = _turn1_v76_norm(" ".join(blob_parts))
+    return kind in blob
+
+
+def _turn1_v76_card_hp(card):
+    vals = []
+    if isinstance(card, dict):
+        vals.extend([card.get("hp"), card.get("HP"), card.get("raw_hp")])
+        for key in ("identity", "gameplay", "raw_card", "source"):
+            obj = card.get(key)
+            if isinstance(obj, dict):
+                vals.extend([obj.get("hp"), obj.get("HP"), obj.get("raw_hp")])
+    for val in vals:
+        if val is None:
+            continue
+        m = re.search(r"\d+", str(val))
+        if m:
+            try:
+                return int(m.group(0))
+            except Exception:
+                pass
+    return None
+
+
+def _turn1_v76_has_rule_box(card):
+    parts = []
+    if isinstance(card, dict):
+        for key in ("rules", "rule_box", "combined_text", "text", "name", "card_name"):
+            _turn1_v76_collect_text(card.get(key), parts)
+        try:
+            parts.append(tf.card_name(card))
+        except Exception:
+            pass
+    blob = _turn1_v76_norm(" ".join(parts))
+    if "rule box" in blob or "pokemon ex" in blob or "pokémon ex" in blob:
+        return True
+    # Avoid treating words like "executive" as ex.
+    if re.search(r"\b(?:ex|v|vmax|vstar|gx)\b", blob):
+        return True
+    return False
+
+
+def _turn1_v76_source_text_allows_candidate(filt, candidate, action_name, action_card=None, source_step=None):
+    """Return True only if the source card/search text can describe candidate.
+
+    This is intentionally a union of recognized target branches. It handles
+    OR-style searches such as Fighting Gong (Basic Fighting Energy OR Basic
+    Fighting Pokémon) while blocking mismatched categories such as Poké Pad ->
+    Supporter and Buddy-Buddy Poffin -> Energy.
+    """
+    blob = _turn1_v76_source_blob(filt, action_name, action_card, source_step)
+    if not blob:
+        return True
+
+    tests = []
+
+    hp_limit = None
+    hp_match = re.search(r"(\d+)\s*hp\s*or\s*less", blob)
+    if hp_match:
+        try:
+            hp_limit = int(hp_match.group(1))
+        except Exception:
+            hp_limit = None
+
+    def hp_ok(c):
+        if hp_limit is None:
+            return True
+        hp = _turn1_v76_card_hp(c)
+        return hp is not None and hp <= hp_limit
+
+    no_rule_box = ("doesnt have a rule box" in blob or "doesn't have a rule box" in blob or "does not have a rule box" in blob)
+
+    def no_rule_ok(c):
+        return (not no_rule_box) or (not _turn1_v76_has_rule_box(c))
+
+    type_aliases = {
+        "grass": ["grass"],
+        "fire": ["fire"],
+        "water": ["water"],
+        "lightning": ["lightning", "electric"],
+        "psychic": ["psychic"],
+        "fighting": ["fighting"],
+        "darkness": ["darkness", "dark"],
+        "metal": ["metal", "steel"],
+        "colorless": ["colorless", "colourless"],
+    }
+
+    def mentions_typed(kind, aliases):
+        return any(f"{a} {kind}" in blob or f"{a}-type {kind}" in blob for a in aliases)
+
+    # Typed branches first. They accumulate, so OR effects stay legal.
+    for typ, aliases in type_aliases.items():
+        if mentions_typed("energy", aliases):
+            if "basic" in blob:
+                tests.append(lambda c, typ=typ: _turn1_v76_is_basic_energy(c) and _turn1_v76_has_type(c, typ))
+            else:
+                tests.append(lambda c, typ=typ: _turn1_v76_is_energy(c) and _turn1_v76_has_type(c, typ))
+        if mentions_typed("pokemon", aliases) or mentions_typed("pokémon", aliases):
+            if "basic" in blob:
+                tests.append(lambda c, typ=typ: _turn1_v76_is_basic_pokemon(c) and _turn1_v76_has_type(c, typ) and hp_ok(c) and no_rule_ok(c))
+            else:
+                tests.append(lambda c, typ=typ: _turn1_v76_is_pokemon(c) and _turn1_v76_has_type(c, typ) and hp_ok(c) and no_rule_ok(c))
+
+    has_typed_energy = any(mentions_typed("energy", aliases) for aliases in type_aliases.values())
+    has_typed_pokemon = any(mentions_typed("pokemon", aliases) or mentions_typed("pokémon", aliases) for aliases in type_aliases.values())
+
+    if "basic energy" in blob and not has_typed_energy:
+        tests.append(lambda c: _turn1_v76_is_basic_energy(c))
+    elif "energy" in blob and not has_typed_energy:
+        tests.append(lambda c: _turn1_v76_is_energy(c))
+
+    # Avoid misreading Pokémon Tool as generic Pokémon search.
+    pokemon_tool_text = "pokemon tool" in blob or "pokémon tool" in blob
+    if ("basic pokemon" in blob or "basic pokémon" in blob) and not has_typed_pokemon:
+        tests.append(lambda c: _turn1_v76_is_basic_pokemon(c) and hp_ok(c) and no_rule_ok(c))
+    elif ("pokemon" in blob or "pokémon" in blob) and not has_typed_pokemon and not pokemon_tool_text:
+        # This intentionally catches Poké Pad: Pokémon without a Rule Box.
+        tests.append(lambda c: _turn1_v76_is_pokemon(c) and hp_ok(c) and no_rule_ok(c))
+
+    if "supporter" in blob:
+        tests.append(lambda c: _turn1_v76_is_supporter(c))
+    if "stadium" in blob:
+        tests.append(lambda c: _turn1_v76_trainer_kind(c, "stadium"))
+    if "item" in blob and not pokemon_tool_text:
+        tests.append(lambda c: _turn1_v76_trainer_kind(c, "item"))
+    if pokemon_tool_text or re.search(r"\btool\b", blob):
+        tests.append(lambda c: _turn1_v76_trainer_kind(c, "tool") or _turn1_v76_trainer_kind(c, "pokemon tool") or _turn1_v76_trainer_kind(c, "pokémon tool"))
+    if "trainer" in blob and not any(w in blob for w in ["supporter", "stadium", "item", "tool", "pokemon", "pokémon", "energy"]):
+        tests.append(lambda c: _turn1_v76_is_trainer(c))
+
+    if not tests:
+        return True
+    return any(test(candidate) for test in tests)
+
+
+def _turn1_v76_deck_with_candidate(deck, candidate):
+    try:
+        out = list(deck or [])
+    except Exception:
+        out = []
+    if isinstance(candidate, dict) and not any(candidate is c for c in out):
+        out.append(candidate)
+    return out
+
+
+def _turn1_v76_source_can_fetch_candidate(action_card, candidate, deck, filt, action_name, source_step=None):
+    if not isinstance(candidate, dict):
+        return False
+
+    # Structured/compiled filter gate.
+    try:
+        if not _turn1_v22_filter_allows_for_action(filt, candidate, action_name):
+            return False
+    except Exception:
+        return False
+
+    # Printed/source-text gate. This catches vague compiled filters such as
+    # {"from_text": True} by reading the actual source card text.
+    try:
+        if not _turn1_v76_source_text_allows_candidate(filt, candidate, action_name, action_card=action_card, source_step=source_step):
+            return False
+    except Exception:
+        return False
+
+    # Candidate-name direct reachability gate. This prevents a source card from
+    # satisfying a broad goal option by selecting a different category of card.
+    if isinstance(action_card, dict):
+        try:
+            exact_target = _turn1_v76_norm(tf.card_name(candidate))
+            if exact_target:
+                return bool(tf.card_directly_searches_target(action_card, exact_target, _turn1_v76_deck_with_candidate(deck, candidate)))
+        except Exception:
+            return False
+    return True
+
+
+def _turn1_v22_goal_select_from_deck(
+    st: tf.SimState,
+    reqs: Sequence[GoalRequirement],
+    mode: str,
+    tracker: GoalTracker,
+    filt: Dict[str, Any],
+    amount: int,
+    action_name: str,
+    action_card=None,
+    source_step=None,
+) -> List[Dict[str, Any]]:
+    # TURN1_V76_FINAL_STRICT_GOAL_SELECTOR
+    """Strict source-bound goal-aware deck selector.
+
+    This is the canonical selector used by the goal-aware executor and capacity
+    scorer. A selected card must match the goal and be legally searchable by the
+    actual source card/effect. It deliberately rejects cases like Poké Pad ->
+    Wally's Compassion and Buddy-Buddy Poffin -> Basic Water Energy.
+    """
+    selected: List[Dict[str, Any]] = []
+    if amount <= 0:
+        return selected
+
+    virtual_tracker = GoalTracker()
+    virtual_tracker.mark(tracker.accessed)
+    virtual_tracker.mark(selected)
+
+    while len(selected) < amount:
+        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
+        if not deficits:
+            break
+
+        chosen_idx = None
+        chosen_req = None
+        if mode == "any":
+            ordered_deficits = deficits
+        else:
+            ordered_deficits = sorted(deficits, key=lambda x: (-x[1], x[0].label))
+
+        for req, _deficit in ordered_deficits:
+            for idx, candidate in enumerate(st.deck):
+                if not isinstance(candidate, dict):
+                    continue
+                if not any(card_matches_option(candidate, opt) for opt in req.options):
+                    continue
+                if not _turn1_v76_source_can_fetch_candidate(
+                    action_card,
+                    candidate,
+                    st.deck,
+                    filt,
+                    action_name,
+                    source_step=source_step,
+                ):
+                    continue
+                chosen_idx = idx
+                chosen_req = req
+                break
+            if chosen_idx is not None:
+                break
+
+        if chosen_idx is None:
+            break
+
+        chosen = st.deck.pop(chosen_idx)
+        selected.append(chosen)
+        virtual_tracker.mark([chosen])
+
+        if mode == "any" and chosen_req is not None:
+            if _turn1_v22_req_deficit(chosen_req, st, virtual_tracker) <= 0:
+                break
+
+    return selected
+# TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_END
