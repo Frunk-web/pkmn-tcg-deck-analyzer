@@ -1,4 +1,4 @@
-# TURN1_V65_DEWRAP_DIRECT_GOAL_FILTER
+# TURN1_DEWRAP_DIRECT_GOAL_FILTER
 # TURN1_V62_PRECISE_SEARCH_FILTER_COMPAT
 # TURN1_V57_ACTION_BUDGET_SINGLE_COUNT
 # TURN1_DIRECT_ACTION_BUDGET_V56
@@ -2320,7 +2320,7 @@ def simulate_one_goal_trial(
     }
 
 
-def turn1_v65_is_blocked_missing_requirement(value: Any) -> bool:
+def turn1_direct_goal_filter_is_blocked_missing_requirement(value: Any) -> bool:
     # Return True for diagnostic block labels that should not be counted as unmet goals.
     s = str(value or "").lower()
     markers = [
@@ -2336,7 +2336,7 @@ def turn1_v65_is_blocked_missing_requirement(value: Any) -> bool:
 
 
 def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    # TURN1_V65_DEWRAP_DIRECT_GOAL_FILTER
+    # TURN1_DEWRAP_DIRECT_GOAL_FILTER
     n = len(results)
     successes = sum(1 for r in results if r["success"])
     by_stage = Counter(r["success_stage"] for r in results)
@@ -2355,7 +2355,7 @@ def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not r["success"]:
             if r.get("missing_requirements"):
                 for m in r["missing_requirements"]:
-                    if turn1_v65_is_blocked_missing_requirement(m):
+                    if turn1_direct_goal_filter_is_blocked_missing_requirement(m):
                         continue
                     missing[m] += 1
             else:
@@ -7802,7 +7802,7 @@ def turn1_v36_action_compatible_with_goal(action_classes, goal_classes):
     return False
 
 
-def turn1_v65_goal_target_norms(reqs, deck):
+def turn1_direct_goal_filter_goal_target_norms(reqs, deck):
     # Return normalized concrete target names/card ids for the current goal requirements.
     norms = []
     seen = set()
@@ -7834,11 +7834,11 @@ def turn1_v65_goal_target_norms(reqs, deck):
     return norms
 
 
-def turn1_v65_action_directly_reaches_goal(action_card, deck, reqs) -> bool:
+def turn1_direct_goal_filter_action_reaches_goal_directly(action_card, deck, reqs) -> bool:
     # True when target_finder says this physical action can directly find a goal card.
     if not isinstance(action_card, dict):
         return False
-    for target_norm in turn1_v65_goal_target_norms(reqs, deck):
+    for target_norm in turn1_direct_goal_filter_goal_target_norms(reqs, deck):
         try:
             if tf.card_directly_searches_target(action_card, target_norm, deck):
                 return True
@@ -7854,7 +7854,7 @@ def turn1_v65_action_directly_reaches_goal(action_card, deck, reqs) -> bool:
 
 
 def turn1_v36_bad_actions_for_goal(line, deck, reqs):
-    # TURN1_V65_DEWRAP_DIRECT_GOAL_FILTER
+    # TURN1_DEWRAP_DIRECT_GOAL_FILTER
     goal_classes = turn1_v36_goal_classes(reqs, deck)
     if not goal_classes:
         return []
@@ -7868,7 +7868,7 @@ def turn1_v36_bad_actions_for_goal(line, deck, reqs):
 
         # Physical card action: if target_finder's direct search logic says it
         # can find a goal card, the post-filter must not invalidate the line.
-        if action_card is not None and turn1_v65_action_directly_reaches_goal(action_card, deck, reqs):
+        if action_card is not None and turn1_direct_goal_filter_action_reaches_goal_directly(action_card, deck, reqs):
             continue
 
         classes = turn1_v36_action_target_classes(action, deck)
