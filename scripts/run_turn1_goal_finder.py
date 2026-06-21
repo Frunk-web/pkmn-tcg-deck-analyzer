@@ -1,16 +1,15 @@
-# TURN1_V65_DEWRAP_DIRECT_GOAL_FILTER
-# TURN1_V62_PRECISE_SEARCH_FILTER_COMPAT
-# TURN1_V58_NAMED_POKEMON_SEARCH_COMPAT
-# TURN1_V57_ACTION_BUDGET_SINGLE_COUNT
-# TURN1_DIRECT_ACTION_BUDGET_V56
-# TURN1_DIRECT_CARD_MATCH_CACHE_V54
-# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE_V53
+# TURN1_DEWRAP_DIRECT_GOAL_FILTER
+# TURN1_PRECISE_SEARCH_FILTER_COMPAT
+# TURN1_ACTION_BUDGET_SINGLE_COUNT
+# TURN1_DIRECT_ACTION_BUDGET
+# TURN1_DIRECT_CARD_MATCH_CACHE
+# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE
 from __future__ import annotations
 
 """
 Turn 1 goal finder for Pokémon TCG deck consistency diagnostics.
 
-Version: v0.2
+Version: natural-baseline integration
 
 This builds on scripts/run_turn1_target_finder.py. Instead of asking only
 "can I find target card X?", it estimates whether a multi-card goal is met by
@@ -25,7 +24,7 @@ The policy is intentionally conservative and transparent. It reuses the
 single-target solver's card/effect execution layer, but scores actions against
 all currently missing goal pieces.
 
-Version v0.2 adds exact natural baseline integration from src/probability.py.
+This version adds exact natural baseline integration from src/probability.py.
 The exact layer computes legal-opening-hand and draw-for-turn goal probabilities;
 the simulator estimates only the action increment after the goal was not already
 satisfied naturally.
@@ -180,19 +179,19 @@ def instantiate_deck(deck: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------
-# TURN1_DIRECT_CARD_MATCH_CACHE_V54
+# TURN1_DIRECT_CARD_MATCH_CACHE
 # ---------------------------------------------------------------------
 # Direct hot-path fix, not a wrapper.
 #
 # The profiler showed millions of card_matches_option calls from
 # requirement_satisfied / goal_satisfied. The original matching logic is kept;
 # this patch injects a cache into the original function body and routes every
-# original return through _turn1_v54_card_match_store(...).
+# original return through _turn1_card_goal_match_store(...).
 
-_TURN1_V54_CARD_MATCH_CACHE = {}
+_TURN1_CARD_MATCH_CACHE = {}
 
 
-def _turn1_v54_card_key_for_match(card):
+def _turn1_card_key_for_match(card):
     if isinstance(card, dict):
         ident = card.get("identity") or {}
         key = (
@@ -213,48 +212,48 @@ def _turn1_v54_card_key_for_match(card):
     return ("obj", id(card))
 
 
-def _turn1_v54_option_key_for_match(option):
+def _turn1_goal_option_key_for_match(option):
     if option is None or isinstance(option, (str, int, float, bool)):
         return option
     if hasattr(option, "__dict__"):
         try:
-            return (type(option).__name__, tuple(sorted((str(k), _turn1_v54_option_key_for_match(v)) for k, v in vars(option).items())))
+            return (type(option).__name__, tuple(sorted((str(k), _turn1_goal_option_key_for_match(v)) for k, v in vars(option).items())))
         except Exception:
             return (type(option).__name__, id(option))
     if isinstance(option, dict):
         keep = {}
         for k, v in option.items():
             if str(k) in {"label", "name", "target", "target_norm", "options", "aliases", "card", "card_name", "set_code", "number", "collector_number"}:
-                keep[str(k)] = _turn1_v54_option_key_for_match(v)
+                keep[str(k)] = _turn1_goal_option_key_for_match(v)
         if keep:
             return ("dict", tuple(sorted(keep.items())))
         return ("dict_id", id(option))
     if isinstance(option, (list, tuple)):
-        return (type(option).__name__, tuple(_turn1_v54_option_key_for_match(x) for x in option))
+        return (type(option).__name__, tuple(_turn1_goal_option_key_for_match(x) for x in option))
     if isinstance(option, set):
         try:
-            return ("set", tuple(sorted(_turn1_v54_option_key_for_match(x) for x in option)))
+            return ("set", tuple(sorted(_turn1_goal_option_key_for_match(x) for x in option)))
         except Exception:
             return ("set_id", id(option))
     return (type(option).__name__, repr(option))
 
 
-def _turn1_v54_card_match_key(card, option):
-    return (_turn1_v54_card_key_for_match(card), _turn1_v54_option_key_for_match(option))
+def _turn1_card_goal_match_key(card, option):
+    return (_turn1_card_key_for_match(card), _turn1_goal_option_key_for_match(option))
 
 
-def _turn1_v54_card_match_store(key, value):
+def _turn1_card_goal_match_store(key, value):
     result = bool(value)
-    if len(_TURN1_V54_CARD_MATCH_CACHE) < 500000:
-        _TURN1_V54_CARD_MATCH_CACHE[key] = result
+    if len(_TURN1_CARD_MATCH_CACHE) < 500000:
+        _TURN1_CARD_MATCH_CACHE[key] = result
     return result
 
 def card_matches_option(card: Dict[str, Any], option: GoalOption) -> bool:
-    _turn1_v54_cache_key = _turn1_v54_card_match_key(card, option)
-    _turn1_v54_cached = _TURN1_V54_CARD_MATCH_CACHE.get(_turn1_v54_cache_key)
-    if _turn1_v54_cached is not None:
-        return _turn1_v54_card_match_store(_turn1_v54_cache_key, _turn1_v54_cached)
-    return _turn1_v54_card_match_store(_turn1_v54_cache_key, tf.target_matches(card, option.norm))
+    _turn1_card_match_cache_key = _turn1_card_goal_match_key(card, option)
+    _turn1_card_match_cached = _TURN1_CARD_MATCH_CACHE.get(_turn1_card_match_cache_key)
+    if _turn1_card_match_cached is not None:
+        return _turn1_card_goal_match_store(_turn1_card_match_cache_key, _turn1_card_match_cached)
+    return _turn1_card_goal_match_store(_turn1_card_match_cache_key, tf.target_matches(card, option.norm))
 
 def zone_cards(st: tf.SimState, tracker: GoalTracker, zone: str) -> List[Dict[str, Any]]:
     z = zone.lower().replace("-", "_")
@@ -283,7 +282,7 @@ def zone_cards(st: tf.SimState, tracker: GoalTracker, zone: str) -> List[Dict[st
 
 
 def requirement_satisfied(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> bool:
-    # TURN1_HARDEN_MIN_COUNT_REQUIREMENT_V19
+    # TURN1_HARDEN_MIN_COUNT_REQUIREMENT
     # Count distinct physical card instances, not merely "does this card exist".
     pool = zone_cards(st, tracker, req.zone)
     needed = max(1, int(getattr(req, "min_count", 1) or 1))
@@ -595,8 +594,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     scored: List[Tuple[float, Any, str]] = []
     target_norms = [n for req in missing for n in [choose_primary_target_norm(req, st)] if n]
@@ -649,8 +648,8 @@ def score_candidate_for_missing_targets(
 
 
 def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.Random, going: str, enable_chain_search: bool) -> None:
-    # TURN1_V57_BASE_EXECUTE_BUDGET_GUARD
-    if not _turn1_v56_action_allowed(st):
+    # TURN1_BASE_EXECUTE_BUDGET_GUARD
+    if not _turn1_action_budget_allows_next_action(st):
         return None
     if isinstance(action, dict) and action.get("_virtual_action") == "Run Errand":
         tf.use_run_errand(st, target_norm, "after_use_Run_Errand")
@@ -669,7 +668,7 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 
 
 # ---------------------------------------------------------------------
-# TURN1_GOAL_COMPATIBLE_ACCESS_FILTERS_V28
+# TURN1_GOAL_COMPATIBLE_ACCESS_FILTERS
 # ---------------------------------------------------------------------
 # Broad Turn-1 access guard:
 # - A search/draw/search-like action can only help if its search filter is
@@ -684,10 +683,10 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 #   searches Supporters.
 # - Active-only abilities being used from the Bench after Nest Ball.
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V28 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_ACCESS_FILTER = score_candidate_for_missing_targets
 
 
-def turn1_v28_flatten_text(obj: Any, depth: int = 0) -> str:
+def turn1_goal_access_filter_flatten_text(obj: Any, depth: int = 0) -> str:
     if obj is None or depth > 4:
         return ""
 
@@ -698,7 +697,7 @@ def turn1_v28_flatten_text(obj: Any, depth: int = 0) -> str:
         return str(obj)
 
     if isinstance(obj, (list, tuple, set)):
-        return " ".join(turn1_v28_flatten_text(x, depth + 1) for x in obj)
+        return " ".join(turn1_goal_access_filter_flatten_text(x, depth + 1) for x in obj)
 
     if isinstance(obj, dict):
         pieces: List[str] = []
@@ -731,20 +730,20 @@ def turn1_v28_flatten_text(obj: Any, depth: int = 0) -> str:
 
         for k in preferred:
             if k in obj:
-                pieces.append(turn1_v28_flatten_text(obj.get(k), depth + 1))
+                pieces.append(turn1_goal_access_filter_flatten_text(obj.get(k), depth + 1))
 
         # Include nested identity/gameplay/source too; these often contain the
         # original card text in compiled-card records.
         for k in ["identity", "gameplay", "source", "ability", "attack"]:
             if k in obj:
-                pieces.append(turn1_v28_flatten_text(obj.get(k), depth + 1))
+                pieces.append(turn1_goal_access_filter_flatten_text(obj.get(k), depth + 1))
 
         return " ".join(p for p in pieces if p)
 
     return str(obj)
 
 
-def turn1_v28_norm_text(s: str) -> str:
+def turn1_goal_access_filter_norm_text(s: str) -> str:
     s = str(s or "").lower()
     s = s.replace("’", "'").replace("–", "-").replace("—", "-")
     s = s.replace("{w}", " water ").replace("[w]", " water ")
@@ -760,7 +759,7 @@ def turn1_v28_norm_text(s: str) -> str:
     return s
 
 
-def turn1_v28_action_text(action: Any) -> str:
+def turn1_goal_access_filter_action_text(action: Any) -> str:
     pieces: List[str] = []
 
     try:
@@ -771,14 +770,14 @@ def turn1_v28_action_text(action: Any) -> str:
     if isinstance(action, dict):
         for k in ["source", "card", "search_card", "effect", "ability", "compiled_effect", "step"]:
             if k in action:
-                pieces.append(turn1_v28_flatten_text(action.get(k)))
+                pieces.append(turn1_goal_access_filter_flatten_text(action.get(k)))
     else:
-        pieces.append(turn1_v28_flatten_text(action))
+        pieces.append(turn1_goal_access_filter_flatten_text(action))
 
-    return turn1_v28_norm_text(" ".join(p for p in pieces if p))
+    return turn1_goal_access_filter_norm_text(" ".join(p for p in pieces if p))
 
 
-def turn1_v28_card_name(card: Dict[str, Any]) -> str:
+def turn1_goal_access_filter_card_name(card: Dict[str, Any]) -> str:
     try:
         return tf.card_name(card)
     except Exception:
@@ -788,14 +787,14 @@ def turn1_v28_card_name(card: Dict[str, Any]) -> str:
         return ""
 
 
-def turn1_v28_card_supertype(card: Dict[str, Any]) -> str:
+def turn1_goal_access_filter_card_supertype(card: Dict[str, Any]) -> str:
     if not isinstance(card, dict):
         return ""
     ident = card.get("identity") if isinstance(card.get("identity"), dict) else {}
     return str(card.get("supertype") or ident.get("supertype") or "").lower()
 
 
-def turn1_v28_card_subtypes(card: Dict[str, Any]) -> List[str]:
+def turn1_goal_access_filter_card_subtypes(card: Dict[str, Any]) -> List[str]:
     if not isinstance(card, dict):
         return []
 
@@ -819,7 +818,7 @@ def turn1_v28_card_subtypes(card: Dict[str, Any]) -> List[str]:
     return out
 
 
-def turn1_v28_card_types(card: Dict[str, Any]) -> List[str]:
+def turn1_goal_access_filter_card_types(card: Dict[str, Any]) -> List[str]:
     if not isinstance(card, dict):
         return []
 
@@ -833,8 +832,8 @@ def turn1_v28_card_types(card: Dict[str, Any]) -> List[str]:
         elif v:
             vals.append(v)
 
-    name = turn1_v28_card_name(card).lower()
-    text = turn1_v28_norm_text(turn1_v28_flatten_text(card))
+    name = turn1_goal_access_filter_card_name(card).lower()
+    text = turn1_goal_access_filter_norm_text(turn1_goal_access_filter_flatten_text(card))
 
     out = [str(v).strip().lower() for v in vals if str(v).strip()]
     for t in ["water", "fire", "grass", "lightning", "psychic", "fighting", "darkness", "metal", "dragon", "colorless"]:
@@ -844,14 +843,14 @@ def turn1_v28_card_types(card: Dict[str, Any]) -> List[str]:
     return out
 
 
-def turn1_v28_is_basic_pokemon(card: Dict[str, Any]) -> bool:
+def turn1_goal_access_filter_is_basic_pokemon(card: Dict[str, Any]) -> bool:
     try:
         return bool(tf.is_basic_pokemon(card))
     except Exception:
-        return turn1_v28_card_supertype(card) == "pokémon" and any("basic" in s for s in turn1_v28_card_subtypes(card))
+        return turn1_goal_access_filter_card_supertype(card) == "pokémon" and any("basic" in s for s in turn1_goal_access_filter_card_subtypes(card))
 
 
-def turn1_v28_same_card_instance(a: Any, b: Any) -> bool:
+def turn1_goal_access_filter_same_card_instance(a: Any, b: Any) -> bool:
     if not isinstance(a, dict) or not isinstance(b, dict):
         return False
 
@@ -861,10 +860,10 @@ def turn1_v28_same_card_instance(a: Any, b: Any) -> bool:
     if aid and bid and aid == bid:
         return True
 
-    return turn1_v28_card_name(a) and turn1_v28_card_name(a) == turn1_v28_card_name(b)
+    return turn1_goal_access_filter_card_name(a) and turn1_goal_access_filter_card_name(a) == turn1_goal_access_filter_card_name(b)
 
 
-def turn1_v28_source_card_from_action(action: Any) -> Optional[Dict[str, Any]]:
+def turn1_goal_access_filter_source_card_from_action(action: Any) -> Optional[Dict[str, Any]]:
     if isinstance(action, dict):
         for k in ["source", "card", "search_card"]:
             v = action.get(k)
@@ -875,8 +874,8 @@ def turn1_v28_source_card_from_action(action: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def turn1_v28_requires_active_spot(action_text: str) -> bool:
-    t = turn1_v28_norm_text(action_text)
+def turn1_goal_access_filter_requires_active_spot(action_text: str) -> bool:
+    t = turn1_goal_access_filter_norm_text(action_text)
     phrases = [
         "if this pokemon is in the active spot",
         "if this pokémon is in the active spot",
@@ -890,20 +889,20 @@ def turn1_v28_requires_active_spot(action_text: str) -> bool:
     return any(p in t for p in phrases)
 
 
-def turn1_v28_active_requirement_ok(action: Any, st: tf.SimState) -> bool:
-    text = turn1_v28_action_text(action)
-    if not turn1_v28_requires_active_spot(text):
+def turn1_goal_access_filter_active_requirement_ok(action: Any, st: tf.SimState) -> bool:
+    text = turn1_goal_access_filter_action_text(action)
+    if not turn1_goal_access_filter_requires_active_spot(text):
         return True
 
-    source = turn1_v28_source_card_from_action(action)
+    source = turn1_goal_access_filter_source_card_from_action(action)
     if source is None:
         return False
 
-    return st.active is not None and turn1_v28_same_card_instance(source, st.active)
+    return st.active is not None and turn1_goal_access_filter_same_card_instance(source, st.active)
 
 
-def turn1_v28_has_self_access_context(t: str) -> bool:
-    t = turn1_v28_norm_text(t)
+def turn1_goal_access_filter_has_self_access_context(t: str) -> bool:
+    t = turn1_goal_access_filter_norm_text(t)
 
     # Strong self-access phrases.
     if any(p in t for p in [
@@ -922,7 +921,7 @@ def turn1_v28_has_self_access_context(t: str) -> bool:
     return False
 
 
-def turn1_v28_access_filters_from_text(text: str) -> set:
+def turn1_goal_access_filters_from_text(text: str) -> set:
     """
     Extract strong target-class restrictions from an effect/card text.
 
@@ -930,9 +929,9 @@ def turn1_v28_access_filters_from_text(text: str) -> set:
     access if at least one missing goal card belongs to that same class.
     Unknown/unrestricted draw effects return an empty set and are allowed.
     """
-    t = turn1_v28_norm_text(text)
+    t = turn1_goal_access_filter_norm_text(text)
 
-    if not turn1_v28_has_self_access_context(t):
+    if not turn1_goal_access_filter_has_self_access_context(t):
         return set()
 
     filters = set()
@@ -973,7 +972,7 @@ def turn1_v28_access_filters_from_text(text: str) -> set:
     return filters
 
 
-def turn1_v28_goal_cards_for_req(st: tf.SimState, req: GoalRequirement) -> List[Dict[str, Any]]:
+def turn1_goal_access_filter_goal_cards_for_req(st: tf.SimState, req: GoalRequirement) -> List[Dict[str, Any]]:
     pools: List[Dict[str, Any]] = []
 
     for attr in ["hand", "deck", "discard", "bench", "prizes"]:
@@ -1005,17 +1004,17 @@ def turn1_v28_goal_cards_for_req(st: tf.SimState, req: GoalRequirement) -> List[
     return out
 
 
-def turn1_v28_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> bool:
-    sup = turn1_v28_card_supertype(card)
-    subs = turn1_v28_card_subtypes(card)
-    types = turn1_v28_card_types(card)
-    name = turn1_v28_card_name(card).lower()
-    text = turn1_v28_norm_text(turn1_v28_flatten_text(card))
+def turn1_goal_access_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> bool:
+    sup = turn1_goal_access_filter_card_supertype(card)
+    subs = turn1_goal_access_filter_card_subtypes(card)
+    types = turn1_goal_access_filter_card_types(card)
+    name = turn1_goal_access_filter_card_name(card).lower()
+    text = turn1_goal_access_filter_norm_text(turn1_goal_access_filter_flatten_text(card))
 
     if filter_name == "pokemon":
         return sup in {"pokémon", "pokemon"}
     if filter_name == "basic_pokemon":
-        return sup in {"pokémon", "pokemon"} and turn1_v28_is_basic_pokemon(card)
+        return sup in {"pokémon", "pokemon"} and turn1_goal_access_filter_is_basic_pokemon(card)
     if filter_name.endswith("_pokemon"):
         typ = filter_name.removesuffix("_pokemon")
         return sup in {"pokémon", "pokemon"} and typ in types
@@ -1028,7 +1027,7 @@ def turn1_v28_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> boo
         base = filter_name.removesuffix("_energy")
         if base.startswith("basic_"):
             typ = base.removeprefix("basic_")
-            return turn1_v28_filter_matches_card("basic_energy", card) and (typ in types or typ in name or f" {typ} " in f" {text} ")
+            return turn1_goal_access_filter_matches_card("basic_energy", card) and (typ in types or typ in name or f" {typ} " in f" {text} ")
         typ = base
         return (sup == "energy" or " energy" in name) and (typ in types or typ in name or f" {typ} " in f" {text} ")
 
@@ -1044,12 +1043,12 @@ def turn1_v28_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> boo
     return False
 
 
-def turn1_v28_filters_compatible_with_missing(st: tf.SimState, filters: set, missing: Sequence[GoalRequirement]) -> bool:
+def turn1_goal_access_filters_compatible_with_missing(st: tf.SimState, filters: set, missing: Sequence[GoalRequirement]) -> bool:
     if not filters:
         return True
 
     for req in missing:
-        goal_cards = turn1_v28_goal_cards_for_req(st, req)
+        goal_cards = turn1_goal_access_filter_goal_cards_for_req(st, req)
 
         # If we cannot identify the goal card type, do not block. This keeps the
         # guard conservative and avoids false negatives on unresolved cards.
@@ -1057,19 +1056,19 @@ def turn1_v28_filters_compatible_with_missing(st: tf.SimState, filters: set, mis
             return True
 
         for c in goal_cards:
-            if any(turn1_v28_filter_matches_card(f, c) for f in filters):
+            if any(turn1_goal_access_filter_matches_card(f, c) for f in filters):
                 return True
 
     return False
 
 
-def turn1_v28_action_allowed_for_missing(action: Any, st: tf.SimState, missing: Sequence[GoalRequirement], going: str) -> bool:
-    text = turn1_v28_action_text(action)
+def turn1_action_allowed_for_missing_goal_access(action: Any, st: tf.SimState, missing: Sequence[GoalRequirement], going: str) -> bool:
+    text = turn1_goal_access_filter_action_text(action)
 
-    if not turn1_v28_active_requirement_ok(action, st):
+    if not turn1_goal_access_filter_active_requirement_ok(action, st):
         try:
             st.log.append({
-                "event": "blocked_illegal_active_only_ability_v28",
+                "event": "blocked_illegal_active_only_ability",
                 "action": action_label(action),
                 "reason": "Ability text requires the source Pokémon to be in the Active Spot.",
             })
@@ -1077,12 +1076,12 @@ def turn1_v28_action_allowed_for_missing(action: Any, st: tf.SimState, missing: 
             pass
         return False
 
-    filters = turn1_v28_access_filters_from_text(text)
+    filters = turn1_goal_access_filters_from_text(text)
 
-    if filters and not turn1_v28_filters_compatible_with_missing(st, filters, missing):
+    if filters and not turn1_goal_access_filters_compatible_with_missing(st, filters, missing):
         try:
             st.log.append({
-                "event": "blocked_incompatible_access_filter_v28",
+                "event": "blocked_incompatible_access_filter",
                 "action": action_label(action),
                 "filters": sorted(filters),
                 "missing_requirements": [getattr(r, "label", str(r)) for r in missing],
@@ -1101,10 +1100,10 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V28(st, missing, going, enable_chain_search)
+    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_ACCESS_FILTER(st, missing, going, enable_chain_search)
 
     if not scored:
         return scored
@@ -1112,7 +1111,7 @@ def score_candidate_for_missing_targets(
     filtered: List[Tuple[float, Any, str]] = []
 
     for score, action, target_norm in scored:
-        if turn1_v28_action_allowed_for_missing(action, st, missing, going):
+        if turn1_action_allowed_for_missing_goal_access(action, st, missing, going):
             filtered.append((score, action, target_norm))
 
     return filtered
@@ -1136,7 +1135,7 @@ def trial_goal_prize_status(deck: List[Dict[str, Any]], prizes: Sequence[Dict[st
 
 
 # ---------------------------------------------------------------------
-# TURN1_ACTUAL_START_CONTEXT_V13
+# TURN1_ACTUAL_START_CONTEXT
 # ---------------------------------------------------------------------
 
 def turn1_unique_names_in_order(cards: Sequence[Dict[str, Any]]) -> List[str]:
@@ -1178,7 +1177,7 @@ def turn1_line_action_names(line: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------
-# TURN1_FORMAT_CARD_LIST_WITH_COUNTS_V21
+# TURN1_FORMAT_CARD_LIST_WITH_COUNTS
 # ---------------------------------------------------------------------
 
 def turn1_format_card_list_with_counts(names: Sequence[str]) -> str:
@@ -1290,7 +1289,7 @@ def turn1_played_label(line: str) -> str:
 
 
 # ---------------------------------------------------------------------
-# TURN1_EXCLUDE_PLAYED_PATHS_V15
+# TURN1_EXCLUDE_PLAYED_PATHS
 # ---------------------------------------------------------------------
 
 def turn1_parse_exclude_played(raw: str) -> List[str]:
@@ -1423,7 +1422,7 @@ def turn1_apply_excluded_played_paths(results: List[Dict[str, Any]], raw_exclude
 
 
 # ---------------------------------------------------------------------
-# TURN1_OPPONENT_ONLY_TEXT_GUARD_V26
+# TURN1_OPPONENT_ONLY_TEXT_GUARD
 # ---------------------------------------------------------------------
 # General guard: opponent-only hand/deck disruption is not a consistency/search card.
 # Examples this should block generically:
@@ -1436,7 +1435,7 @@ def turn1_apply_excluded_played_paths(results: List[Dict[str, Any]], raw_exclude
 #   - each player / both players draw effects
 
 
-def turn1_v26_card_name(card: Any) -> str:
+def turn1_opponent_only_filter_card_name(card: Any) -> str:
     try:
         return tf.card_name(card)
     except Exception:
@@ -1449,7 +1448,7 @@ def turn1_v26_card_name(card: Any) -> str:
     return str(getattr(card, "name", "") or "").strip()
 
 
-def turn1_v26_flatten_text(obj: Any, limit: int = 30000) -> str:
+def turn1_opponent_only_filter_flatten_text(obj: Any, limit: int = 30000) -> str:
     """Collect text from nested card dictionaries/lists without relying on one schema."""
     out: List[str] = []
     seen = set()
@@ -1495,14 +1494,14 @@ def turn1_v26_flatten_text(obj: Any, limit: int = 30000) -> str:
     return " \n ".join(out)
 
 
-def turn1_v26_norm_text(s: str) -> str:
+def turn1_opponent_only_filter_norm_text(s: str) -> str:
     s = str(s or "").lower()
     s = s.replace("’", "'").replace("“", '"').replace("”", '"')
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
 
-def turn1_v26_has_self_access_text(t: str) -> bool:
+def turn1_text_has_self_access(t: str) -> bool:
     """True when the card text clearly gives us access/cards, not only the opponent."""
     if not t:
         return False
@@ -1530,7 +1529,7 @@ def turn1_v26_has_self_access_text(t: str) -> bool:
     return any(re.search(p, t) for p in self_access_patterns)
 
 
-def turn1_v26_has_opponent_only_disruption_text(t: str) -> bool:
+def turn1_text_has_opponent_only_disruption(t: str) -> bool:
     if not t:
         return False
 
@@ -1554,7 +1553,7 @@ def turn1_v26_has_opponent_only_disruption_text(t: str) -> bool:
     return any(re.search(p, t) for p in opponent_patterns)
 
 
-def turn1_v26_has_opponent_only_compiled_step(card: Any) -> bool:
+def turn1_compiled_step_is_opponent_only(card: Any) -> bool:
     """
     Schema-agnostic compiled-step guard.
     Blocks effects where draw/search/move-like operations target opponent/their zones.
@@ -1573,8 +1572,8 @@ def turn1_v26_has_opponent_only_compiled_step(card: Any) -> bool:
         nonlocal saw_opponent_access, saw_self_access
 
         if isinstance(x, dict):
-            blob = turn1_v26_norm_text(" ".join(str(v) for v in x.values() if not isinstance(v, (dict, list, tuple))))
-            op = turn1_v26_norm_text(x.get("op") or x.get("operation") or x.get("type") or "")
+            blob = turn1_opponent_only_filter_norm_text(" ".join(str(v) for v in x.values() if not isinstance(v, (dict, list, tuple))))
+            op = turn1_opponent_only_filter_norm_text(x.get("op") or x.get("operation") or x.get("type") or "")
 
             access_op = any(key in op for key in ["search", "draw", "move", "shuffle", "reveal", "look"])
             access_blob = any(key in blob for key in ["search", "draw", "hand", "deck", "shuffle"])
@@ -1597,21 +1596,21 @@ def turn1_v26_has_opponent_only_compiled_step(card: Any) -> bool:
     return saw_opponent_access and not saw_self_access
 
 
-def turn1_v26_is_opponent_only_access_card(card: Any) -> bool:
+def turn1_card_is_opponent_only_access(card: Any) -> bool:
     """
     Generic block decision.
 
     Important: this is not a name blacklist. It uses card text/effect ownership.
     """
-    blob = turn1_v26_norm_text(turn1_v26_flatten_text(card))
+    blob = turn1_opponent_only_filter_norm_text(turn1_opponent_only_filter_flatten_text(card))
 
     # If compiled steps are explicitly opponent-only, block.
-    if turn1_v26_has_opponent_only_compiled_step(card):
+    if turn1_compiled_step_is_opponent_only(card):
         return True
 
     # If text has opponent-only disruption and no clear self-access, block.
-    if turn1_v26_has_opponent_only_disruption_text(blob):
-        if not turn1_v26_has_self_access_text(blob):
+    if turn1_text_has_opponent_only_disruption(blob):
+        if not turn1_text_has_self_access(blob):
             return True
 
         # Strong opponent-only sentence forms. Ignore generic condition text like
@@ -1633,36 +1632,36 @@ def turn1_v26_is_opponent_only_access_card(card: Any) -> bool:
 # Guard fallback single-target scorer too. The multi-goal planner still delegates
 # to target-finder scoring in some cases, so blocking only the executor is not enough.
 try:
-    _TURN1_V26_ORIG_SCORE_PLAYABLE_CARD = tf.score_playable_card
+    _TURN1_ORIG_SCORE_PLAYABLE_CARD_BEFORE_OPPONENT_ONLY_GUARD = tf.score_playable_card
 
-    def _turn1_v26_score_playable_card_guard(card: Any, *args: Any, **kwargs: Any):
-        if turn1_v26_is_opponent_only_access_card(card):
+    def _turn1_score_playable_card_opponent_only_guard(card: Any, *args: Any, **kwargs: Any):
+        if turn1_card_is_opponent_only_access(card):
             return 0
-        return _TURN1_V26_ORIG_SCORE_PLAYABLE_CARD(card, *args, **kwargs)
+        return _TURN1_ORIG_SCORE_PLAYABLE_CARD_BEFORE_OPPONENT_ONLY_GUARD(card, *args, **kwargs)
 
-    tf.score_playable_card = _turn1_v26_score_playable_card_guard
+    tf.score_playable_card = _turn1_score_playable_card_opponent_only_guard
 except Exception:
     pass
 
 
-def turn1_v26_action_names(line: str) -> List[str]:
+def turn1_opponent_only_filter_action_names(line: str) -> List[str]:
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v26_build_blocked_name_map(deck: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+def turn1_build_opponent_only_blocked_name_map(deck: Sequence[Dict[str, Any]]) -> Dict[str, str]:
     blocked: Dict[str, str] = {}
 
     for card in deck or []:
         if not isinstance(card, dict):
             continue
 
-        if not turn1_v26_is_opponent_only_access_card(card):
+        if not turn1_card_is_opponent_only_access(card):
             continue
 
-        name = turn1_v26_card_name(card)
+        name = turn1_opponent_only_filter_card_name(card)
         norm = tf.norm(name)
         if norm:
             blocked[norm] = name
@@ -1670,15 +1669,15 @@ def turn1_v26_build_blocked_name_map(deck: Sequence[Dict[str, Any]]) -> Dict[str
     return blocked
 
 
-def turn1_v26_auto_blocked_played_cards(line: str, deck: Sequence[Dict[str, Any]]) -> List[str]:
-    blocked_map = turn1_v26_build_blocked_name_map(deck)
+def turn1_auto_block_opponent_only_played_cards(line: str, deck: Sequence[Dict[str, Any]]) -> List[str]:
+    blocked_map = turn1_build_opponent_only_blocked_name_map(deck)
     if not blocked_map:
         return []
 
     out: List[str] = []
     seen = set()
 
-    for action in turn1_v26_action_names(line):
+    for action in turn1_opponent_only_filter_action_names(line):
         an = tf.norm(action)
         if not an:
             continue
@@ -1692,7 +1691,7 @@ def turn1_v26_auto_blocked_played_cards(line: str, deck: Sequence[Dict[str, Any]
     return out
 
 
-def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def turn1_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     summary = {
         "enabled": True,
         "invalidated_successes": 0,
@@ -1708,7 +1707,7 @@ def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Se
         if line == "none":
             continue
 
-        blocked = turn1_v26_auto_blocked_played_cards(line, deck)
+        blocked = turn1_auto_block_opponent_only_played_cards(line, deck)
         if not blocked:
             continue
 
@@ -1728,7 +1727,7 @@ def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Se
 
 
 # ---------------------------------------------------------------------
-# TURN1_PRERETURN_INCOMPATIBLE_EFFECT_GUARD_V32
+# TURN1_PRERETURN_INCOMPATIBLE_EFFECT_GUARD
 # ---------------------------------------------------------------------
 # Hard guard for ability/effect labels that are not card names.
 #
@@ -1746,255 +1745,30 @@ def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Se
 #   Buddy-Buddy Poffin -> Basic Pokemon access
 
 
-def turn1_v32_norm(s):
-    import re as _re
-    import unicodedata as _unicodedata
-
-    s = str(s or "")
-    s = _unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _unicodedata.combining(ch))
-    s = s.lower().replace("’", "'").replace("`", "'")
-    s = _re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def turn1_v32_flatten_strings(obj, max_items=6000):
-    out = []
-    seen = set()
-
-    def rec(x):
-        if len(out) >= max_items:
-            return
-        oid = id(x)
-        if oid in seen:
-            return
-        seen.add(oid)
-
-        if isinstance(x, str):
-            if x.strip():
-                out.append(x)
-            return
-
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if isinstance(k, str) and k.strip():
-                    out.append(k)
-                rec(v)
-            return
-
-        if isinstance(x, (list, tuple, set)):
-            for v in x:
-                rec(v)
-            return
-
-    rec(obj)
-    return " ".join(out)
-
-
-def turn1_v32_card_name(card):
-    try:
-        return tf.card_name(card)
-    except Exception:
-        if isinstance(card, dict):
-            ident = card.get("identity") or {}
-            return (
-                card.get("name")
-                or card.get("card_name")
-                or ident.get("name")
-                or ident.get("canonical_name")
-                or ""
-            )
-        return ""
-
-
-def turn1_v32_identity_blob(card):
-    if not isinstance(card, dict):
-        return ""
-
-    ident = card.get("identity") or {}
-    parts = []
-
-    for src in [ident, card]:
-        if not isinstance(src, dict):
-            continue
-        for key in ["name", "canonical_name", "supertype", "subtype", "subtypes", "types", "trainerType"]:
-            val = src.get(key)
-            if isinstance(val, list):
-                parts.extend(str(x) for x in val)
-            elif val:
-                parts.append(str(val))
-
-    return " ".join(parts)
-
-
-def turn1_v32_goal_classes(reqs, deck):
-    classes = set()
-
-    for req in reqs:
-        for card in deck:
-            try:
-                if not any(card_matches_option(card, opt) for opt in req.options):
-                    continue
-            except Exception:
-                continue
-
-            ident = turn1_v32_norm(turn1_v32_identity_blob(card))
-            name = turn1_v32_norm(turn1_v32_card_name(card))
-
-            if "pokemon" in ident or "pokemon" in name or "pokémon" in ident or "pokémon" in name:
-                classes.add("pokemon")
-                if "basic" in ident:
-                    classes.add("basic_pokemon")
-
-            if "energy" in ident or " energy" in name or name.endswith("energy"):
-                classes.add("energy")
-                if "basic" in ident or name.startswith("basic "):
-                    classes.add("basic_energy")
-                if "water" in ident or "water" in name or "{w}" in ident:
-                    classes.add("water_energy")
-                    if "basic" in ident or name.startswith("basic "):
-                        classes.add("basic_water_energy")
-                if "fighting" in ident or "fighting" in name or "{f}" in ident:
-                    classes.add("fighting_energy")
-
-            if "trainer" in ident:
-                classes.add("trainer")
-            if "supporter" in ident:
-                classes.update(["trainer", "supporter"])
-            if "item" in ident:
-                classes.update(["trainer", "item"])
-            if "stadium" in ident:
-                classes.update(["trainer", "stadium"])
-
-    return classes
-
-
-def turn1_v32_deck_card_name_norms(deck):
-    names = set()
-    for card in deck:
-        name = turn1_v32_card_name(card)
-        if name:
-            names.add(turn1_v32_norm(name))
-    return names
-
-
-def turn1_v32_action_labels(line):
+def turn1_effect_label_actions_from_line(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v32_tight_effect_snippets_for_label(action_label, deck):
-    action_norm = turn1_v32_norm(action_label)
-    if not action_norm:
-        return []
-
-    # Card names are handled by card execution. This guard is for ability/effect
-    # labels such as Shivery Chill or Attract Customers.
-    if action_norm in turn1_v32_deck_card_name_norms(deck):
-        return []
-
-    snippets = []
-
-    for card in deck:
-        blob = turn1_v32_flatten_strings(card)
-        blob_norm = turn1_v32_norm(blob)
-        idx = blob_norm.find(action_norm)
-        if idx < 0:
-            continue
-
-        # Use a tight window after the effect label. This avoids treating source
-        # metadata like "Pokemon - Basic" as the target class of the effect.
-        start = max(0, idx - 80)
-        end = min(len(blob_norm), idx + 900)
-        snippets.append(blob_norm[start:end])
-
-    return snippets
-
-
-def turn1_v32_access_classes_from_effect_snippet(snippet):
-    import re as _re
-    t = turn1_v32_norm(snippet)
-    classes = set()
-
-    # Opponent-only disruption should never be credited as self-access.
-    opponent_markers = [
-        "your opponent shuffles",
-        "your opponent reveals",
-        "your opponent draws",
-        "opponent's hand",
-        "opponents hand",
-        "their hand",
-        "their deck",
-    ]
-    self_markers = [
-        "your deck",
-        "your hand",
-        "put into your hand",
-        "onto your bench",
-        "put it onto your bench",
-        "draw a card",
-        "draw 2 cards",
-        "draw cards",
-    ]
-    if any(m in t for m in opponent_markers) and not any(m in t for m in self_markers):
-        classes.add("opponent_only")
-        return classes
-
-    # Restricted energy access, e.g. Shivery Chill.
-    if "basic water energy" in t or "basic {w} energy" in t or "basic [w] energy" in t:
-        classes.update(["energy", "basic_energy", "water_energy", "basic_water_energy"])
-    elif "basic energy" in t:
-        classes.update(["energy", "basic_energy"])
-    elif _re.search(r"(search|reveal|choose|put).{0,160}energy", t):
-        classes.add("energy")
-
-    # Restricted Supporter access, e.g. Attract Customers / Luminous Sign.
-    if _re.search(r"(search|look at|reveal|choose|put).{0,220}supporter", t):
-        classes.update(["trainer", "supporter"])
-
-    # Pokemon access. Tie this to access verbs so source text like
-    # "if this Pokemon is in the Active Spot" does not count.
-    if _re.search(r"(search|reveal|choose|put|bench).{0,220}(basic pokemon|basic pokémon)", t):
-        classes.update(["pokemon", "basic_pokemon"])
-    elif _re.search(r"(search|reveal|choose|put|bench).{0,220}(pokemon|pokémon)", t):
-        classes.add("pokemon")
-    elif "put onto your bench" in t or "put it onto your bench" in t:
-        classes.add("pokemon")
-
-    # Trainer/item/stadium access.
-    if _re.search(r"(search|reveal|choose|put).{0,180}item", t):
-        classes.update(["trainer", "item"])
-    if _re.search(r"(search|reveal|choose|put).{0,180}stadium", t):
-        classes.update(["trainer", "stadium"])
-
-    # Generic self draw can help any goal. Concealed Cards should land here.
-    # Do not mark search-energy effects as generic just because they put energy
-    # into hand.
-    if not classes and _re.search(r"(draw|draw until).{0,120}(card|cards)", t) and "your opponent" not in t:
-        classes.add("generic_draw")
-
-    return classes
-
-
-def turn1_v32_effect_label_incompatible_reason(action_label, deck, reqs):
-    ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
+def turn1_effect_label_incompatibility_reason(action_label, deck, reqs):
+    ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs)
     if ok:
         return None
 
-    # If v35 says this was not an effect label, do not block it here.
+    # If the effect-goal compatibility layer says this was not an effect label, do not block it here.
     if reason == "not_effect_label":
         return None
 
     return reason
 
 
-# TURN1_V35_PATCHED_V32_COMPAT
-def turn1_v32_incompatible_effect_labels_in_line(line, deck, reqs):
+# TURN1_EFFECT_GOAL_COMPAT_PATCHED_EFFECT_LABEL_COMPAT
+def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
     blocked = []
-    for action in turn1_v32_action_labels(line):
-        reason = turn1_v32_effect_label_incompatible_reason(action, deck, reqs)
+    for action in turn1_effect_label_actions_from_line(line):
+        reason = turn1_effect_label_incompatibility_reason(action, deck, reqs)
         if reason:
             blocked.append({"action": action, "reason": reason})
     return blocked
@@ -2002,7 +1776,7 @@ def turn1_v32_incompatible_effect_labels_in_line(line, deck, reqs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_ACTIVE_COMPILED_SEARCH_RUNTIME_V41
+# TURN1_ACTIVE_COMPILED_SEARCH_RUNTIME
 # ---------------------------------------------------------------------
 # Root fix for active-only compiled search abilities.
 #
@@ -2021,7 +1795,7 @@ def turn1_v32_incompatible_effect_labels_in_line(line, deck, reqs):
 # runtime does not use an Active-only ability.
 
 
-def _turn1_v41_norm(value):
+def _turn1_active_compiled_search_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -2033,7 +1807,7 @@ def _turn1_v41_norm(value):
     return _re.sub(r"\s+", " ", s).strip()
 
 
-def _turn1_v41_flatten_strings(obj, max_items=5000):
+def _turn1_active_compiled_search_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -2066,7 +1840,7 @@ def _turn1_v41_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def _turn1_v41_card_name(card):
+def _turn1_active_compiled_search_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -2085,7 +1859,7 @@ def _turn1_v41_card_name(card):
     return ""
 
 
-def _turn1_v41_ability_name(effect):
+def _turn1_active_compiled_search_ability_name(effect):
     try:
         return tf.ability_name_from_effect(effect)
     except Exception:
@@ -2104,7 +1878,7 @@ def _turn1_v41_ability_name(effect):
     return "Ability"
 
 
-def _turn1_v41_effect_blob(effect):
+def _turn1_active_compiled_search_effect_blob(effect):
     parts = []
 
     for fn in [
@@ -2119,18 +1893,18 @@ def _turn1_v41_effect_blob(effect):
             except Exception:
                 pass
 
-    parts.append(_turn1_v41_flatten_strings(effect))
+    parts.append(_turn1_active_compiled_search_flatten_strings(effect))
     return " ".join(parts)
 
 
-def _turn1_v41_filter_blob(filt):
+def _turn1_active_compiled_search_filter_blob(filt):
     try:
         return tf.filter_text_blob(filt)
     except Exception:
-        return _turn1_v41_flatten_strings(filt)
+        return _turn1_active_compiled_search_flatten_strings(filt)
 
 
-def _turn1_v41_iter_steps(effect):
+def _turn1_active_compiled_search_iter_steps(effect):
     try:
         return list(tf.iter_steps(effect))
     except Exception:
@@ -2140,7 +1914,7 @@ def _turn1_v41_iter_steps(effect):
         return []
 
 
-def _turn1_v41_extract_filter(step):
+def _turn1_active_compiled_search_extract_filter(step):
     try:
         return tf.extract_filter(step)
     except Exception:
@@ -2149,7 +1923,7 @@ def _turn1_v41_extract_filter(step):
         return {}
 
 
-def _turn1_v41_search_amount(step):
+def _turn1_active_compiled_search_amount(step):
     try:
         return int(tf.search_amount(step))
     except Exception:
@@ -2171,8 +1945,8 @@ def _turn1_v41_search_amount(step):
     return 1
 
 
-def _turn1_v41_effect_requires_active(effect):
-    blob = _turn1_v41_norm(_turn1_v41_effect_blob(effect))
+def _turn1_active_compiled_search_effect_requires_active(effect):
+    blob = _turn1_active_compiled_search_norm(_turn1_active_compiled_search_effect_blob(effect))
     return (
         "active spot" in blob
         or "active pokemon" in blob
@@ -2182,60 +1956,60 @@ def _turn1_v41_effect_requires_active(effect):
     )
 
 
-def _turn1_v41_effect_has_search_deck(effect):
-    return any(isinstance(step, dict) and step.get("op") == "search_deck" for step in _turn1_v41_iter_steps(effect))
+def _turn1_active_compiled_search_effect_has_search_deck(effect):
+    return any(isinstance(step, dict) and step.get("op") == "search_deck" for step in _turn1_active_compiled_search_iter_steps(effect))
 
 
-def _turn1_v41_filter_allows_card(filt, card):
+def _turn1_active_compiled_search_filter_allows_card(filt, card):
     try:
         return bool(tf.filter_allows_card(filt, card))
     except Exception:
         return False
 
 
-def _turn1_v41_card_matches_req(card, req):
+def _turn1_active_compiled_search_card_matches_req(card, req):
     try:
         return any(card_matches_option(card, opt) for opt in req.options)
     except Exception:
         return False
 
 
-def _turn1_v41_req_current_count(req, st, tracker):
+def _turn1_active_compiled_search_req_current_count(req, st, tracker):
     try:
         pool = zone_cards(st, tracker, req.zone)
-        return sum(1 for c in pool if _turn1_v41_card_matches_req(c, req))
+        return sum(1 for c in pool if _turn1_active_compiled_search_card_matches_req(c, req))
     except Exception:
         return 0
 
 
-def _turn1_v41_req_needed_count(req):
+def _turn1_active_compiled_search_req_needed_count(req):
     try:
         return max(1, int(getattr(req, "min_count", 1) or 1))
     except Exception:
         return 1
 
 
-def _turn1_v41_missing_reqs_from_state(reqs, mode, st, tracker):
+def _turn1_active_compiled_search_missing_reqs_from_state(reqs, mode, st, tracker):
     missing = []
     for req in reqs:
-        if _turn1_v41_req_current_count(req, st, tracker) < _turn1_v41_req_needed_count(req):
+        if _turn1_active_compiled_search_req_current_count(req, st, tracker) < _turn1_active_compiled_search_req_needed_count(req):
             missing.append(req)
     if mode == "any" and len(missing) < len(reqs):
         return []
     return missing
 
 
-def _turn1_v41_effect_can_search_target_norm(effect, target_norm):
-    if not target_norm or not _turn1_v41_effect_has_search_deck(effect):
+def _turn1_active_compiled_search_effect_can_search_target_norm(effect, target_norm):
+    if not target_norm or not _turn1_active_compiled_search_effect_has_search_deck(effect):
         return False
 
     # First use the compiled filter, if present.
-    for step in _turn1_v41_iter_steps(effect):
+    for step in _turn1_active_compiled_search_iter_steps(effect):
         if not isinstance(step, dict) or step.get("op") != "search_deck":
             continue
-        filt = _turn1_v41_extract_filter(step)
-        blob = _turn1_v41_norm(_turn1_v41_filter_blob(filt) + " " + _turn1_v41_effect_blob(effect))
-        target = _turn1_v41_norm(target_norm)
+        filt = _turn1_active_compiled_search_extract_filter(step)
+        blob = _turn1_active_compiled_search_norm(_turn1_active_compiled_search_filter_blob(filt) + " " + _turn1_active_compiled_search_effect_blob(effect))
+        target = _turn1_active_compiled_search_norm(target_norm)
 
         if target and target in blob:
             return True
@@ -2258,10 +2032,10 @@ def _turn1_v41_effect_can_search_target_norm(effect, target_norm):
     return False
 
 
-_ORIG_TURN1_V41_CHOOSE_OPTIMAL_ACTIVE = tf.choose_optimal_active
+_ORIG_CHOOSE_OPTIMAL_ACTIVE_BEFORE_ACTIVE_COMPILED_SEARCH = tf.choose_optimal_active
 
 
-def _turn1_v41_choose_optimal_active(opening, target_norm):
+def _turn1_active_compiled_search_choose_optimal_active(opening, target_norm):
     """Choose a legal opener Active. Prefer a Basic whose Active-only compiled
     search ability can satisfy the current target class.
     """
@@ -2277,28 +2051,28 @@ def _turn1_v41_choose_optimal_active(opening, target_norm):
             effects = []
 
         for eff in effects:
-            if not _turn1_v41_effect_requires_active(eff):
+            if not _turn1_active_compiled_search_effect_requires_active(eff):
                 continue
-            if _turn1_v41_effect_can_search_target_norm(eff, target_norm):
+            if _turn1_active_compiled_search_effect_can_search_target_norm(eff, target_norm):
                 return card
 
-    return _ORIG_TURN1_V41_CHOOSE_OPTIMAL_ACTIVE(opening, target_norm)
+    return _ORIG_CHOOSE_OPTIMAL_ACTIVE_BEFORE_ACTIVE_COMPILED_SEARCH(opening, target_norm)
 
 
-tf.choose_optimal_active = _turn1_v41_choose_optimal_active
+tf.choose_optimal_active = _turn1_active_compiled_search_choose_optimal_active
 
 
-def _turn1_v41_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt, amount):
+def _turn1_active_compiled_search_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt, amount):
     selected = []
     seen_ids = set()
 
-    missing = _turn1_v41_missing_reqs_from_state(reqs, mode, st, tracker)
+    missing = _turn1_active_compiled_search_missing_reqs_from_state(reqs, mode, st, tracker)
     if not missing:
         return selected
 
     for req in missing:
-        current = _turn1_v41_req_current_count(req, st, tracker)
-        needed = _turn1_v41_req_needed_count(req)
+        current = _turn1_active_compiled_search_req_current_count(req, st, tracker)
+        needed = _turn1_active_compiled_search_req_needed_count(req)
         deficit = max(0, needed - current)
 
         while deficit > 0 and len(selected) < amount:
@@ -2307,9 +2081,9 @@ def _turn1_v41_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt
                 cid = id(c)
                 if cid in seen_ids:
                     continue
-                if not _turn1_v41_card_matches_req(c, req):
+                if not _turn1_active_compiled_search_card_matches_req(c, req):
                     continue
-                if not _turn1_v41_filter_allows_card(filt, c):
+                if not _turn1_active_compiled_search_filter_allows_card(filt, c):
                     continue
                 chosen_idx = i
                 break
@@ -2325,7 +2099,7 @@ def _turn1_v41_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt
     return selected
 
 
-def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
+def turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
     source = getattr(st, "active", None)
     if source is None:
         return False
@@ -2339,9 +2113,9 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
         return False
 
     for eff in effects:
-        if not _turn1_v41_effect_requires_active(eff):
+        if not _turn1_active_compiled_search_effect_requires_active(eff):
             continue
-        if not _turn1_v41_effect_has_search_deck(eff):
+        if not _turn1_active_compiled_search_effect_has_search_deck(eff):
             continue
 
         try:
@@ -2349,20 +2123,20 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
             if key in st.abilities_used:
                 continue
         except Exception:
-            key = f"v41:{_turn1_v41_card_name(source)}:{_turn1_v41_ability_name(eff)}"
+            key = f"active_compiled_search:{_turn1_active_compiled_search_card_name(source)}:{_turn1_active_compiled_search_ability_name(eff)}"
             if key in getattr(st, "abilities_used", set()):
                 continue
 
         # Active-only requirement is already satisfied by source == st.active.
         total_selected = []
 
-        for step in _turn1_v41_iter_steps(eff):
+        for step in _turn1_active_compiled_search_iter_steps(eff):
             if not isinstance(step, dict) or step.get("op") != "search_deck":
                 continue
 
-            filt = _turn1_v41_extract_filter(step)
-            amount = max(1, _turn1_v41_search_amount(step))
-            selected = _turn1_v41_select_missing_goal_cards_from_deck(
+            filt = _turn1_active_compiled_search_extract_filter(step)
+            amount = max(1, _turn1_active_compiled_search_amount(step))
+            selected = _turn1_active_compiled_search_select_missing_goal_cards_from_deck(
                 st,
                 reqs,
                 mode,
@@ -2375,7 +2149,7 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
         if not total_selected:
             continue
 
-        ability_name = _turn1_v41_ability_name(eff)
+        ability_name = _turn1_active_compiled_search_ability_name(eff)
         st.hand.extend(total_selected)
         try:
             st.abilities_used.add(key)
@@ -2389,10 +2163,10 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
             pass
         try:
             st.log.append({
-                "event": "active_compiled_search_selected_v41",
-                "source": _turn1_v41_card_name(source),
+                "event": "active_compiled_search_selected",
+                "source": _turn1_active_compiled_search_card_name(source),
                 "ability": ability_name,
-                "selected": [_turn1_v41_card_name(c) for c in total_selected],
+                "selected": [_turn1_active_compiled_search_card_name(c) for c in total_selected],
                 "reason": "Active-only compiled search ability legally matched missing goal requirements.",
             })
         except Exception:
@@ -2465,7 +2239,7 @@ def simulate_one_goal_trial(
     if st.active is not None:
         natural_start_draw_cards.append(st.active)
 
-    # TURN1_ENSURE_NATURAL_START_DRAW_CARDS_V14
+    # TURN1_ENSURE_NATURAL_START_DRAW_CARDS
     # Actual cards naturally available before any action line starts.
     # This includes the chosen Active Pokémon, cards remaining in hand after setup,
     # and the natural draw if one happened.
@@ -2480,10 +2254,10 @@ def simulate_one_goal_trial(
         if not missing:
             success_stage = "after_actions"
             break
-        # TURN1_APPLY_ACTIVE_COMPILED_SEARCH_RUNTIME_V41
+        # TURN1_APPLY_ACTIVE_COMPILED_SEARCH_RUNTIME
         # Before falling back to hand-played search cards, try a legal Active-only
         # compiled search ability against the whole missing goal package.
-        if turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
+        if turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
             snapshot_accessed(tracker, st)
             if goal_satisfied(reqs, mode, st, tracker):
                 success_stage = "after_actions"
@@ -2516,11 +2290,11 @@ def simulate_one_goal_trial(
     final_missing = missing_requirements(reqs, mode, st, tracker)
     prize_status = trial_goal_prize_status(deck, prizes, reqs)
     line = " -> ".join(st.line) if st.line else "none"
-    # TURN1_APPLY_PRERETURN_INCOMPATIBLE_EFFECT_GUARD_V32
-    turn1_v32_blocked_effect_labels = []
+    # TURN1_APPLY_PRERETURN_INCOMPATIBLE_EFFECT_GUARD
+    turn1_blocked_effect_labels = []
     if success_stage is not None and line != "none":
-        turn1_v32_blocked_effect_labels = turn1_v32_incompatible_effect_labels_in_line(line, deck, reqs)
-        if turn1_v32_blocked_effect_labels:
+        turn1_blocked_effect_labels = turn1_incompatible_effect_labels_in_line(line, deck, reqs)
+        if turn1_blocked_effect_labels:
             success_stage = None
 
     return {
@@ -2534,8 +2308,8 @@ def simulate_one_goal_trial(
         "active": tf.card_name(active) if active else None,
         "final_hand_size": len(st.hand),
         "final_deck_size": len(st.deck),
-        "missing_requirements": (["Blocked incompatible effect label: " + ", ".join(b.get("action", "?") for b in turn1_v32_blocked_effect_labels)] if locals().get("turn1_v32_blocked_effect_labels") else [r.label for r in final_missing]),
-        "missing_count": (1 if locals().get("turn1_v32_blocked_effect_labels") else len(final_missing)),
+        "missing_requirements": (["Blocked incompatible effect label: " + ", ".join(b.get("action", "?") for b in turn1_blocked_effect_labels)] if locals().get("turn1_blocked_effect_labels") else [r.label for r in final_missing]),
+        "missing_count": (1 if locals().get("turn1_blocked_effect_labels") else len(final_missing)),
         "goal_pieces_prized": prize_status,
         "accessed_goal_piece_names": sorted(set(
             tf.card_name(c)
@@ -2546,7 +2320,7 @@ def simulate_one_goal_trial(
     }
 
 
-def turn1_v65_is_blocked_missing_requirement(value: Any) -> bool:
+def turn1_direct_goal_filter_is_blocked_missing_requirement(value: Any) -> bool:
     # Return True for diagnostic block labels that should not be counted as unmet goals.
     s = str(value or "").lower()
     markers = [
@@ -2562,7 +2336,7 @@ def turn1_v65_is_blocked_missing_requirement(value: Any) -> bool:
 
 
 def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
-    # TURN1_V65_DEWRAP_DIRECT_GOAL_FILTER
+    # TURN1_DEWRAP_DIRECT_GOAL_FILTER
     n = len(results)
     successes = sum(1 for r in results if r["success"])
     by_stage = Counter(r["success_stage"] for r in results)
@@ -2581,7 +2355,7 @@ def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not r["success"]:
             if r.get("missing_requirements"):
                 for m in r["missing_requirements"]:
-                    if turn1_v65_is_blocked_missing_requirement(m):
+                    if turn1_direct_goal_filter_is_blocked_missing_requirement(m):
                         continue
                     missing[m] += 1
             else:
@@ -2626,7 +2400,7 @@ def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------
-# TURN1_EFFECT_NAME_COMPATIBILITY_GUARD_V29
+# TURN1_EFFECT_NAME_COMPATIBILITY_GUARD
 # ---------------------------------------------------------------------
 # Previous guards checked played card names. However the line can also contain
 # ability/effect names, for example:
@@ -2645,7 +2419,7 @@ def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 #   Buddy-Buddy Poffin -> Basic Pokémon           -> valid for Pokémon goals
 
 
-def turn1_v29_norm_text(s):
+def turn1_effect_name_compat_norm_text(s):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -2658,7 +2432,7 @@ def turn1_v29_norm_text(s):
     return s.strip()
 
 
-def turn1_v29_flatten_strings(obj, max_items=5000):
+def turn1_effect_name_compat_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -2692,7 +2466,7 @@ def turn1_v29_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def turn1_v29_card_name(card):
+def turn1_effect_name_compat_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -2708,7 +2482,7 @@ def turn1_v29_card_name(card):
         return ""
 
 
-def turn1_v29_card_supertype(card):
+def turn1_effect_name_compat_card_supertype(card):
     if not isinstance(card, dict):
         return ""
 
@@ -2721,7 +2495,7 @@ def turn1_v29_card_supertype(card):
     )
 
 
-def turn1_v29_card_subtype_blob(card):
+def turn1_effect_name_compat_card_subtype_blob(card):
     if not isinstance(card, dict):
         return ""
 
@@ -2739,14 +2513,14 @@ def turn1_v29_card_subtype_blob(card):
     return " ".join(parts)
 
 
-def turn1_v29_classes_for_goal_card(card):
-    blob = turn1_v29_norm_text(
+def turn1_effect_name_compat_classes_for_goal_card(card):
+    blob = turn1_effect_name_compat_norm_text(
         " ".join(
             [
-                turn1_v29_card_name(card),
-                turn1_v29_card_supertype(card),
-                turn1_v29_card_subtype_blob(card),
-                turn1_v29_flatten_strings(card),
+                turn1_effect_name_compat_card_name(card),
+                turn1_effect_name_compat_card_supertype(card),
+                turn1_effect_name_compat_card_subtype_blob(card),
+                turn1_effect_name_compat_flatten_strings(card),
             ]
         )
     )
@@ -2784,21 +2558,21 @@ def turn1_v29_classes_for_goal_card(card):
     return classes
 
 
-def turn1_v29_goal_access_classes(reqs, deck):
+def turn1_effect_name_compat_goal_access_classes(reqs, deck):
     classes = set()
 
     for req in reqs:
         for card in deck:
             try:
                 if any(card_matches_option(card, opt) for opt in req.options):
-                    classes.update(turn1_v29_classes_for_goal_card(card))
+                    classes.update(turn1_effect_name_compat_classes_for_goal_card(card))
             except Exception:
                 continue
 
     return classes
 
 
-def turn1_v29_access_target_classes_from_text(text):
+def turn1_effect_name_compat_access_target_classes_from_text(text):
     """
     Classify what an effect can access.
 
@@ -2808,7 +2582,7 @@ def turn1_v29_access_target_classes_from_text(text):
     """
     import re as _re
 
-    t = turn1_v29_norm_text(text)
+    t = turn1_effect_name_compat_norm_text(text)
     classes = set()
 
     # Supporter-only access, e.g. Tatsugiri's Attract Customers.
@@ -2844,16 +2618,16 @@ def turn1_v29_access_target_classes_from_text(text):
     return classes
 
 
-def turn1_v29_deck_card_name_norms(deck):
+def turn1_effect_name_compat_deck_card_name_norms(deck):
     out = set()
     for card in deck:
-        name = turn1_v29_card_name(card)
+        name = turn1_effect_name_compat_card_name(card)
         if name:
-            out.add(turn1_v29_norm_text(name))
+            out.add(turn1_effect_name_compat_norm_text(name))
     return out
 
 
-def turn1_v29_effect_texts_for_action_label(action_label, deck):
+def turn1_effect_name_compat_effect_texts_for_action_label(action_label, deck):
     """
     Return possible owning card/effect text blobs for an action label.
 
@@ -2864,12 +2638,12 @@ def turn1_v29_effect_texts_for_action_label(action_label, deck):
     It skips normal card names. Card-name actions are handled by the normal
     card filters and executor.
     """
-    action_norm = turn1_v29_norm_text(action_label)
+    action_norm = turn1_effect_name_compat_norm_text(action_label)
 
     if not action_norm:
         return []
 
-    card_name_norms = turn1_v29_deck_card_name_norms(deck)
+    card_name_norms = turn1_effect_name_compat_deck_card_name_norms(deck)
 
     # If the action is literally a card name, do not treat it as an ability label.
     if action_norm in card_name_norms:
@@ -2878,8 +2652,8 @@ def turn1_v29_effect_texts_for_action_label(action_label, deck):
     matches = []
 
     for card in deck:
-        blob = turn1_v29_flatten_strings(card)
-        blob_norm = turn1_v29_norm_text(blob)
+        blob = turn1_effect_name_compat_flatten_strings(card)
+        blob_norm = turn1_effect_name_compat_norm_text(blob)
 
         if action_norm and action_norm in blob_norm:
             matches.append(blob)
@@ -2887,7 +2661,7 @@ def turn1_v29_effect_texts_for_action_label(action_label, deck):
     return matches
 
 
-def turn1_v29_action_labels(line):
+def turn1_effect_name_compat_action_labels(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
@@ -2895,23 +2669,23 @@ def turn1_v29_action_labels(line):
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v29_incompatible_effect_actions(line, deck, reqs):
-    goal_classes = turn1_v29_goal_access_classes(reqs, deck)
+def turn1_effect_name_compat_incompatible_actions(line, deck, reqs):
+    goal_classes = turn1_effect_name_compat_goal_access_classes(reqs, deck)
 
     if not goal_classes:
         return []
 
     blocked = []
 
-    for action in turn1_v29_action_labels(line):
-        effect_texts = turn1_v29_effect_texts_for_action_label(action, deck)
+    for action in turn1_effect_name_compat_action_labels(line):
+        effect_texts = turn1_effect_name_compat_effect_texts_for_action_label(action, deck)
 
         if not effect_texts:
             continue
 
         combined_classes = set()
         for txt in effect_texts:
-            combined_classes.update(turn1_v29_access_target_classes_from_text(txt))
+            combined_classes.update(turn1_effect_name_compat_access_target_classes_from_text(txt))
 
         # If we could not classify target classes, do not block.
         if not combined_classes:
@@ -2945,7 +2719,7 @@ def turn1_v29_incompatible_effect_actions(line, deck, reqs):
     return blocked
 
 
-def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
+def turn1_apply_effect_name_compatibility_filter(results, deck, reqs):
     summary = {
         "enabled": True,
         "invalidated_successes": 0,
@@ -2959,7 +2733,7 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
             continue
 
         line = r.get("line") or "none"
-        blocked = turn1_v29_incompatible_effect_actions(line, deck, reqs)
+        blocked = turn1_effect_name_compat_incompatible_actions(line, deck, reqs)
 
         if not blocked:
             continue
@@ -2968,7 +2742,7 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
 
         r["success"] = False
         r["success_stage"] = "incompatible_effect_name_access"
-        r["blocked_incompatible_effect_actions_v29"] = blocked
+        r["blocked_incompatible_effect_actions"] = blocked
         r["missing_requirements"] = [
             "Incompatible effect access: " + ", ".join(actions)
         ]
@@ -2985,7 +2759,7 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_PRE_SUMMARY_EFFECT_LABEL_GUARD_V30
+# TURN1_PRE_SUMMARY_EFFECT_LABEL_GUARD
 # ---------------------------------------------------------------------
 # Conservative pre-summary guard for ability/effect labels.
 #
@@ -3004,240 +2778,13 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
 #   Shivery Chill in a Pokémon goal
 # because Shivery Chill searches Basic Water Energy, not Pokémon.
 
-def turn1_v30_norm(s):
-    import re as _re
-    import unicodedata as _unicodedata
-
-    s = str(s or "")
-    s = _unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _unicodedata.combining(ch))
-    s = s.lower().replace("’", "'")
-    s = _re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def turn1_v30_flatten_strings(obj, max_items=5000):
-    out = []
-    seen = set()
-
-    def rec(x):
-        if len(out) >= max_items:
-            return
-
-        oid = id(x)
-        if oid in seen:
-            return
-        seen.add(oid)
-
-        if isinstance(x, str):
-            if x.strip():
-                out.append(x)
-            return
-
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if isinstance(k, str) and k.strip():
-                    out.append(k)
-                rec(v)
-            return
-
-        if isinstance(x, (list, tuple, set)):
-            for v in x:
-                rec(v)
-
-    rec(obj)
-    return " ".join(out)
-
-
-def turn1_v30_card_name(card):
-    try:
-        return tf.card_name(card)
-    except Exception:
-        if isinstance(card, dict):
-            ident = card.get("identity") or {}
-            return (
-                card.get("name")
-                or card.get("card_name")
-                or ident.get("name")
-                or ident.get("canonical_name")
-                or ""
-            )
-        return ""
-
-
-def turn1_v30_deck_card_name_norms(deck):
-    names = set()
-
-    for card in deck:
-        name = turn1_v30_card_name(card)
-        if name:
-            names.add(turn1_v30_norm(name))
-
-    return names
-
-
-def turn1_v30_goal_classes(reqs, deck):
-    classes = set()
-
-    for req in reqs:
-        for card in deck:
-            try:
-                if not any(card_matches_option(card, opt) for opt in req.options):
-                    continue
-            except Exception:
-                continue
-
-            blob = turn1_v30_norm(turn1_v30_flatten_strings(card))
-
-            if "pokemon" in blob or "pokémon" in blob:
-                classes.add("pokemon")
-                if "basic" in blob:
-                    classes.add("basic_pokemon")
-
-            if "energy" in blob:
-                classes.add("energy")
-                if "basic" in blob:
-                    classes.add("basic_energy")
-                if "water" in blob:
-                    classes.add("water_energy")
-                    if "basic" in blob:
-                        classes.add("basic_water_energy")
-
-            if "supporter" in blob:
-                classes.add("supporter")
-                classes.add("trainer")
-
-            if "item" in blob:
-                classes.add("item")
-                classes.add("trainer")
-
-            if "stadium" in blob:
-                classes.add("stadium")
-                classes.add("trainer")
-
-    return classes
-
-
-def turn1_v30_extract_effect_blobs_for_label(action_label, deck):
-    """
-    Find the tightest likely text blobs for an ability/effect label.
-
-    For a label like "Shivery Chill", this tries to return the ability dict/text,
-    not the whole Chien-Pao card. If tight extraction fails, it falls back to the
-    whole card blob only when the label appears somewhere in that card.
-    """
-    action_norm = turn1_v30_norm(action_label)
-
-    if not action_norm:
-        return []
-
-    card_names = turn1_v30_deck_card_name_norms(deck)
-
-    # Normal card names are not effect labels.
-    if action_norm in card_names:
-        return []
-
-    blobs = []
-
-    def walk(obj, card_blob):
-        if isinstance(obj, dict):
-            local_blob = turn1_v30_flatten_strings(obj)
-            local_norm = turn1_v30_norm(local_blob)
-
-            if action_norm in local_norm:
-                blobs.append(local_blob)
-                return
-
-            for v in obj.values():
-                walk(v, card_blob)
-
-        elif isinstance(obj, (list, tuple, set)):
-            for v in obj:
-                walk(v, card_blob)
-
-    for card in deck:
-        card_blob = turn1_v30_flatten_strings(card)
-        card_norm = turn1_v30_norm(card_blob)
-
-        if action_norm not in card_norm:
-            continue
-
-        before = len(blobs)
-        walk(card, card_blob)
-
-        # Fallback to card blob if no smaller blob was found.
-        if len(blobs) == before:
-            blobs.append(card_blob)
-
-    return blobs
-
-
-def turn1_v30_access_classes_from_effect_text(text):
-    import re as _re
-
-    t = turn1_v30_norm(text)
-    classes = set()
-
-    # Opponent-only disruption should not be a self-access line.
-    opponent_markers = [
-        "your opponent shuffles",
-        "your opponent reveals",
-        "your opponent draws",
-        "opponent's hand",
-        "opponents hand",
-        "their hand",
-        "their deck",
-    ]
-
-    self_markers = [
-        "your deck",
-        "your hand",
-        "put into your hand",
-        "onto your bench",
-        "put it onto your bench",
-        "draw ",
-        "you may draw",
-    ]
-
-    if any(m in t for m in opponent_markers) and not any(m in t for m in self_markers):
-        classes.add("opponent_only")
-        return classes
-
-    # Energy-only access.
-    if "basic water energy" in t:
-        classes.update(["energy", "basic_energy", "water_energy", "basic_water_energy"])
-    elif "basic energy" in t:
-        classes.update(["energy", "basic_energy"])
-    elif _re.search(r"(search|reveal|choose|put).{0,140}energy", t):
-        classes.add("energy")
-
-    # Supporter access.
-    if _re.search(r"(search|look at|reveal|choose|put).{0,180}supporter", t):
-        classes.update(["supporter", "trainer"])
-
-    # Pokémon access. Keep it tied to access verbs so active-condition text does not count.
-    if _re.search(r"(search|reveal|choose|put|bench).{0,180}(basic pokemon|basic pokémon)", t):
-        classes.update(["pokemon", "basic_pokemon"])
-    elif _re.search(r"(search|reveal|choose|put|bench).{0,180}(pokemon|pokémon)", t):
-        classes.add("pokemon")
-    elif "put onto your bench" in t or "put it onto your bench" in t:
-        classes.add("pokemon")
-
-    # General self draw can help any goal, so mark as generic access.
-    # This lets things like Concealed Cards remain possible.
-    if _re.search(r"(draw|draw until).{0,80}(card|cards)", t) and "your opponent" not in t:
-        classes.add("generic_draw")
-
-    return classes
-
-
-def turn1_v30_effect_label_is_compatible(action_label, deck, reqs):
-    ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
+def turn1_pre_summary_effect_label_is_compatible(action_label, deck, reqs):
+    ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs)
     return ok, reason
 
 
-# TURN1_V35_PATCHED_V30_COMPAT
-def turn1_v30_action_labels(line):
+# TURN1_EFFECT_GOAL_COMPAT_PATCHED_PRE_SUMMARY_EFFECT_LABEL_COMPAT
+def turn1_pre_summary_effect_label_actions_from_line(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -3246,7 +2793,7 @@ def turn1_v30_action_labels(line):
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
+def turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs):
     """
     Mutate results in-place before summarize_goal_trials runs.
     """
@@ -3263,8 +2810,8 @@ def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
 
         blocked = []
 
-        for action in turn1_v30_action_labels(line):
-            ok, reason = turn1_v30_effect_label_is_compatible(action, deck, reqs)
+        for action in turn1_pre_summary_effect_label_actions_from_line(line):
+            ok, reason = turn1_pre_summary_effect_label_is_compatible(action, deck, reqs)
 
             if not ok:
                 blocked.append({"action": action, "reason": reason})
@@ -3275,8 +2822,8 @@ def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
         actions = [b["action"] for b in blocked]
 
         r["success"] = False
-        r["success_stage"] = "blocked_incompatible_effect_label_v30"
-        r["blocked_incompatible_effect_labels_v30"] = blocked
+        r["success_stage"] = "blocked_incompatible_effect_label"
+        r["blocked_incompatible_effect_labels"] = blocked
         r["missing_requirements"] = [
             "Blocked incompatible effect label: " + ", ".join(actions)
         ]
@@ -3292,7 +2839,7 @@ def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_SCORE_TIME_ABILITY_FILTER_V31
+# TURN1_SCORE_TIME_ACCESS_COMPAT_FILTER
 # ---------------------------------------------------------------------
 # The previous Shivery Chill / Attract Customers guards were mostly post-hoc:
 # they tried to invalidate successful rows after the single-target engine had
@@ -3308,10 +2855,10 @@ def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
 #   Concealed Cards    -> generic self draw
 #   Buddy-Buddy Poffin -> searches Basic Pokémon
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V31 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SCORE_ACCESS_COMPAT = score_candidate_for_missing_targets
 
 
-def turn1_v31_norm(s):
+def turn1_score_access_compat_norm(s):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -3323,7 +2870,7 @@ def turn1_v31_norm(s):
     return s.strip()
 
 
-def turn1_v31_flatten_strings(obj, max_items=5000):
+def turn1_score_access_compat_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -3359,7 +2906,7 @@ def turn1_v31_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def turn1_v31_card_identity_blob(card):
+def turn1_score_access_compat_card_identity_blob(card):
     if not isinstance(card, dict):
         return ""
 
@@ -3384,8 +2931,8 @@ def turn1_v31_card_identity_blob(card):
     return " ".join(parts)
 
 
-def turn1_v31_classes_for_goal_card(card):
-    blob = turn1_v31_norm(turn1_v31_card_identity_blob(card))
+def turn1_score_access_compat_classes_for_goal_card(card):
+    blob = turn1_score_access_compat_norm(turn1_score_access_compat_card_identity_blob(card))
     classes = set()
 
     if "pokemon" in blob or "pokémon" in blob:
@@ -3428,7 +2975,7 @@ def turn1_v31_classes_for_goal_card(card):
     return classes
 
 
-def turn1_v31_all_known_cards_from_state(st):
+def turn1_score_access_compat_all_known_cards_from_state(st):
     cards = []
     for attr in ["deck", "hand", "discard", "prizes", "bench"]:
         try:
@@ -3444,22 +2991,22 @@ def turn1_v31_all_known_cards_from_state(st):
     return cards
 
 
-def turn1_v31_goal_classes(missing, st):
+def turn1_score_access_compat_goal_classes(missing, st):
     classes = set()
-    cards = turn1_v31_all_known_cards_from_state(st)
+    cards = turn1_score_access_compat_all_known_cards_from_state(st)
 
     for req in missing or []:
         for c in cards:
             try:
                 if any(card_matches_option(c, opt) for opt in req.options):
-                    classes.update(turn1_v31_classes_for_goal_card(c))
+                    classes.update(turn1_score_access_compat_classes_for_goal_card(c))
             except Exception:
                 continue
 
     return classes
 
 
-def turn1_v31_effect_text_for_action(action):
+def turn1_score_access_compat_effect_text_for_action(action):
     """Return the tightest effect/action text available for a candidate action."""
     if isinstance(action, dict) and action.get("_virtual_action"):
         chunks = []
@@ -3468,12 +3015,12 @@ def turn1_v31_effect_text_for_action(action):
         # a Pokémon search just because the source card's identity says Pokémon.
         for key in ["effect", "compiled_effect", "ability", "attack", "step"]:
             if key in action:
-                chunks.append(turn1_v31_flatten_strings(action.get(key)))
+                chunks.append(turn1_score_access_compat_flatten_strings(action.get(key)))
 
         # Some actions store the useful text inside these fields.
         for key in ["source_effect", "search_effect", "requirement", "raw_effect"]:
             if key in action:
-                chunks.append(turn1_v31_flatten_strings(action.get(key)))
+                chunks.append(turn1_score_access_compat_flatten_strings(action.get(key)))
 
         text = " ".join(x for x in chunks if x.strip())
 
@@ -3483,20 +3030,20 @@ def turn1_v31_effect_text_for_action(action):
         # Fallback to source/card only when no effect text exists.
         for key in ["source", "card", "search_card"]:
             if key in action:
-                return turn1_v31_flatten_strings(action.get(key))
+                return turn1_score_access_compat_flatten_strings(action.get(key))
 
-        return turn1_v31_flatten_strings(action)
+        return turn1_score_access_compat_flatten_strings(action)
 
     if isinstance(action, dict):
-        return turn1_v31_flatten_strings(action)
+        return turn1_score_access_compat_flatten_strings(action)
 
     return str(action or "")
 
 
-def turn1_v31_access_classes_from_effect_text(text):
+def turn1_score_access_compat_access_classes_from_effect_text(text):
     import re as _re
 
-    t = turn1_v31_norm(text)
+    t = turn1_score_access_compat_norm(text)
     classes = set()
 
     if not t:
@@ -3566,15 +3113,15 @@ def turn1_v31_access_classes_from_effect_text(text):
     return classes
 
 
-def turn1_v31_action_access_is_compatible(action, missing, st):
+def turn1_score_access_compat_action_is_compatible(action, missing, st):
     # Only filter actions where we can classify the effect target class.
-    text = turn1_v31_effect_text_for_action(action)
-    access_classes = turn1_v31_access_classes_from_effect_text(text)
+    text = turn1_score_access_compat_effect_text_for_action(action)
+    access_classes = turn1_score_access_compat_access_classes_from_effect_text(text)
 
     if not access_classes:
         return True
 
-    goal_classes = turn1_v31_goal_classes(missing, st)
+    goal_classes = turn1_score_access_compat_goal_classes(missing, st)
 
     # If the goal is unclassified, do not block; keep the simulator usable.
     if not goal_classes:
@@ -3606,7 +3153,7 @@ def turn1_v31_action_access_is_compatible(action, missing, st):
     try:
         st.log.append(
             {
-                "event": "blocked_score_time_incompatible_access_v31",
+                "event": "blocked_score_time_incompatible_access",
                 "action": label,
                 "access_classes": sorted(access_classes),
                 "goal_classes": sorted(goal_classes),
@@ -3624,10 +3171,10 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V31(
+    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SCORE_ACCESS_COMPAT(
         st,
         missing,
         going,
@@ -3636,7 +3183,7 @@ def score_candidate_for_missing_targets(
 
     filtered = []
     for score, action, target_norm in scored:
-        if turn1_v31_action_access_is_compatible(action, missing, st):
+        if turn1_score_access_compat_action_is_compatible(action, missing, st):
             filtered.append((score, action, target_norm))
 
     return filtered
@@ -3645,7 +3192,7 @@ def score_candidate_for_missing_targets(
 
 
 # ---------------------------------------------------------------------
-# TURN1_BLOCK_UNVALIDATED_EFFECT_ACTIONS_V33
+# TURN1_BLOCK_UNVALIDATED_EFFECT_ACTIONS
 # ---------------------------------------------------------------------
 # Root fix:
 # The Turn-1 goal finder sometimes appends ability/effect labels into the
@@ -3662,7 +3209,7 @@ def score_candidate_for_missing_targets(
 # This wrapper converts successful trials into failures if the played line
 # contains an action segment that is not an actual card name in the deck.
 
-def _turn1_v33_norm_name(value):
+def _turn1_unvalidated_effect_guard_norm_name(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -3675,7 +3222,7 @@ def _turn1_v33_norm_name(value):
     return s.strip()
 
 
-def _turn1_v33_card_name(card):
+def _turn1_unvalidated_effect_guard_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -3694,7 +3241,7 @@ def _turn1_v33_card_name(card):
     return ""
 
 
-def _turn1_v33_find_deck_from_call(args, kwargs):
+def _turn1_unvalidated_effect_guard_find_deck_from_call(args, kwargs):
     values = list(kwargs.values()) + list(args)
 
     for value in values:
@@ -3709,7 +3256,7 @@ def _turn1_v33_find_deck_from_call(args, kwargs):
         if not all(isinstance(x, dict) for x in sample):
             continue
 
-        names = [_turn1_v33_card_name(x) for x in sample]
+        names = [_turn1_unvalidated_effect_guard_card_name(x) for x in sample]
 
         if any(names):
             return value
@@ -3717,24 +3264,24 @@ def _turn1_v33_find_deck_from_call(args, kwargs):
     return None
 
 
-def _turn1_v33_deck_card_name_norms(deck):
+def _turn1_unvalidated_effect_guard_deck_card_name_norms(deck):
     names = set()
 
     if not deck:
         return names
 
     for card in deck:
-        name = _turn1_v33_card_name(card)
+        name = _turn1_unvalidated_effect_guard_card_name(card)
 
         if not name:
             continue
 
-        names.add(_turn1_v33_norm_name(name))
+        names.add(_turn1_unvalidated_effect_guard_norm_name(name))
 
     return names
 
 
-def _turn1_v33_action_labels(line):
+def _turn1_unvalidated_effect_guard_action_labels(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -3743,26 +3290,26 @@ def _turn1_v33_action_labels(line):
     return [part.strip() for part in raw.split("->") if part.strip()]
 
 
-def _turn1_v33_unvalidated_effect_actions(line, deck, reqs=None):
-    card_names = _turn1_v33_deck_card_name_norms(deck)
+def _turn1_unvalidated_effect_guard_actions(line, deck, reqs=None):
+    card_names = _turn1_unvalidated_effect_guard_deck_card_name_norms(deck)
 
     if not card_names:
         return []
 
     blocked = []
 
-    for action in _turn1_v33_action_labels(line):
-        action_norm = _turn1_v33_norm_name(action)
+    for action in _turn1_unvalidated_effect_guard_action_labels(line):
+        action_norm = _turn1_unvalidated_effect_guard_norm_name(action)
 
         if not action_norm:
             continue
 
-        # Physical card name: allowed. The v34 search-target filter handles
+        # Physical card name: allowed. The action-goal compatibility filter handles
         # whether the physical card's search target is compatible with the goal.
         if action_norm in card_names:
             continue
 
-        ok, reason = _turn1_v35_effect_label_compatible_with_goal(action, deck, reqs or [])
+        ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action, deck, reqs or [])
         if ok:
             continue
 
@@ -3771,10 +3318,10 @@ def _turn1_v33_unvalidated_effect_actions(line, deck, reqs=None):
     return blocked
 
 
-_ORIG_SIMULATE_ONE_GOAL_TRIAL_V33 = simulate_one_goal_trial
+_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD = simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
-    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_V33(*args, **kwargs)
+    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD(*args, **kwargs)
 
     try:
         if not isinstance(result, dict):
@@ -3788,16 +3335,16 @@ def simulate_one_goal_trial(*args, **kwargs):
         if line == "none":
             return result
 
-        deck = _turn1_v33_find_deck_from_call(args, kwargs)
-        reqs = _turn1_v35_find_reqs_from_call(args, kwargs)
-        blocked = _turn1_v33_unvalidated_effect_actions(line, deck, reqs)
+        deck = _turn1_unvalidated_effect_guard_find_deck_from_call(args, kwargs)
+        reqs = _turn1_effect_goal_compat_find_reqs_from_call(args, kwargs)
+        blocked = _turn1_unvalidated_effect_guard_actions(line, deck, reqs)
 
         if not blocked:
             return result
 
         result["success"] = False
-        result["success_stage"] = "blocked_unvalidated_effect_action_v33"
-        result["blocked_unvalidated_effect_actions_v33"] = blocked
+        result["success_stage"] = "blocked_unvalidated_effect_action"
+        result["blocked_unvalidated_effect_actions"] = blocked
         result["missing_requirements"] = [
             "Blocked unvalidated ability/effect action: " + ", ".join(blocked)
         ]
@@ -3807,7 +3354,7 @@ def simulate_one_goal_trial(*args, **kwargs):
     except Exception as exc:
         # Do not crash the simulation from the safety guard.
         try:
-            result["v33_guard_error"] = str(exc)
+            result["unvalidated_effect_guard_error"] = str(exc)
         except Exception:
             pass
         return result
@@ -3816,7 +3363,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_SEARCH_EFFECT_TARGET_FILTERS_V34
+# TURN1_SEARCH_EFFECT_TARGET_FILTERS
 # ---------------------------------------------------------------------
 # Root fix:
 # The Turn-1 goal finder was reusing single-target scoring/execution too broadly.
@@ -3830,7 +3377,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 # scored. It also post-filters successful lines as a safety net.
 
 
-def _turn1_v34_norm(value):
+def _turn1_action_goal_compat_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -3842,7 +3389,7 @@ def _turn1_v34_norm(value):
     return s.strip()
 
 
-def _turn1_v34_flatten_strings(obj, max_items=6000):
+def _turn1_action_goal_compat_flatten_strings(obj, max_items=6000):
     out = []
     seen = set()
 
@@ -3874,7 +3421,7 @@ def _turn1_v34_flatten_strings(obj, max_items=6000):
     return " ".join(out)
 
 
-def _turn1_v34_card_name(card):
+def _turn1_action_goal_compat_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -3893,7 +3440,7 @@ def _turn1_v34_card_name(card):
     return ""
 
 
-def _turn1_v34_card_identity_blob(card):
+def _turn1_action_goal_compat_card_identity_blob(card):
     if not isinstance(card, dict):
         return ""
 
@@ -3911,7 +3458,7 @@ def _turn1_v34_card_identity_blob(card):
     return " ".join(parts)
 
 
-def _turn1_v34_card_hp(card):
+def _turn1_action_goal_compat_card_hp(card):
     if not isinstance(card, dict):
         return None
 
@@ -3929,9 +3476,9 @@ def _turn1_v34_card_hp(card):
     return None
 
 
-def _turn1_v34_goal_classes_for_card(card):
-    blob = _turn1_v34_norm(_turn1_v34_card_identity_blob(card))
-    name = _turn1_v34_norm(_turn1_v34_card_name(card))
+def _turn1_action_goal_compat_goal_classes_for_card(card):
+    blob = _turn1_action_goal_compat_norm(_turn1_action_goal_compat_card_identity_blob(card))
+    name = _turn1_action_goal_compat_norm(_turn1_action_goal_compat_card_name(card))
     both = f"{blob} {name}"
 
     classes = set()
@@ -4004,19 +3551,19 @@ def _turn1_v34_goal_classes_for_card(card):
     return classes
 
 
-def _turn1_v34_goal_classes_from_norm(target_norm, candidate_cards):
+def _turn1_action_goal_compat_goal_classes_from_norm(target_norm, candidate_cards):
     classes = set()
     target_norm = str(target_norm or "")
 
     for c in candidate_cards or []:
         try:
             if tf.target_matches(c, target_norm):
-                classes.update(_turn1_v34_goal_classes_for_card(c))
+                classes.update(_turn1_action_goal_compat_goal_classes_for_card(c))
         except Exception:
             continue
 
     # Text fallback for goals like "Basic Water Energy".
-    t = _turn1_v34_norm(target_norm)
+    t = _turn1_action_goal_compat_norm(target_norm)
     if "pokemon" in t or "pokémon" in t:
         classes.add("pokemon")
         if "basic" in t:
@@ -4052,10 +3599,10 @@ def _turn1_v34_goal_classes_from_norm(target_norm, candidate_cards):
     return classes
 
 
-def _turn1_v34_access_classes_from_text(text):
+def _turn1_action_goal_compat_access_classes_from_text(text):
     import re as _re
 
-    t = _turn1_v34_norm(text)
+    t = _turn1_action_goal_compat_norm(text)
     classes = set()
 
     # Opponent-only disruption is not self access.
@@ -4118,28 +3665,28 @@ def _turn1_v34_access_classes_from_text(text):
     return classes
 
 
-def _turn1_v34_action_source_and_text(action):
+def _turn1_action_goal_compat_action_source_and_text(action):
     # Returns (label/source_name, text_blob). The text blob should describe the
     # effect's access target, not only the source card identity.
     if isinstance(action, dict) and action.get("_virtual_action"):
         va = str(action.get("_virtual_action") or "")
         if action.get("effect") is not None:
-            return va, _turn1_v34_flatten_strings(action.get("effect"))
+            return va, _turn1_action_goal_compat_flatten_strings(action.get("effect"))
         if action.get("source") is not None:
-            return _turn1_v34_card_name(action.get("source")), _turn1_v34_flatten_strings(action.get("source"))
+            return _turn1_action_goal_compat_card_name(action.get("source")), _turn1_action_goal_compat_flatten_strings(action.get("source"))
         if action.get("card") is not None:
-            return _turn1_v34_card_name(action.get("card")), _turn1_v34_flatten_strings(action.get("card"))
+            return _turn1_action_goal_compat_card_name(action.get("card")), _turn1_action_goal_compat_flatten_strings(action.get("card"))
         if action.get("search_card") is not None:
-            return _turn1_v34_card_name(action.get("search_card")), _turn1_v34_flatten_strings(action.get("search_card"))
-        return va, _turn1_v34_flatten_strings(action)
+            return _turn1_action_goal_compat_card_name(action.get("search_card")), _turn1_action_goal_compat_flatten_strings(action.get("search_card"))
+        return va, _turn1_action_goal_compat_flatten_strings(action)
 
     if isinstance(action, dict):
-        return _turn1_v34_card_name(action), _turn1_v34_flatten_strings(action)
+        return _turn1_action_goal_compat_card_name(action), _turn1_action_goal_compat_flatten_strings(action)
 
     return str(action), str(action)
 
 
-def _turn1_v34_target_cards_for_norm(target_norm, st):
+def _turn1_action_goal_compat_target_cards_for_norm(target_norm, st):
     cards = []
     for attr in ["deck", "hand", "discard", "prizes", "bench"]:
         vals = getattr(st, attr, []) or []
@@ -4151,7 +3698,7 @@ def _turn1_v34_target_cards_for_norm(target_norm, st):
     return [c for c in cards if isinstance(c, dict)]
 
 
-def _turn1_v34_action_matches_target_directly(action, target_norm):
+def _turn1_action_goal_compat_action_matches_target_directly(action, target_norm):
     if isinstance(action, dict) and not action.get("_virtual_action"):
         try:
             return tf.target_matches(action, target_norm)
@@ -4160,14 +3707,14 @@ def _turn1_v34_action_matches_target_directly(action, target_norm):
     return False
 
 
-def _turn1_v34_effect_allows_target_constraints(text, target_cards):
-    t = _turn1_v34_norm(text)
+def _turn1_action_goal_compat_effect_allows_target_constraints(text, target_cards):
+    t = _turn1_action_goal_compat_norm(text)
 
     # Buddy-Buddy Poffin style HP restriction.
     if "70 hp or less" in t or "70 hp or fewer" in t:
         matched = False
         for card in target_cards or []:
-            hp = _turn1_v34_card_hp(card)
+            hp = _turn1_action_goal_compat_card_hp(card)
             if hp is None:
                 continue
             matched = True
@@ -4178,7 +3725,7 @@ def _turn1_v34_effect_allows_target_constraints(text, target_cards):
     return True
 
 
-def _turn1_v34_classes_compatible(action_classes, target_classes):
+def _turn1_action_goal_compat_classes_compatible(action_classes, target_classes):
     if not action_classes:
         return True  # Unknown non-access action; do not block here.
 
@@ -4228,41 +3775,41 @@ def _turn1_v34_classes_compatible(action_classes, target_classes):
     return bool(action_classes.intersection(target_classes))
 
 
-def _turn1_v34_action_can_help_target(action, target_norm, st):
-    if _turn1_v34_action_matches_target_directly(action, target_norm):
+def _turn1_action_goal_compat_action_can_help_target(action, target_norm, st):
+    if _turn1_action_goal_compat_action_matches_target_directly(action, target_norm):
         return True, "action_is_target_card"
 
-    label, text = _turn1_v34_action_source_and_text(action)
-    target_cards = _turn1_v34_target_cards_for_norm(target_norm, st)
-    target_classes = _turn1_v34_goal_classes_from_norm(target_norm, target_cards)
-    action_classes = _turn1_v34_access_classes_from_text(text)
+    label, text = _turn1_action_goal_compat_action_source_and_text(action)
+    target_cards = _turn1_action_goal_compat_target_cards_for_norm(target_norm, st)
+    target_classes = _turn1_action_goal_compat_goal_classes_from_norm(target_norm, target_cards)
+    action_classes = _turn1_action_goal_compat_access_classes_from_text(text)
 
-    if not _turn1_v34_effect_allows_target_constraints(text, [c for c in target_cards if tf.target_matches(c, target_norm)]):
+    if not _turn1_action_goal_compat_effect_allows_target_constraints(text, [c for c in target_cards if tf.target_matches(c, target_norm)]):
         return False, f"effect_constraints_block:{label}"
 
-    if _turn1_v34_classes_compatible(action_classes, target_classes):
+    if _turn1_action_goal_compat_classes_compatible(action_classes, target_classes):
         return True, "compatible"
 
     return False, f"incompatible_search_target:{label}:action={sorted(action_classes)}:target={sorted(target_classes)}"
 
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V34 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_GOAL_COMPAT = score_candidate_for_missing_targets
 
 def score_candidate_for_missing_targets(st, missing, going, enable_chain_search):
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
-    rows = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V34(st, missing, going, enable_chain_search)
+    rows = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_GOAL_COMPAT(st, missing, going, enable_chain_search)
     filtered = []
 
     for score, action, target_norm in rows:
-        ok, reason = _turn1_v34_action_can_help_target(action, target_norm, st)
+        ok, reason = _turn1_action_goal_compat_action_can_help_target(action, target_norm, st)
         if ok:
             filtered.append((score, action, target_norm))
         else:
             try:
                 st.log.append({
-                    "event": "blocked_incompatible_search_target_v34",
+                    "event": "blocked_incompatible_search_target",
                     "action": action_label(action),
                     "target_norm": target_norm,
                     "reason": reason,
@@ -4273,34 +3820,34 @@ def score_candidate_for_missing_targets(st, missing, going, enable_chain_search)
     return filtered
 
 
-def _turn1_v34_goal_classes_for_reqs(reqs, deck):
+def _turn1_action_goal_compat_goal_classes_for_reqs(reqs, deck):
     classes = set()
     for req in reqs or []:
         for opt in getattr(req, "options", []) or []:
-            classes.update(_turn1_v34_goal_classes_from_norm(getattr(opt, "norm", str(opt)), deck))
+            classes.update(_turn1_action_goal_compat_goal_classes_from_norm(getattr(opt, "norm", str(opt)), deck))
     return classes
 
 
-def _turn1_v34_deck_card_by_name(deck):
+def _turn1_action_goal_compat_deck_card_by_name(deck):
     out = {}
     for card in deck or []:
-        name = _turn1_v34_card_name(card)
-        norm = _turn1_v34_norm(name)
+        name = _turn1_action_goal_compat_card_name(card)
+        norm = _turn1_action_goal_compat_norm(name)
         if norm and norm not in out:
             out[norm] = card
     return out
 
 
-def _turn1_v34_action_labels_from_line(line):
+def _turn1_action_goal_compat_action_labels_from_line(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs):
-    by_name = _turn1_v34_deck_card_by_name(deck)
-    norm = _turn1_v34_norm(label)
+def _turn1_action_goal_compat_label_compatible_with_any_goal(label, deck, reqs):
+    by_name = _turn1_action_goal_compat_deck_card_by_name(deck)
+    norm = _turn1_action_goal_compat_norm(label)
 
     # If the action itself is one of the goal cards, keep it.
     action_card = by_name.get(norm)
@@ -4316,12 +3863,12 @@ def _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs):
     # Find text for a physical card name or an ability/effect label.
     texts = []
     if action_card is not None:
-        texts.append(_turn1_v34_flatten_strings(action_card))
+        texts.append(_turn1_action_goal_compat_flatten_strings(action_card))
     else:
         # Ability/effect label: find cards whose text contains that label.
         for card in deck or []:
-            blob = _turn1_v34_flatten_strings(card)
-            if norm and norm in _turn1_v34_norm(blob):
+            blob = _turn1_action_goal_compat_flatten_strings(card)
+            if norm and norm in _turn1_action_goal_compat_norm(blob):
                 texts.append(blob)
 
     if not texts:
@@ -4329,20 +3876,20 @@ def _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs):
 
     action_classes = set()
     for txt in texts:
-        action_classes.update(_turn1_v34_access_classes_from_text(txt))
+        action_classes.update(_turn1_action_goal_compat_access_classes_from_text(txt))
 
-    goal_classes = _turn1_v34_goal_classes_for_reqs(reqs, deck)
+    goal_classes = _turn1_action_goal_compat_goal_classes_for_reqs(reqs, deck)
 
-    if _turn1_v34_classes_compatible(action_classes, goal_classes):
+    if _turn1_action_goal_compat_classes_compatible(action_classes, goal_classes):
         return True, "compatible_with_goal"
 
     return False, f"line_action_incompatible:{label}:action={sorted(action_classes)}:goal={sorted(goal_classes)}"
 
 
-_ORIG_SIMULATE_ONE_GOAL_TRIAL_V34 = simulate_one_goal_trial
+_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_ACTION_GOAL_COMPAT = simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
-    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_V34(*args, **kwargs)
+    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_ACTION_GOAL_COMPAT(*args, **kwargs)
 
     try:
         if not isinstance(result, dict) or not result.get("success"):
@@ -4359,15 +3906,15 @@ def simulate_one_goal_trial(*args, **kwargs):
             return result
 
         blocked = []
-        for label in _turn1_v34_action_labels_from_line(line):
-            ok, reason = _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs)
+        for label in _turn1_action_goal_compat_action_labels_from_line(line):
+            ok, reason = _turn1_action_goal_compat_label_compatible_with_any_goal(label, deck, reqs)
             if not ok:
                 blocked.append({"action": label, "reason": reason})
 
         if blocked:
             result["success"] = False
-            result["success_stage"] = "blocked_incompatible_search_target_v34"
-            result["blocked_incompatible_search_targets_v34"] = blocked
+            result["success_stage"] = "blocked_incompatible_search_target"
+            result["blocked_incompatible_search_targets"] = blocked
             result["missing_requirements"] = [
                 "Blocked incompatible search target: " + ", ".join(b["action"] for b in blocked)
             ]
@@ -4376,7 +3923,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 
     except Exception as exc:
         try:
-            result["v34_guard_error"] = str(exc)
+            result["action_goal_compat_guard_error"] = str(exc)
         except Exception:
             pass
         return result
@@ -4385,11 +3932,11 @@ def simulate_one_goal_trial(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_VALIDATED_EFFECT_LABELS_V35
+# TURN1_VALIDATED_EFFECT_LABELS
 # ---------------------------------------------------------------------
 # Root fix for ability/effect labels in Turn-1 access lines.
 #
-# Earlier safety patch v33 blocked every action label that was not a physical
+# Earlier unvalidated-effect guard blocked every action label that was not a physical
 # card name in the deck. That correctly stopped fake lines like:
 #   Ultra Ball -> Shivery Chill
 # for Pokemon goals, but it was too conservative for legitimate ability effects.
@@ -4398,7 +3945,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 #   Goal: 4x Basic Water Energy
 #   Chien-Pao ex / Shivery Chill searches up to 2 Basic Water Energy.
 #
-# This patch changes the v33 blocker from:
+# This patch changes the unvalidated-effect guard from:
 #   "block all non-card-name action labels"
 # to:
 #   "block non-card-name labels unless their owning effect text proves that
@@ -4412,7 +3959,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 #   - Opponent-only disruption is blocked.
 
 
-def _turn1_v35_norm(value):
+def _turn1_effect_goal_compat_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -4425,7 +3972,7 @@ def _turn1_v35_norm(value):
     return s.strip()
 
 
-def _turn1_v35_flatten_strings(obj, max_items=7000):
+def _turn1_effect_goal_compat_flatten_strings(obj, max_items=7000):
     out = []
     seen = set()
 
@@ -4459,7 +4006,7 @@ def _turn1_v35_flatten_strings(obj, max_items=7000):
     return " ".join(out)
 
 
-def _turn1_v35_card_name(card):
+def _turn1_effect_goal_compat_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -4478,7 +4025,7 @@ def _turn1_v35_card_name(card):
     return ""
 
 
-def _turn1_v35_card_identity_blob(card):
+def _turn1_effect_goal_compat_card_identity_blob(card):
     if not isinstance(card, dict):
         return str(card or "")
 
@@ -4498,16 +4045,16 @@ def _turn1_v35_card_identity_blob(card):
             elif val is not None:
                 parts.append(str(val))
 
-    name = _turn1_v35_card_name(card)
+    name = _turn1_effect_goal_compat_card_name(card)
     if name:
         parts.append(name)
 
     return " ".join(parts)
 
 
-def _turn1_v35_classes_for_card_or_text(value):
-    blob = _turn1_v35_norm(
-        _turn1_v35_card_identity_blob(value) if isinstance(value, dict) else str(value or "")
+def _turn1_effect_goal_compat_classes_for_card_or_text(value):
+    blob = _turn1_effect_goal_compat_norm(
+        _turn1_effect_goal_compat_card_identity_blob(value) if isinstance(value, dict) else str(value or "")
     )
 
     classes = set()
@@ -4564,7 +4111,7 @@ def _turn1_v35_classes_for_card_or_text(value):
     return classes
 
 
-def _turn1_v35_find_reqs_from_call(args, kwargs):
+def _turn1_effect_goal_compat_find_reqs_from_call(args, kwargs):
     # Preferred explicit names first.
     for key in ["reqs", "requirements", "goal_reqs"]:
         val = kwargs.get(key)
@@ -4583,7 +4130,7 @@ def _turn1_v35_find_reqs_from_call(args, kwargs):
     return []
 
 
-def _turn1_v35_goal_classes(reqs, deck):
+def _turn1_effect_goal_compat_goal_classes(reqs, deck):
     classes = set()
 
     for req in reqs or []:
@@ -4597,51 +4144,44 @@ def _turn1_v35_goal_classes(reqs, deck):
             for opt in opts:
                 try:
                     if card_matches_option(card, opt):
-                        classes.update(_turn1_v35_classes_for_card_or_text(card))
+                        classes.update(_turn1_effect_goal_compat_classes_for_card_or_text(card))
                         matched_any = True
                 except Exception:
                     pass
 
         # Fallback when the matching card cannot be found in the loaded deck.
         if label:
-            classes.update(_turn1_v35_classes_for_card_or_text(label))
+            classes.update(_turn1_effect_goal_compat_classes_for_card_or_text(label))
         for opt in opts:
-            classes.update(_turn1_v35_classes_for_card_or_text(str(opt)))
+            classes.update(_turn1_effect_goal_compat_classes_for_card_or_text(str(opt)))
 
     return classes
 
 
-def _turn1_v35_deck_card_names(deck):
+def _turn1_effect_goal_compat_deck_card_names(deck):
     names = set()
     for card in deck or []:
-        name = _turn1_v35_card_name(card)
+        name = _turn1_effect_goal_compat_card_name(card)
         if name:
-            names.add(_turn1_v35_norm(name))
+            names.add(_turn1_effect_goal_compat_norm(name))
     return names
 
 
-def _turn1_v35_action_labels(line):
-    raw = str(line or "").strip()
-    if not raw or raw == "none":
-        return []
-    return [part.strip() for part in raw.split("->") if part.strip()]
-
-
-def _turn1_v35_effect_texts_for_label(action_label, deck):
-    action_norm = _turn1_v35_norm(action_label)
+def _turn1_effect_goal_compat_effect_texts_for_label(action_label, deck):
+    action_norm = _turn1_effect_goal_compat_norm(action_label)
     if not action_norm:
         return []
 
     # Physical card names are not effect labels.
-    if action_norm in _turn1_v35_deck_card_names(deck):
+    if action_norm in _turn1_effect_goal_compat_deck_card_names(deck):
         return []
 
     texts = []
 
     def walk(obj):
         if isinstance(obj, dict):
-            local_blob = _turn1_v35_flatten_strings(obj)
-            if action_norm in _turn1_v35_norm(local_blob):
+            local_blob = _turn1_effect_goal_compat_flatten_strings(obj)
+            if action_norm in _turn1_effect_goal_compat_norm(local_blob):
                 texts.append(local_blob)
                 return
             for v in obj.values():
@@ -4653,8 +4193,8 @@ def _turn1_v35_effect_texts_for_label(action_label, deck):
     for card in deck or []:
         if not isinstance(card, dict):
             continue
-        card_blob = _turn1_v35_flatten_strings(card)
-        if action_norm not in _turn1_v35_norm(card_blob):
+        card_blob = _turn1_effect_goal_compat_flatten_strings(card)
+        if action_norm not in _turn1_effect_goal_compat_norm(card_blob):
             continue
 
         before = len(texts)
@@ -4666,17 +4206,17 @@ def _turn1_v35_effect_texts_for_label(action_label, deck):
     out = []
     seen = set()
     for t in texts:
-        n = _turn1_v35_norm(t)
+        n = _turn1_effect_goal_compat_norm(t)
         if n and n not in seen:
             seen.add(n)
             out.append(t)
     return out
 
 
-def _turn1_v35_access_classes_from_effect_text(text):
+def _turn1_effect_goal_compat_access_classes_from_effect_text(text):
     import re as _re
 
-    t = _turn1_v35_norm(text)
+    t = _turn1_effect_goal_compat_norm(text)
     classes = set()
 
     if not t:
@@ -4746,7 +4286,7 @@ def _turn1_v35_access_classes_from_effect_text(text):
     return classes
 
 
-def _turn1_v35_classes_compatible(access_classes, goal_classes):
+def _turn1_effect_goal_compat_classes_compatible(access_classes, goal_classes):
     if not access_classes:
         return False
 
@@ -4787,22 +4327,22 @@ def _turn1_v35_classes_compatible(access_classes, goal_classes):
     return False
 
 
-def _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs):
-    texts = _turn1_v35_effect_texts_for_label(action_label, deck)
+def _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs):
+    texts = _turn1_effect_goal_compat_effect_texts_for_label(action_label, deck)
 
     # Not an effect label. Card names are handled elsewhere.
     if not texts:
         return True, "not_effect_label"
 
-    goal_classes = _turn1_v35_goal_classes(reqs, deck)
+    goal_classes = _turn1_effect_goal_compat_goal_classes(reqs, deck)
     if not goal_classes:
         return False, "effect_label_but_goal_unclassified"
 
     access_classes = set()
     for t in texts:
-        access_classes.update(_turn1_v35_access_classes_from_effect_text(t))
+        access_classes.update(_turn1_effect_goal_compat_access_classes_from_effect_text(t))
 
-    if _turn1_v35_classes_compatible(access_classes, goal_classes):
+    if _turn1_effect_goal_compat_classes_compatible(access_classes, goal_classes):
         return True, f"validated_effect_access:{sorted(access_classes)}"
 
     return False, f"incompatible_effect_access:access={sorted(access_classes)}:goal={sorted(goal_classes)}"
@@ -4811,53 +4351,51 @@ def _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs):
 
 
 # -----------------------------------------------------------------------------
-# TURN1_USE_COMPILED_EFFECT_RUNTIME_V39
+# TURN1_USE_COMPILED_EFFECT_RUNTIME
 # -----------------------------------------------------------------------------
 # Older debugging patches added post-hoc effect-label blockers. Those were useful
 # for finding bad rows, but they are too blunt once target_finder has a real
 # compiled-effect runtime. Neutralize them so validated ability labels can be
 # used when their compiled/source effect is legal for the target.
 
-def _turn1_v39_noop_filter_summary(*args, **kwargs):
-    return {"enabled": False, "invalidated_successes": 0, "reason": "v0.39 target_finder compiled-effect runtime is source of truth"}
+def _turn1_noop_filter_summary(*args, **kwargs):
+    return {"enabled": False, "invalidated_successes": 0, "reason": "target_finder compiled-effect runtime is source of truth"}
 
 
-def _turn1_v39_neutralize_old_posthoc_effect_filters():
+def _turn1_neutralize_old_posthoc_effect_filters():
     names_to_noop = [
-        "turn1_v26_apply_opponent_only_filter",
-        "turn1_v29_apply_effect_name_compatibility_filter",
-        "turn1_v30_apply_pre_summary_effect_label_guard",
-        "turn1_v32_apply_prereturn_incompatible_effect_guard",
-        "turn1_v36_apply_search_target_type_filter",
+        "turn1_apply_opponent_only_filter",
+        "turn1_apply_effect_name_compatibility_filter",
+        "turn1_apply_pre_summary_effect_label_compatibility_guard",
     ]
     for name in names_to_noop:
         if name in globals():
-            globals()[name] = _turn1_v39_noop_filter_summary
+            globals()[name] = _turn1_noop_filter_summary
 
-    # v0.33 blocked every non-card action label. That is no longer correct:
+    # unvalidated-effect-guard blocked every non-card action label. That is no longer correct:
     # validated ability labels such as Shivery Chill should be legal when their
     # compiled effect can satisfy the target.
-    if "_turn1_v33_unvalidated_effect_actions" in globals():
-        globals()["_turn1_v33_unvalidated_effect_actions"] = lambda line, deck: []
+    if "_turn1_unvalidated_effect_guard_actions" in globals():
+        globals()["_turn1_unvalidated_effect_guard_actions"] = lambda line, deck: []
 
-    # v0.35 had a validated-effect pass, but it was still not the source of truth.
-    if "_turn1_v35_unvalidated_effect_actions" in globals():
-        globals()["_turn1_v35_unvalidated_effect_actions"] = lambda line, deck, reqs=None: []
+    # effect-goal-compat had a validated-effect pass, but it was still not the source of truth.
+    if "_turn1_effect_goal_compat_unvalidated_effect_actions" in globals():
+        globals()["_turn1_effect_goal_compat_unvalidated_effect_actions"] = lambda line, deck, reqs=None: []
 
 
-_turn1_v39_neutralize_old_posthoc_effect_filters()
+_turn1_neutralize_old_posthoc_effect_filters()
 
 
 
 
 # ---------------------------------------------------------------------
-# TURN1_FILTER_OPPONENT_DEPENDENT_SUCCESS_LINES_V40
+# TURN1_FILTER_OPPONENT_DEPENDENT_SUCCESS_LINES
 # ---------------------------------------------------------------------
 # Safety net for chains that were already built by nested runtime code.
 # If a successful line contains a card whose access effect depends on unmodeled
 # opponent state, convert that trial to a failure before summaries/CSV.
 
-def _turn1_gf_v40_norm(value):
+def _turn1_opponent_dependent_filter_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -4870,7 +4408,7 @@ def _turn1_gf_v40_norm(value):
     return s.strip()
 
 
-def _turn1_gf_v40_flatten_strings(obj, max_items=5000):
+def _turn1_opponent_dependent_filter_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -4903,7 +4441,7 @@ def _turn1_gf_v40_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def _turn1_gf_v40_card_name(card):
+def _turn1_opponent_dependent_filter_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -4922,8 +4460,8 @@ def _turn1_gf_v40_card_name(card):
     return ""
 
 
-def _turn1_gf_v40_is_opponent_state_dependent_access_card(card):
-    blob = _turn1_gf_v40_norm(_turn1_gf_v40_flatten_strings(card))
+def _turn1_is_opponent_state_dependent_access_card(card):
+    blob = _turn1_opponent_dependent_filter_norm(_turn1_opponent_dependent_filter_flatten_strings(card))
 
     if not blob:
         return False
@@ -4958,7 +4496,7 @@ def _turn1_gf_v40_is_opponent_state_dependent_access_card(card):
     return any(a in blob for a in access_words) and any(m in blob for m in opponent_state_markers)
 
 
-def _turn1_gf_v40_action_labels(line):
+def _turn1_opponent_dependent_filter_action_labels(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -4967,23 +4505,23 @@ def _turn1_gf_v40_action_labels(line):
     return [part.strip() for part in raw.split("->") if part.strip()]
 
 
-def _turn1_gf_v40_blocked_names_from_deck(deck):
+def _turn1_opponent_dependent_filter_blocked_names_from_deck(deck):
     out = {}
 
     for card in deck or []:
-        name = _turn1_gf_v40_card_name(card)
+        name = _turn1_opponent_dependent_filter_card_name(card)
 
         if not name:
             continue
 
-        if _turn1_gf_v40_is_opponent_state_dependent_access_card(card):
-            out[_turn1_gf_v40_norm(name)] = name
+        if _turn1_is_opponent_state_dependent_access_card(card):
+            out[_turn1_opponent_dependent_filter_norm(name)] = name
 
     return out
 
 
-def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
-    blocked_names = _turn1_gf_v40_blocked_names_from_deck(deck)
+def _turn1_apply_opponent_dependent_filter(results, deck):
+    blocked_names = _turn1_opponent_dependent_filter_blocked_names_from_deck(deck)
 
     if not blocked_names:
         return {
@@ -5005,8 +4543,8 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
 
         used_blocked = []
 
-        for action in _turn1_gf_v40_action_labels(line):
-            action_norm = _turn1_gf_v40_norm(action)
+        for action in _turn1_opponent_dependent_filter_action_labels(line):
+            action_norm = _turn1_opponent_dependent_filter_norm(action)
 
             if action_norm in blocked_names:
                 used_blocked.append(blocked_names[action_norm])
@@ -5015,8 +4553,8 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
             continue
 
         r["success"] = False
-        r["success_stage"] = "blocked_opponent_dependent_access_v40"
-        r["blocked_opponent_dependent_access_cards_v40"] = used_blocked
+        r["success_stage"] = "blocked_opponent_dependent_access"
+        r["blocked_opponent_dependent_access_cards"] = used_blocked
         r["missing_requirements"] = [
             "Blocked opponent-dependent access card: " + ", ".join(used_blocked)
         ]
@@ -5033,11 +4571,11 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
 
 
 # ---------------------------------------------------------------------
-# TURN1_COLLAPSE_ACTIVE_COMPILED_REPEAT_LINES_V43_3
+# TURN1_COLLAPSE_ACTIVE_COMPILED_REPEAT_LINES
 # ---------------------------------------------------------------------
 # Lightweight fix.
 #
-# v41 correctly found Active compiled search routes, e.g.:
+# The active compiled-search runtime correctly found Active compiled search routes, e.g.:
 #   active = Chien-Pao ex
 #   ability = Shivery Chill
 #
@@ -5052,9 +4590,9 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
 #   collapsed to one line label when repeat_count <= compiled/source amount.
 # - if repeat_count exceeds the allowed amount, the trial is marked failed.
 #
-# It avoids the expensive v43 runtime wrapper, keeping v42 performance.
+# It avoids the expensive runtime wrapper, keeping hotpath-cache performance.
 
-def _turn1_v433_norm(value):
+def _turn1_result_normalizer_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -5066,7 +4604,7 @@ def _turn1_v433_norm(value):
     return s.strip()
 
 
-def _turn1_v433_flatten_strings(obj, max_items=8000):
+def _turn1_result_normalizer_flatten_strings(obj, max_items=8000):
     out = []
     seen = set()
 
@@ -5099,7 +4637,7 @@ def _turn1_v433_flatten_strings(obj, max_items=8000):
     return " ".join(out)
 
 
-def _turn1_v433_card_name(card):
+def _turn1_result_normalizer_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -5118,16 +4656,16 @@ def _turn1_v433_card_name(card):
     return str(card or "")
 
 
-def _turn1_v433_find_card_by_name(deck, source_name):
-    source_n = _turn1_v433_norm(source_name)
+def _turn1_result_normalizer_find_card_by_name(deck, source_name):
+    source_n = _turn1_result_normalizer_norm(source_name)
 
     for card in deck or []:
-        if _turn1_v433_norm(_turn1_v433_card_name(card)) == source_n:
+        if _turn1_result_normalizer_norm(_turn1_result_normalizer_card_name(card)) == source_n:
             return card
 
     # Fuzzy fallback: "Chien-Pao ex" vs "Chien-Pao ex PAL 61"
     for card in deck or []:
-        name_n = _turn1_v433_norm(_turn1_v433_card_name(card))
+        name_n = _turn1_result_normalizer_norm(_turn1_result_normalizer_card_name(card))
 
         if source_n and (source_n in name_n or name_n in source_n):
             return card
@@ -5135,14 +4673,14 @@ def _turn1_v433_find_card_by_name(deck, source_name):
     return None
 
 
-def _turn1_v433_search_amount_from_card(card, ability_name):
+def _turn1_result_normalizer_search_amount_from_card(card, ability_name):
     import re as _re
 
     if not card:
         return 1
 
-    blob = _turn1_v433_norm(_turn1_v433_flatten_strings(card))
-    ability_n = _turn1_v433_norm(ability_name)
+    blob = _turn1_result_normalizer_norm(_turn1_result_normalizer_flatten_strings(card))
+    ability_n = _turn1_result_normalizer_norm(ability_name)
 
     windows = [blob]
 
@@ -5162,7 +4700,7 @@ def _turn1_v433_search_amount_from_card(card, ability_name):
     return 1
 
 
-def _turn1_v433_split_line(line):
+def _turn1_result_normalizer_split_line(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -5171,7 +4709,7 @@ def _turn1_v433_split_line(line):
     return [x.strip() for x in raw.split("->") if x.strip()]
 
 
-def _turn1_v433_join_line(parts):
+def _turn1_result_normalizer_join_line(parts):
     parts = [p for p in parts if str(p).strip()]
 
     if not parts:
@@ -5180,13 +4718,13 @@ def _turn1_v433_join_line(parts):
     return " -> ".join(parts)
 
 
-def _turn1_v433_remove_extra_occurrences(parts, label, keep=1):
+def _turn1_result_normalizer_remove_extra_occurrences(parts, label, keep=1):
     out = []
     seen = 0
-    label_n = _turn1_v433_norm(label)
+    label_n = _turn1_result_normalizer_norm(label)
 
     for part in parts:
-        if _turn1_v433_norm(part) == label_n:
+        if _turn1_result_normalizer_norm(part) == label_n:
             seen += 1
 
             if seen > keep:
@@ -5197,7 +4735,7 @@ def _turn1_v433_remove_extra_occurrences(parts, label, keep=1):
     return out
 
 
-def _turn1_v433_normalize_trial_result(result, deck):
+def _turn1_normalize_trial_result(result, deck):
     if not isinstance(result, dict):
         return result
 
@@ -5211,7 +4749,7 @@ def _turn1_v433_normalize_trial_result(result, deck):
         if not isinstance(ev, dict):
             continue
 
-        if ev.get("event") != "active_compiled_search_selected_v41":
+        if ev.get("event") != "active_compiled_search_selected":
             continue
 
         source = ev.get("source") or result.get("active") or ""
@@ -5228,35 +4766,35 @@ def _turn1_v433_normalize_trial_result(result, deck):
     grouped = {}
 
     for source, ability in active_events:
-        key = (_turn1_v433_norm(source), _turn1_v433_norm(ability))
+        key = (_turn1_result_normalizer_norm(source), _turn1_result_normalizer_norm(ability))
         grouped.setdefault(key, {"source": source, "ability": ability, "count": 0})
         grouped[key]["count"] += 1
 
     changed = False
     blocked = []
 
-    line_parts = _turn1_v433_split_line(result.get("line"))
-    played_parts = _turn1_v433_split_line(result.get("played"))
+    line_parts = _turn1_result_normalizer_split_line(result.get("line"))
+    played_parts = _turn1_result_normalizer_split_line(result.get("played"))
 
     for item in grouped.values():
         source = item["source"]
         ability = item["ability"]
         count = item["count"]
 
-        source_card = _turn1_v433_find_card_by_name(deck, source)
-        amount = _turn1_v433_search_amount_from_card(source_card, ability)
+        source_card = _turn1_result_normalizer_find_card_by_name(deck, source)
+        amount = _turn1_result_normalizer_search_amount_from_card(source_card, ability)
 
         if count <= 1:
             continue
 
         if count <= amount:
-            line_parts = _turn1_v433_remove_extra_occurrences(line_parts, ability, keep=1)
-            played_parts = _turn1_v433_remove_extra_occurrences(played_parts, ability, keep=1)
+            line_parts = _turn1_result_normalizer_remove_extra_occurrences(line_parts, ability, keep=1)
+            played_parts = _turn1_result_normalizer_remove_extra_occurrences(played_parts, ability, keep=1)
             changed = True
 
-            result.setdefault("normalization_events_v43_3", []).append(
+            result.setdefault("normalization_events", []).append(
                 {
-                    "event": "collapsed_repeated_active_compiled_search_v43_3",
+                    "event": "collapsed_repeated_active_compiled_search",
                     "source": source,
                     "ability": ability,
                     "repeat_count": count,
@@ -5276,21 +4814,21 @@ def _turn1_v433_normalize_trial_result(result, deck):
 
     if blocked:
         result["success"] = False
-        result["success_stage"] = "blocked_repeat_active_compiled_search_v43_3"
-        result["blocked_repeat_active_compiled_search_v43_3"] = blocked
+        result["success_stage"] = "blocked_repeat_active_compiled_search"
+        result["blocked_repeat_active_compiled_search"] = blocked
         result["missing_requirements"] = [
             "Blocked repeated Active compiled ability use beyond allowed search amount."
         ]
         return result
 
     if changed:
-        result["line"] = _turn1_v433_join_line(line_parts)
-        result["played"] = _turn1_v433_join_line(played_parts)
+        result["line"] = _turn1_result_normalizer_join_line(line_parts)
+        result["played"] = _turn1_result_normalizer_join_line(played_parts)
 
     return result
 
 
-def _turn1_v433_normalize_results(results, deck):
+def _turn1_normalize_results(results, deck):
     changed = 0
     blocked = 0
 
@@ -5298,7 +4836,7 @@ def _turn1_v433_normalize_results(results, deck):
         before_success = bool(r.get("success")) if isinstance(r, dict) else False
         before_line = r.get("line") if isinstance(r, dict) else None
 
-        _turn1_v433_normalize_trial_result(r, deck)
+        _turn1_normalize_trial_result(r, deck)
 
         if isinstance(r, dict):
             if before_success and not r.get("success"):
@@ -5315,11 +4853,11 @@ def _turn1_v433_normalize_results(results, deck):
 
 
 # ---------------------------------------------------------------------
-# TURN1_DIRECT_ACTION_BUDGET_V56
+# TURN1_DIRECT_ACTION_BUDGET
 # ---------------------------------------------------------------------
 # Direct planner/execution fix, not a wrapper.
 #
-# The 100-trial Chien-Pao profile after v55 showed the real bug:
+# The 100-trial Chien-Pao profile after profiling showed the real bug:
 #   128 simulate_one_goal_trial calls
 #   689,321 execute_action calls
 #
@@ -5328,77 +4866,77 @@ def _turn1_v433_normalize_results(results, deck):
 # and scoring functions a shared per-state budget. Once a SimState has executed
 # max_actions actions, further execution/scoring on that same state stops.
 
-_TURN1_V56_CURRENT_MAX_ACTIONS = None
-_TURN1_V56_ACTION_COUNTS_BY_STATE = {}
+_TURN1_ACTION_BUDGET_MAX_ACTIONS = None
+_TURN1_ACTION_BUDGET_COUNTS_BY_STATE = {}
 
 
-def _turn1_v56_set_action_budget_from_args(args):
-    global _TURN1_V56_CURRENT_MAX_ACTIONS, _TURN1_V56_ACTION_COUNTS_BY_STATE
+def _turn1_set_action_budget_from_args(args):
+    global _TURN1_ACTION_BUDGET_MAX_ACTIONS, _TURN1_ACTION_BUDGET_COUNTS_BY_STATE
 
     try:
         value = int(getattr(args, "max_actions", 0) or 0)
     except Exception:
         value = 0
 
-    _TURN1_V56_CURRENT_MAX_ACTIONS = value if value > 0 else None
-    _TURN1_V56_ACTION_COUNTS_BY_STATE = {}
+    _TURN1_ACTION_BUDGET_MAX_ACTIONS = value if value > 0 else None
+    _TURN1_ACTION_BUDGET_COUNTS_BY_STATE = {}
 
 
-def _turn1_v56_state_key(st):
+def _turn1_action_budget_state_key(st):
     return id(st)
 
 
-def _turn1_v56_mark_budget_exhausted(st):
+def _turn1_mark_action_budget_exhausted(st):
     try:
-        setattr(st, "_turn1_v56_action_budget_exhausted", True)
+        setattr(st, "_turn1_action_budget_exhausted_flag", True)
     except Exception:
         pass
 
 
-def _turn1_v56_budget_exhausted(st):
+def _turn1_action_budget_exhausted(st):
     try:
-        if bool(getattr(st, "_turn1_v56_action_budget_exhausted", False)):
+        if bool(getattr(st, "_turn1_action_budget_exhausted_flag", False)):
             return True
     except Exception:
         pass
 
-    limit = _TURN1_V56_CURRENT_MAX_ACTIONS
+    limit = _TURN1_ACTION_BUDGET_MAX_ACTIONS
     if not limit or limit <= 0:
         return False
 
     try:
-        count = int(getattr(st, "_turn1_v56_action_count", 0) or 0)
+        count = int(getattr(st, "_turn1_action_budget_count", 0) or 0)
     except Exception:
         try:
-            count = int(_TURN1_V56_ACTION_COUNTS_BY_STATE.get(_turn1_v56_state_key(st), 0) or 0)
+            count = int(_TURN1_ACTION_BUDGET_COUNTS_BY_STATE.get(_turn1_action_budget_state_key(st), 0) or 0)
         except Exception:
             count = 0
 
     if count >= limit:
-        _turn1_v56_mark_budget_exhausted(st)
+        _turn1_mark_action_budget_exhausted(st)
         return True
 
     return False
-def _turn1_v56_action_allowed(st):
-    limit = _TURN1_V56_CURRENT_MAX_ACTIONS
+def _turn1_action_budget_allows_next_action(st):
+    limit = _TURN1_ACTION_BUDGET_MAX_ACTIONS
     if not limit or limit <= 0:
         return True
 
-    if _turn1_v56_budget_exhausted(st):
+    if _turn1_action_budget_exhausted(st):
         return False
 
     try:
-        count = int(getattr(st, "_turn1_v56_action_count", 0) or 0)
-        setattr(st, "_turn1_v56_action_count", count + 1)
+        count = int(getattr(st, "_turn1_action_budget_count", 0) or 0)
+        setattr(st, "_turn1_action_budget_count", count + 1)
     except Exception:
-        key = _turn1_v56_state_key(st)
-        count = int(_TURN1_V56_ACTION_COUNTS_BY_STATE.get(key, 0) or 0)
-        _TURN1_V56_ACTION_COUNTS_BY_STATE[key] = count + 1
+        key = _turn1_action_budget_state_key(st)
+        count = int(_TURN1_ACTION_BUDGET_COUNTS_BY_STATE.get(key, 0) or 0)
+        _TURN1_ACTION_BUDGET_COUNTS_BY_STATE[key] = count + 1
 
     return True
 def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs: Sequence[GoalRequirement], mode: str, going: str) -> Dict[str, Any]:
-    # TURN1_V56_INIT_SCENARIO_BUDGET
-    _turn1_v56_set_action_budget_from_args(args)
+    # TURN1_INIT_SCENARIO_ACTION_BUDGET
+    _turn1_set_action_budget_from_args(args)
     rng = random.Random(args.seed + (0 if going == "first" else 1000003))
     results = [
         simulate_one_goal_trial(
@@ -5417,36 +4955,36 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
         )
         for _ in range(args.trials)
     ]
-    # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD_V26
-    opponent_only_filter_summary = turn1_v26_apply_opponent_only_filter(results, deck)
+    # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD
+    opponent_only_filter_summary = turn1_apply_opponent_only_filter(results, deck)
 
-    # TURN1_APPLY_EXCLUDE_PLAYED_PATHS_V15
+    # TURN1_APPLY_EXCLUDE_PLAYED_PATHS
     exclusion_summary = turn1_apply_excluded_played_paths(
         results,
         getattr(args, "exclude_played", ""),
     )
 
-    # TURN1_APPLY_EFFECT_NAME_COMPATIBILITY_GUARD_V29
-    effect_name_compatibility_summary = turn1_v29_apply_effect_name_compatibility_filter(
+    # TURN1_APPLY_EFFECT_NAME_COMPATIBILITY_GUARD
+    effect_name_compatibility_summary = turn1_apply_effect_name_compatibility_filter(
         results,
         deck,
         reqs,
     )
 
-    # TURN1_APPLY_SEARCH_TARGET_TYPE_SYSTEM_V36
-    results = turn1_v36_filter_results(results, deck, reqs)
+    # TURN1_APPLY_SEARCH_TARGET_TYPE_SYSTEM
+    results = turn1_result_goal_filter_results(results, deck, reqs)
 
-    # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER_V40
-    opponent_dependent_filter_summary = _turn1_gf_v40_apply_opponent_dependent_filter(results, deck)
+    # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER
+    opponent_dependent_filter_summary = _turn1_apply_opponent_dependent_filter(results, deck)
 
-    # TURN1_APPLY_ACTIVE_REPEAT_NORMALIZATION_V43_3
-    active_repeat_normalization_v43_3 = _turn1_v433_normalize_results(results, deck)
+    # TURN1_APPLY_ACTIVE_REPEAT_NORMALIZATION
+    active_repeat_normalization_summary = _turn1_normalize_results(results, deck)
 
     examples = [r for r in results if r["success"] and r["line"] != "none"][: args.example_lines]
     failures = [r for r in results if not r["success"]][: args.example_lines]
     return {
         "going": going,
-        "summary": (turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs), summarize_goal_trials(results))[1],
+        "summary": (turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs), summarize_goal_trials(results))[1],
         "effect_name_compatibility_summary": effect_name_compatibility_summary,
         "played_exclusion_summary": exclusion_summary,
         "opponent_only_filter_summary": opponent_only_filter_summary,
@@ -5560,12 +5098,12 @@ def print_compact(result: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------
-# TURN1_PARSE_GOAL_FILE_MIN_COUNT_WRAPPER_V19
+# TURN1_PARSE_GOAL_FILE_MIN_COUNT_WRAPPER
 # ---------------------------------------------------------------------
-_ORIG_PARSE_GOAL_FILE_V19 = parse_goal_file
+_ORIG_PARSE_GOAL_FILE_BEFORE_MIN_COUNT_WRAPPER = parse_goal_file
 
 def parse_goal_file(path: str, default_zone: str = "accessed") -> Tuple[str, str, List[GoalRequirement]]:
-    name, mode, reqs = _ORIG_PARSE_GOAL_FILE_V19(path, default_zone=default_zone)
+    name, mode, reqs = _ORIG_PARSE_GOAL_FILE_BEFORE_MIN_COUNT_WRAPPER(path, default_zone=default_zone)
 
     try:
         data = json.load(open(path, encoding="utf-8-sig"))
@@ -5589,7 +5127,7 @@ def parse_goal_file(path: str, default_zone: str = "accessed") -> Tuple[str, str
 
 
 # ---------------------------------------------------------------------
-# TURN1_MULTI_GOAL_SEARCH_EXECUTOR_V22
+# TURN1_MULTI_GOAL_SEARCH_EXECUTOR
 # ---------------------------------------------------------------------
 # Fixes multi-card / multi-copy goals that were still using the old
 # single-target search executor.
@@ -5606,17 +5144,17 @@ def parse_goal_file(path: str, default_zone: str = "accessed") -> Tuple[str, str
 # - stop naturally because the normal loop re-checks goal_satisfied after
 #   each action
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V22 = score_candidate_for_missing_targets
-_ORIG_EXECUTE_ACTION_V22 = execute_action
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_SEARCH = score_candidate_for_missing_targets
+_ORIG_EXECUTE_ACTION_BEFORE_GOAL_SEARCH = execute_action
 
 
-def _turn1_v22_card_instance_key(c: Dict[str, Any]) -> Any:
+def _turn1_goal_card_instance_key(c: Dict[str, Any]) -> Any:
     if not isinstance(c, dict):
         return id(c)
     return c.get("_instance_id") or id(c)
 
 
-def _turn1_v22_req_current_count(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
+def _turn1_goal_requirement_current_count(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
     pool = zone_cards(st, tracker, req.zone)
     seen = set()
     n = 0
@@ -5625,7 +5163,7 @@ def _turn1_v22_req_current_count(req: GoalRequirement, st: tf.SimState, tracker:
             continue
         if not any(card_matches_option(c, opt) for opt in req.options):
             continue
-        key = _turn1_v22_card_instance_key(c)
+        key = _turn1_goal_card_instance_key(c)
         if key in seen:
             continue
         seen.add(key)
@@ -5633,14 +5171,14 @@ def _turn1_v22_req_current_count(req: GoalRequirement, st: tf.SimState, tracker:
     return n
 
 
-def _turn1_v22_req_deficit(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
-    return max(0, int(getattr(req, "min_count", 1) or 1) - _turn1_v22_req_current_count(req, st, tracker))
+def _turn1_goal_requirement_deficit(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
+    return max(0, int(getattr(req, "min_count", 1) or 1) - _turn1_goal_requirement_current_count(req, st, tracker))
 
 
-def _turn1_v22_missing_with_deficits(reqs: Sequence[GoalRequirement], mode: str, st: tf.SimState, tracker: GoalTracker) -> List[Tuple[GoalRequirement, int]]:
+def _turn1_missing_goal_requirements_with_deficits(reqs: Sequence[GoalRequirement], mode: str, st: tf.SimState, tracker: GoalTracker) -> List[Tuple[GoalRequirement, int]]:
     rows: List[Tuple[GoalRequirement, int]] = []
     for req in reqs:
-        d = _turn1_v22_req_deficit(req, st, tracker)
+        d = _turn1_goal_requirement_deficit(req, st, tracker)
         if d > 0:
             rows.append((req, d))
 
@@ -5651,7 +5189,7 @@ def _turn1_v22_missing_with_deficits(reqs: Sequence[GoalRequirement], mode: str,
     return rows
 
 
-def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
+def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
     # Ultra Ball's compiled filters vary. The target finder already special-cases
     # it as any Pokémon; keep that behavior here.
     if tf.norm(action_name) == "ultra ball":
@@ -5659,7 +5197,7 @@ def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, An
     return tf.filter_allows_card(filt, card)
 
 
-def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _turn1_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for eff in tf.iter_effects(card):
         if tf.effect_is_trivial_rule(eff):
@@ -5673,7 +5211,7 @@ def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any
 
 
 # ---------------------------------------------------------------------
-# TURN1_V67_BENCH_HP_SEARCH_FILTERS
+# TURN1_SOURCE_TEXT_TARGET_FILTERS
 # ---------------------------------------------------------------------
 # Broad legality guard for source-text search restrictions.
 #
@@ -5689,14 +5227,14 @@ def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any
 #   1. cards put onto the Bench must be Pokemon;
 #   2. HP-or-less searches require Pokemon with HP at or below the limit.
 
-def _turn1_v67_norm_text(value: Any) -> str:
+def _turn1_source_text_filter_norm(value: Any) -> str:
     try:
         return tf.norm(value)
     except Exception:
         return str(value or "").lower().replace("pokémon", "pokemon").strip()
 
 
-def _turn1_v67_flatten_strings(value: Any, depth: int = 0) -> str:
+def _turn1_source_text_filter_flatten_strings(value: Any, depth: int = 0) -> str:
     if value is None or depth > 4:
         return ""
     if isinstance(value, str):
@@ -5712,17 +5250,17 @@ def _turn1_v67_flatten_strings(value: Any, depth: int = 0) -> str:
         ]
         for key in preferred:
             if key in value:
-                parts.append(_turn1_v67_flatten_strings(value.get(key), depth + 1))
+                parts.append(_turn1_source_text_filter_flatten_strings(value.get(key), depth + 1))
         for key, val in value.items():
             if key not in preferred:
-                parts.append(_turn1_v67_flatten_strings(val, depth + 1))
+                parts.append(_turn1_source_text_filter_flatten_strings(val, depth + 1))
         return " ".join(p for p in parts if p)
     if isinstance(value, (list, tuple, set)):
-        return " ".join(_turn1_v67_flatten_strings(v, depth + 1) for v in value)
+        return " ".join(_turn1_source_text_filter_flatten_strings(v, depth + 1) for v in value)
     return str(value)
 
 
-def _turn1_v67_step_text(step: Any) -> str:
+def _turn1_source_text_filter_step_text(step: Any) -> str:
     parts = []
     if isinstance(step, dict):
         for key in ("text", "raw_text", "source_text", "effect_text", "description"):
@@ -5737,14 +5275,14 @@ def _turn1_v67_step_text(step: Any) -> str:
                     parts.append(str(val))
         except Exception:
             pass
-    parts.append(_turn1_v67_flatten_strings(step))
+    parts.append(_turn1_source_text_filter_flatten_strings(step))
     return " ".join(p for p in parts if p)
 
 
-def _turn1_v67_action_card_text(action_card: Any) -> str:
+def _turn1_source_text_filter_action_card_text(action_card: Any) -> str:
     parts = []
     if isinstance(action_card, dict):
-        parts.append(_turn1_v67_flatten_strings(action_card))
+        parts.append(_turn1_source_text_filter_flatten_strings(action_card))
         try:
             for eff in tf.iter_effects(action_card):
                 fn = getattr(tf, "ability_text_blob", None)
@@ -5753,32 +5291,32 @@ def _turn1_v67_action_card_text(action_card: Any) -> str:
                         parts.append(str(fn(eff)))
                     except Exception:
                         pass
-                parts.append(_turn1_v67_flatten_strings(eff))
+                parts.append(_turn1_source_text_filter_flatten_strings(eff))
         except Exception:
             pass
     return " ".join(p for p in parts if p)
 
 
-def _turn1_v67_filter_blob(filt: Any) -> str:
+def _turn1_source_text_filter_blob(filt: Any) -> str:
     try:
         return str(tf.filter_text_blob(filt))
     except Exception:
-        return _turn1_v67_flatten_strings(filt)
+        return _turn1_source_text_filter_flatten_strings(filt)
 
 
-def _turn1_v67_search_source_blob(filt: Any, action_name: str, action_card: Any = None, source_step: Any = None) -> str:
+def _turn1_search_source_text_blob(filt: Any, action_name: str, action_card: Any = None, source_step: Any = None) -> str:
     # Prefer the actual search step/filter, but include the full action text as
     # fallback for under-compiled filters.
     parts = [
         str(action_name or ""),
-        _turn1_v67_step_text(source_step),
-        _turn1_v67_filter_blob(filt),
-        _turn1_v67_action_card_text(action_card),
+        _turn1_source_text_filter_step_text(source_step),
+        _turn1_source_text_filter_blob(filt),
+        _turn1_source_text_filter_action_card_text(action_card),
     ]
-    return _turn1_v67_norm_text(" ".join(p for p in parts if p))
+    return _turn1_source_text_filter_norm(" ".join(p for p in parts if p))
 
 
-def _turn1_v67_card_hp(card: Dict[str, Any]):
+def _turn1_card_hp_for_source_filter(card: Dict[str, Any]):
     vals = []
     if isinstance(card, dict):
         vals.extend([card.get("hp"), card.get("HP"), card.get("raw_hp")])
@@ -5798,32 +5336,32 @@ def _turn1_v67_card_hp(card: Dict[str, Any]):
     return None
 
 
-def _turn1_v67_is_pokemon(card: Dict[str, Any]) -> bool:
+def _turn1_source_filter_is_pokemon(card: Dict[str, Any]) -> bool:
     try:
-        return _turn1_v67_norm_text(tf.card_supertype(card)) in {"pokemon", "pokémon"}
+        return _turn1_source_text_filter_norm(tf.card_supertype(card)) in {"pokemon", "pokémon"}
     except Exception:
         return False
 
 
-def _turn1_v67_is_basic_pokemon(card: Dict[str, Any]) -> bool:
+def _turn1_source_filter_is_basic_pokemon(card: Dict[str, Any]) -> bool:
     try:
         return bool(tf.is_basic_pokemon(card))
     except Exception:
-        if not _turn1_v67_is_pokemon(card):
+        if not _turn1_source_filter_is_pokemon(card):
             return False
         try:
-            subs = {_turn1_v67_norm_text(x) for x in tf.card_subtypes(card)}
+            subs = {_turn1_source_text_filter_norm(x) for x in tf.card_subtypes(card)}
         except Exception:
             subs = set()
         try:
-            name_n = _turn1_v67_norm_text(tf.card_name(card))
+            name_n = _turn1_source_text_filter_norm(tf.card_name(card))
         except Exception:
             name_n = ""
         return "basic" in subs or name_n.startswith("basic ")
 
 
-def _turn1_v67_target_phrase_from_search_text(blob: str) -> str:
-    b = _turn1_v67_norm_text(blob)
+def _turn1_target_phrase_from_search_text(blob: str) -> str:
+    b = _turn1_source_text_filter_norm(blob)
     patterns = [
         r"search (?:your|the) deck(?: and (?:your )?discard pile)? for (.*?)(?:, reveal| reveal| and reveal|,? and put|,? put| then shuffle| shuffle|\.|$)",
         r"look at the top \d+ cards? of your deck.*?reveal (.*?)(?: card| cards|,| and put| put|$)",
@@ -5841,37 +5379,37 @@ def _turn1_v67_target_phrase_from_search_text(blob: str) -> str:
     return b
 
 
-def _turn1_v67_source_text_allows_card(
+def _turn1_source_text_allows_card(
     filt: Dict[str, Any],
     card: Dict[str, Any],
     action_name: str,
     action_card: Any = None,
     source_step: Any = None,
 ) -> bool:
-    blob = _turn1_v67_search_source_blob(filt, action_name, action_card, source_step)
+    blob = _turn1_search_source_text_blob(filt, action_name, action_card, source_step)
     if not blob:
         return True
 
-    target = _turn1_v67_target_phrase_from_search_text(blob)
-    target_n = _turn1_v67_norm_text(target)
+    target = _turn1_target_phrase_from_search_text(blob)
+    target_n = _turn1_source_text_filter_norm(target)
 
     # If the searched card is put onto the Bench, the target cannot be Energy
     # or a Trainer. This catches Buddy-Buddy Poffin and similar Bench-search
     # effects even when the structured compiler filter is vague.
     if "onto your bench" in blob or "to your bench" in blob:
-        if not _turn1_v67_is_pokemon(card):
+        if not _turn1_source_filter_is_pokemon(card):
             return False
 
     hp_match = re.search(r"(\d+)\s*hp\s*or\s*less", target_n) or re.search(r"(\d+)\s*hp\s*or\s*less", blob)
     if hp_match:
-        if not _turn1_v67_is_pokemon(card):
+        if not _turn1_source_filter_is_pokemon(card):
             return False
-        hp = _turn1_v67_card_hp(card)
+        hp = _turn1_card_hp_for_source_filter(card)
         if hp is None or hp > int(hp_match.group(1)):
             return False
 
     if "basic pokemon" in target_n or "basic pokémon" in target_n:
-        if not _turn1_v67_is_basic_pokemon(card):
+        if not _turn1_source_filter_is_basic_pokemon(card):
             return False
 
     return True
@@ -5879,182 +5417,28 @@ def _turn1_v67_source_text_allows_card(
 
 
 # ---------------------------------------------------------------------
-# TURN1_V68_DIRECT_GOAL_OPTION_GATE
-# ---------------------------------------------------------------------
-# Broad executor guard:
-# The multi-goal selector must not choose a goal card merely because a sparse
-# compiled filter says "Basic" or some other vague class.  It must also be true
-# that the source card can legally reach that specific goal option.
-#
-# This closes the Buddy-Buddy Poffin -> Energy bug without special-casing
-# Buddy-Buddy: any search card whose printed/compiled effect cannot reach the
-# current goal option is rejected before the card is selected from deck.
-def _turn1_v68_deck_with_candidate(deck, candidate):
-    try:
-        out = list(deck or [])
-    except Exception:
-        out = []
-    if isinstance(candidate, dict) and not any(candidate is c for c in out):
-        out.append(candidate)
-    return out
 
-
-def _turn1_v68_action_can_reach_goal_option(
-    action_card,
-    opt,
-    candidate_card,
-    deck,
-    filt,
-    action_name,
-    source_step=None,
-) -> bool:
-    if not isinstance(candidate_card, dict):
-        return False
-
-    try:
-        if not card_matches_option(candidate_card, opt):
-            return False
-    except Exception:
-        return False
-
-    # Without an action card, keep old behavior for any legacy/internal caller.
-    if not isinstance(action_card, dict):
-        return True
-
-    # Preserve the v67 printed/source-text guard when it has enough text to
-    # identify Bench/HP limits.  This is necessary but not sufficient because
-    # some compiled search filters are sparse and may not carry the source text.
-    try:
-        if not _turn1_v67_source_text_allows_card(
-            filt,
-            candidate_card,
-            action_name,
-            action_card=action_card,
-            source_step=source_step,
-        ):
-            return False
-    except Exception:
-        # Do not let a diagnostics helper crash the simulator.  The direct
-        # card-level reachability check below is still authoritative.
-        pass
-
-    target_norm = getattr(opt, "norm", None)
-    if not target_norm:
-        try:
-            target_norm = tf.norm(getattr(opt, "raw", "") or str(opt))
-        except Exception:
-            target_norm = ""
-    if not target_norm:
-        return False
-
-    # Authoritative broad check: target_finder knows card-specific and
-    # source-text restrictions such as:
-    # - Buddy-Buddy Poffin: Basic Pokemon with 70 HP or less to Bench
-    # - Fighting Gong: Basic Fighting Energy OR Basic Fighting Pokemon
-    # - Poké Pad: non-Rule Box Pokemon
-    # - Earthen Vessel / Energy Search: Energy-only searches
-    try:
-        candidate_deck = _turn1_v68_deck_with_candidate(deck, candidate_card)
-        return bool(tf.card_directly_searches_target(action_card, target_norm, candidate_deck))
-    except Exception:
-        return False
-
-def _turn1_v22_goal_select_from_deck(
-    st: tf.SimState,
-    reqs: Sequence[GoalRequirement],
-    mode: str,
-    tracker: GoalTracker,
-    filt: Dict[str, Any],
-    amount: int,
-    action_name: str,
-    action_card=None,
-    source_step=None,
-) -> List[Dict[str, Any]]:
-    """Remove and return up to amount cards from deck that best satisfy the goal."""
-    selected: List[Dict[str, Any]] = []
-    if amount <= 0:
-        return selected
-
-    # Count selected cards as already contributing while filling this one effect.
-    virtual_tracker = GoalTracker()
-    virtual_tracker.mark(tracker.accessed)
-    virtual_tracker.mark(selected)
-
-    while len(selected) < amount:
-        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
-        if not deficits:
-            break
-
-        chosen_idx = None
-        chosen_req = None
-
-        # Prefer requirements with larger deficit for ALL goals, smaller for ANY.
-        if mode == "any":
-            ordered_deficits = deficits
-        else:
-            ordered_deficits = sorted(deficits, key=lambda x: (-x[1], x[0].label))
-
-        for req, _deficit in ordered_deficits:
-            for idx, c in enumerate(st.deck):
-                if not isinstance(c, dict):
-                    continue
-                if not _turn1_v22_filter_allows_for_action(filt, c, action_name):
-                    continue
-                if not _turn1_v67_source_text_allows_card(filt, c, action_name, action_card=action_card, source_step=source_step):
-                    continue
-                if any(
-                    _turn1_v68_action_can_reach_goal_option(
-                        action_card,
-                        opt,
-                        c,
-                        st.deck,
-                        filt,
-                        action_name,
-                        source_step=source_step,
-                    )
-                    for opt in req.options
-                ):
-                    chosen_idx = idx
-                    chosen_req = req
-                    break
-            if chosen_idx is not None:
-                break
-
-        if chosen_idx is None:
-            break
-
-        chosen = st.deck.pop(chosen_idx)
-        selected.append(chosen)
-        virtual_tracker.mark([chosen])
-
-        if mode == "any" and chosen_req is not None:
-            # For ANY, one requirement may be enough only if its min_count is met.
-            # Keep looping only when that chosen requirement still has a deficit.
-            if _turn1_v22_req_deficit(chosen_req, st, virtual_tracker) <= 0:
-                break
-
-    return selected
 
 
 
 # ---------------------------------------------------------------------
-# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE_V53
+# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE
 # ---------------------------------------------------------------------
 # Direct source edit, not a same-name wrapper stack.
 #
 # Fixes two confirmed runtime problems from the 100-trial Chien-Pao profile:
-#   1. _turn1_v22_card_goal_search_capacity used copy.deepcopy(st) thousands
+#   1. _turn1_card_goal_search_capacity used copy.deepcopy(st) thousands
 #      of times. The capacity check only needs independent zone lists, not deep
 #      copies of every card dictionary.
 #   2. chain-search repeatedly asks for the same candidate scoring result for
 #      equivalent states. Cache the score list by a semantic state key and drop
 #      zero-score actions before later planner filters.
 
-_TURN1_V53_SCORE_CACHE = {}
-_TURN1_V53_SCORE_CACHE_MAX = 200000
+_TURN1_SCORE_CANDIDATE_CACHE = {}
+_TURN1_SCORE_CANDIDATE_CACHE_MAX = 200000
 
 
-def _turn1_v53_copy_container_for_capacity(value):
+def _turn1_copy_container_for_score_capacity(value):
     """Copy containers, but keep card dictionaries by reference.
 
     The capacity scorer simulates selected cards entering hand. It does not need
@@ -6071,7 +5455,7 @@ def _turn1_v53_copy_container_for_capacity(value):
     return value
 
 
-def _turn1_v53_light_state_copy_for_capacity(st):
+def _turn1_light_state_copy_for_score_capacity(st):
     fake = copy.copy(st)
 
     # Known SimState zone/mutable attributes. Missing attributes are ignored so
@@ -6094,14 +5478,14 @@ def _turn1_v53_light_state_copy_for_capacity(st):
     ]:
         if hasattr(st, attr):
             try:
-                setattr(fake, attr, _turn1_v53_copy_container_for_capacity(getattr(st, attr)))
+                setattr(fake, attr, _turn1_copy_container_for_score_capacity(getattr(st, attr)))
             except Exception:
                 pass
 
     return fake
 
 
-def _turn1_v53_card_key(card):
+def _turn1_score_cache_card_key(card):
     if card is None:
         return None
 
@@ -6131,7 +5515,7 @@ def _turn1_v53_card_key(card):
     return ('card', str(name or ''), str(set_code or ''), str(number or ''))
 
 
-def _turn1_v53_freeze_value(value, depth=0):
+def _turn1_score_cache_freeze_value(value, depth=0):
     if depth > 4:
         return ('deep', type(value).__name__)
 
@@ -6141,41 +5525,41 @@ def _turn1_v53_freeze_value(value, depth=0):
     if isinstance(value, dict):
         # Card dictionaries are huge; represent them by identity only.
         if value.get('identity') or value.get('card_id') or value.get('name') or value.get('card_name'):
-            return _turn1_v53_card_key(value)
-        return ('dict', tuple(sorted((str(k), _turn1_v53_freeze_value(v, depth + 1)) for k, v in value.items())))
+            return _turn1_score_cache_card_key(value)
+        return ('dict', tuple(sorted((str(k), _turn1_score_cache_freeze_value(v, depth + 1)) for k, v in value.items())))
 
     if isinstance(value, (list, tuple)):
-        return (type(value).__name__, tuple(_turn1_v53_freeze_value(v, depth + 1) for v in value))
+        return (type(value).__name__, tuple(_turn1_score_cache_freeze_value(v, depth + 1) for v in value))
 
     if isinstance(value, set):
         try:
-            return ('set', tuple(sorted(_turn1_v53_freeze_value(v, depth + 1) for v in value)))
+            return ('set', tuple(sorted(_turn1_score_cache_freeze_value(v, depth + 1) for v in value)))
         except Exception:
-            return ('set', tuple(_turn1_v53_freeze_value(v, depth + 1) for v in value))
+            return ('set', tuple(_turn1_score_cache_freeze_value(v, depth + 1) for v in value))
 
     if hasattr(value, '__dict__'):
         try:
-            return (type(value).__name__, tuple(sorted((str(k), _turn1_v53_freeze_value(v, depth + 1)) for k, v in vars(value).items())))
+            return (type(value).__name__, tuple(sorted((str(k), _turn1_score_cache_freeze_value(v, depth + 1)) for k, v in vars(value).items())))
         except Exception:
             return (type(value).__name__, repr(value))
 
     return (type(value).__name__, repr(value))
 
 
-def _turn1_v53_zone_key(st, attr):
+def _turn1_score_cache_zone_key(st, attr):
     if not hasattr(st, attr):
         return None
     value = getattr(st, attr)
     if isinstance(value, list):
-        return tuple(_turn1_v53_card_key(x) for x in value)
+        return tuple(_turn1_score_cache_card_key(x) for x in value)
     if isinstance(value, tuple):
-        return tuple(_turn1_v53_card_key(x) for x in value)
+        return tuple(_turn1_score_cache_card_key(x) for x in value)
     if isinstance(value, dict):
-        return tuple(sorted((str(k), _turn1_v53_freeze_value(v)) for k, v in value.items()))
-    return _turn1_v53_freeze_value(value)
+        return tuple(sorted((str(k), _turn1_score_cache_freeze_value(v)) for k, v in value.items()))
+    return _turn1_score_cache_freeze_value(value)
 
 
-def _turn1_v53_score_key(st, missing, going, enable_chain_search):
+def _turn1_score_cache_key(st, missing, going, enable_chain_search):
     zones = []
     for attr in [
         'deck',
@@ -6190,33 +5574,33 @@ def _turn1_v53_score_key(st, missing, going, enable_chain_search):
         'supporter_played',
         'attached_energy',
     ]:
-        zones.append((attr, _turn1_v53_zone_key(st, attr)))
+        zones.append((attr, _turn1_score_cache_zone_key(st, attr)))
 
     return (
         tuple(zones),
-        _turn1_v53_freeze_value(missing),
+        _turn1_score_cache_freeze_value(missing),
         str(going),
         bool(enable_chain_search),
     )
 
 
-def _turn1_v53_cached_score_candidates(st, missing, going, enable_chain_search):
+def _turn1_cached_score_candidates(st, missing, going, enable_chain_search):
     try:
-        key = _turn1_v53_score_key(st, missing, going, enable_chain_search)
-        cached = _TURN1_V53_SCORE_CACHE.get(key)
+        key = _turn1_score_cache_key(st, missing, going, enable_chain_search)
+        cached = _TURN1_SCORE_CANDIDATE_CACHE.get(key)
         if cached is not None:
             return cached
     except Exception:
         key = None
 
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V27(st, missing, going, enable_chain_search)
+    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_FILTER_COMPAT(st, missing, going, enable_chain_search)
 
-    if key is not None and len(_TURN1_V53_SCORE_CACHE) < _TURN1_V53_SCORE_CACHE_MAX:
-        _TURN1_V53_SCORE_CACHE[key] = scored
+    if key is not None and len(_TURN1_SCORE_CANDIDATE_CACHE) < _TURN1_SCORE_CANDIDATE_CACHE_MAX:
+        _TURN1_SCORE_CANDIDATE_CACHE[key] = scored
 
     return scored
 
-def _turn1_v22_card_goal_search_capacity(
+def _turn1_card_goal_search_capacity(
     st: tf.SimState,
     card: Dict[str, Any],
     reqs: Sequence[GoalRequirement],
@@ -6232,15 +5616,15 @@ def _turn1_v22_card_goal_search_capacity(
     max_amt = 0
 
     # Simulate selection without mutating real state.
-    fake_st = _turn1_v53_light_state_copy_for_capacity(st)
+    fake_st = _turn1_light_state_copy_for_score_capacity(st)
     fake_tracker = GoalTracker()
     fake_tracker.mark(tracker.accessed)
 
-    for step in _turn1_v22_search_steps_for_card(card):
+    for step in _turn1_search_steps_for_card(card):
         filt = tf.extract_filter(step)
         amt = max(1, tf.search_amount(step))
         max_amt = max(max_amt, amt)
-        selected = _turn1_v22_goal_select_from_deck(
+        selected = _turn1_goal_select_from_deck(
             fake_st,
             reqs=reqs,
             mode=mode,
@@ -6259,7 +5643,7 @@ def _turn1_v22_card_goal_search_capacity(
     return total_possible, max_amt
 
 
-def _turn1_v22_score_playable_card_for_goal(
+def _turn1_score_playable_card_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -6282,7 +5666,7 @@ def _turn1_v22_score_playable_card_for_goal(
     if not tf.has_enough_discard_fodder(st.hand, card, primary):
         return -1.0
 
-    selected_possible, max_amt = _turn1_v22_card_goal_search_capacity(st, card, reqs, mode, tracker)
+    selected_possible, max_amt = _turn1_card_goal_search_capacity(st, card, reqs, mode, tracker)
     if selected_possible <= 0:
         # Fall back to old single-target scoring for pure draw / ability / special lines.
         best = -1.0
@@ -6312,8 +5696,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     """Goal-aware action scoring.
 
@@ -6330,14 +5714,14 @@ def score_candidate_for_missing_targets(
 
     playable = [c for c in list(st.hand) if tf.card_can_be_played_from_hand(c, going, st.supporter_used)]
     for c in playable:
-        s = _turn1_v22_score_playable_card_for_goal(c, st, missing, "all", tracker, going, enable_chain_search)
+        s = _turn1_score_playable_card_for_goal(c, st, missing, "all", tracker, going, enable_chain_search)
         if s > 0:
             scored.append((s, c, target_norms[0]))
 
     # Keep the old non-hand / ability candidates. They are still single-target,
     # but the main bug was hand-played multi-search cards.
     try:
-        old_scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V22(st, missing, going, enable_chain_search)
+        old_scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_SEARCH(st, missing, going, enable_chain_search)
         scored.extend(old_scored)
     except Exception:
         pass
@@ -6345,7 +5729,7 @@ def score_candidate_for_missing_targets(
     return scored
 
 
-def _turn1_v22_execute_goal_search_card(
+def _turn1_execute_goal_search_card(
     st: tf.SimState,
     card: Dict[str, Any],
     rng: random.Random,
@@ -6358,13 +5742,13 @@ def _turn1_v22_execute_goal_search_card(
     if not isinstance(card, dict) or card not in st.hand:
         return False
 
-    search_steps = _turn1_v22_search_steps_for_card(card)
+    search_steps = _turn1_search_steps_for_card(card)
     if not search_steps:
         return False
 
     action_name = tf.card_name(card)
 
-    selected_possible, _max_amt = _turn1_v22_card_goal_search_capacity(st, card, reqs, mode, tracker)
+    selected_possible, _max_amt = _turn1_card_goal_search_capacity(st, card, reqs, mode, tracker)
     if selected_possible <= 0:
         return False
 
@@ -6437,7 +5821,7 @@ def _turn1_v22_execute_goal_search_card(
             if op == "search_deck":
                 filt = tf.extract_filter(step)
                 amt = max(1, tf.search_amount(step))
-                selected = _turn1_v22_goal_select_from_deck(
+                selected = _turn1_goal_select_from_deck(
                     st,
                     reqs=reqs,
                     mode=mode,
@@ -6479,21 +5863,21 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
     tracker = getattr(st, "_turn1_goal_tracker", None)
 
     if reqs and tracker is not None and isinstance(action, dict) and not action.get("_virtual_action"):
-        if _turn1_v22_execute_goal_search_card(st, action, rng, reqs, mode, tracker, going, enable_chain_search):
+        if _turn1_execute_goal_search_card(st, action, rng, reqs, mode, tracker, going, enable_chain_search):
             return
 
-    return _ORIG_EXECUTE_ACTION_V22(st, action, target_norm, rng, going, enable_chain_search)
+    return _ORIG_EXECUTE_ACTION_BEFORE_GOAL_SEARCH(st, action, target_norm, rng, going, enable_chain_search)
 
 
 
 
 # ---------------------------------------------------------------------
-# TURN1_MEOWTH_FILTER_FIX_V23
+# TURN1_MEOWTH_FILTER_FIX
 # ---------------------------------------------------------------------
-# Fixes a bug introduced by the v0.22 multi-goal search executor.
+# Fixes a bug introduced by the multi-goal search executor.
 #
 # Problem:
-#   Meowth ex / Last-Ditch Catch searches for a Supporter, but v0.22 treated
+#   Meowth ex / Last-Ditch Catch searches for a Supporter, but the old goal-search executor treated
 #   any compiled search_deck step as a goal-aware direct search if the older
 #   compiled filter was too permissive. That allowed Meowth ex to appear in
 #   lines for goals like 4x N's Zorua + Budew, even though Meowth only gets a
@@ -6502,15 +5886,15 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 # Fix:
 #   1. Never execute Meowth ex through the direct goal-aware search override.
 #      Let the original target-finder Meowth handler run instead.
-#   2. Make v0.22's search filter gate stricter for Supporter/Trainer/Item/
+#   2. Make the goal-search executor's search filter gate stricter for Supporter/Trainer/Item/
 #      Pokémon/Energy text so cards cannot search outside their printed filter.
 
-_ORIG_V22_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23 = _turn1_v22_filter_allows_for_action
-_ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V23 = _turn1_v22_score_playable_card_for_goal
-_ORIG_V22_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23 = _turn1_v22_execute_goal_search_card
+_ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_MEOWTH_FILTER_FIX = _turn1_search_filter_allows_for_action
+_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_MEOWTH_FILTER_FIX = _turn1_score_playable_card_for_goal
+_ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_MEOWTH_FILTER_FIX = _turn1_execute_goal_search_card
 
 
-def _turn1_v23_norm_text(value: Any) -> str:
+def _turn1_goal_search_filter_norm_text(value: Any) -> str:
     try:
         if isinstance(value, dict):
             parts = []
@@ -6523,21 +5907,7 @@ def _turn1_v23_norm_text(value: Any) -> str:
         return str(value or "").lower()
 
 
-def _turn1_v23_is_basic_energy(card: Dict[str, Any]) -> bool:
-    try:
-        fn = getattr(tf, "is_basic_energy", None)
-        if callable(fn):
-            return bool(fn(card))
-    except Exception:
-        pass
-
-    try:
-        return bool(tf.is_energy(card) and "basic" in tf.norm(tf.card_name(card)))
-    except Exception:
-        return False
-
-
-def _turn1_v23_card_is_item(card: Dict[str, Any]) -> bool:
+def _turn1_goal_search_filter_card_is_item(card: Dict[str, Any]) -> bool:
     try:
         name_blob = tf.norm(tf.card_name(card))
         subtype_blob = tf.norm(str(card.get("subtypes") or card.get("subtype") or ""))
@@ -6546,7 +5916,7 @@ def _turn1_v23_card_is_item(card: Dict[str, Any]) -> bool:
         return False
 
 
-def _turn1_v23_card_is_stadium(card: Dict[str, Any]) -> bool:
+def _turn1_goal_search_filter_card_is_stadium(card: Dict[str, Any]) -> bool:
     try:
         blob = tf.norm(str(card.get("subtypes") or card.get("subtype") or "") + " " + tf.card_name(card))
         return bool(tf.is_trainer(card) and "stadium" in blob)
@@ -6554,10 +5924,10 @@ def _turn1_v23_card_is_stadium(card: Dict[str, Any]) -> bool:
         return False
 
 
-def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
-    """Goal-aware search filter used by the v0.22 executor.
+def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
+    """Goal-aware search filter used by the goal-search executor.
 
-    TURN1_V66_GOAL_SEARCH_OR_FILTERS
+    TURN1_GOAL_SEARCH_OR_FILTERS
 
     Direct replacement for the old sequential raw-text gate. The old version
     returned as soon as it saw phrases like "basic energy", which broke OR
@@ -6569,7 +5939,7 @@ def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, An
     it satisfies ANY printed/compiled search branch.
     """
     action_n = tf.norm(action_name)
-    raw = _turn1_v23_norm_text(filt)
+    raw = _turn1_goal_search_filter_norm_text(filt)
 
     def _n(value: Any) -> str:
         try:
@@ -6735,9 +6105,9 @@ def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, An
     if "supporter" in raw:
         tests.append(lambda c: bool(tf.is_supporter(c)))
     if "stadium" in raw:
-        tests.append(lambda c: _turn1_v23_card_is_stadium(c))
+        tests.append(lambda c: _turn1_goal_search_filter_card_is_stadium(c))
     if "item" in raw and "pokemon tool" not in raw and "pokémon tool" not in raw:
-        tests.append(lambda c: _turn1_v23_card_is_item(c))
+        tests.append(lambda c: _turn1_goal_search_filter_card_is_item(c))
     if "pokemon tool" in raw or "pokémon tool" in raw or "tool" in raw:
         tests.append(lambda c: _trainer_kind(c, "tool") or _trainer_kind(c, "pokemon tool") or _trainer_kind(c, "pokémon tool"))
     if "trainer" in raw and not any(w in raw for w in trainer_words):
@@ -6746,11 +6116,11 @@ def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, An
     if tests:
         return any(test(card) for test in tests)
 
-    # Fallback to the original v0.22 / target-finder compiled filter behavior.
-    return _ORIG_V22_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23(filt, card, action_name)
+    # Fallback to the original goal-search / target-finder compiled filter behavior.
+    return _ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_MEOWTH_FILTER_FIX(filt, card, action_name)
 
 
-def _turn1_v23_old_single_target_score(
+def _turn1_original_single_target_score_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -6766,7 +6136,7 @@ def _turn1_v23_old_single_target_score(
     return best
 
 
-def _turn1_v22_score_playable_card_for_goal(
+def _turn1_score_playable_card_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -6780,11 +6150,11 @@ def _turn1_v22_score_playable_card_for_goal(
     # its legal Supporter chain and correctly blocks it going first.
     try:
         if tf.is_meowth_ex(card):
-            return _turn1_v23_old_single_target_score(card, st, reqs, going, enable_chain_search)
+            return _turn1_original_single_target_score_for_goal(card, st, reqs, going, enable_chain_search)
     except Exception:
         pass
 
-    return _ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V23(
+    return _ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_MEOWTH_FILTER_FIX(
         card,
         st,
         reqs,
@@ -6795,7 +6165,7 @@ def _turn1_v22_score_playable_card_for_goal(
     )
 
 
-def _turn1_v22_execute_goal_search_card(
+def _turn1_execute_goal_search_card(
     st: tf.SimState,
     card: Dict[str, Any],
     rng: random.Random,
@@ -6805,7 +6175,7 @@ def _turn1_v22_execute_goal_search_card(
     going: str,
     enable_chain_search: bool,
 ) -> bool:
-    # Critical: do not let v0.22 directly turn Meowth's Supporter search into
+    # Critical: do not let the goal-search executor directly turn Meowth's Supporter search into
     # missing goal Pokémon. Delegate to the original executor instead.
     try:
         if tf.is_meowth_ex(card):
@@ -6813,7 +6183,7 @@ def _turn1_v22_execute_goal_search_card(
     except Exception:
         pass
 
-    return _ORIG_V22_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23(
+    return _ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_MEOWTH_FILTER_FIX(
         st,
         card,
         rng,
@@ -6828,7 +6198,7 @@ def _turn1_v22_execute_goal_search_card(
 
 
 # ---------------------------------------------------------------------
-# TURN1_SELF_ONLY_SEARCH_GUARD_V25
+# TURN1_SELF_ONLY_SEARCH_GUARD
 # ---------------------------------------------------------------------
 # General fix for opponent-disruption cards being treated as self-search.
 #
@@ -6846,20 +6216,20 @@ def _turn1_v22_execute_goal_search_card(
 # It is only blocked from being chosen as a played action because of opponent-only
 # compiled search/draw artifacts.
 
-_TURN1_ORIG_V22_SEARCH_STEPS_FOR_CARD_BEFORE_V25 = _turn1_v22_search_steps_for_card
-_TURN1_ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V25 = _turn1_v22_score_playable_card_for_goal
-_TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_V25 = score_candidate_for_missing_targets
-_TURN1_ORIG_TF_CARD_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = tf.card_directly_searches_target
-_TURN1_ORIG_TF_CARD_HAS_SEARCH_BEFORE_V25 = tf.card_has_search
-_TURN1_ORIG_TF_CARD_DRAW_POWER_BEFORE_V25 = tf.card_draw_power
+_TURN1_ORIG_SEARCH_STEPS_FOR_CARD_BEFORE_SELF_ONLY_GUARD = _turn1_search_steps_for_card
+_TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_SELF_ONLY_GUARD = _turn1_score_playable_card_for_goal
+_TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SELF_ONLY_GUARD = score_candidate_for_missing_targets
+_TURN1_ORIG_TF_CARD_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD = tf.card_directly_searches_target
+_TURN1_ORIG_TF_CARD_HAS_SEARCH_BEFORE_SELF_ONLY_GUARD = tf.card_has_search
+_TURN1_ORIG_TF_CARD_DRAW_POWER_BEFORE_SELF_ONLY_GUARD = tf.card_draw_power
 
 try:
-    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = tf.ability_directly_searches_target
+    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD = tf.ability_directly_searches_target
 except Exception:
-    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = None
+    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD = None
 
 
-def _turn1_v25_add_text_parts(value: Any, parts: List[str], depth: int = 0) -> None:
+def _turn1_self_only_search_add_text_parts(value: Any, parts: List[str], depth: int = 0) -> None:
     if value is None or depth > 5:
         return
     if isinstance(value, str):
@@ -6872,17 +6242,17 @@ def _turn1_v25_add_text_parts(value: Any, parts: List[str], depth: int = 0) -> N
             # opponent, target, recipient, destination, etc.
             if isinstance(k, str):
                 parts.append(k)
-            _turn1_v25_add_text_parts(v, parts, depth + 1)
+            _turn1_self_only_search_add_text_parts(v, parts, depth + 1)
         return
     if isinstance(value, (list, tuple, set)):
         for item in value:
-            _turn1_v25_add_text_parts(item, parts, depth + 1)
+            _turn1_self_only_search_add_text_parts(item, parts, depth + 1)
         return
 
 
-def _turn1_v25_norm_text(value: Any) -> str:
+def _turn1_self_only_search_norm_text(value: Any) -> str:
     parts: List[str] = []
-    _turn1_v25_add_text_parts(value, parts)
+    _turn1_self_only_search_add_text_parts(value, parts)
     raw = " ".join(parts)
     try:
         return tf.norm(raw)
@@ -6890,7 +6260,7 @@ def _turn1_v25_norm_text(value: Any) -> str:
         return str(raw or "").lower()
 
 
-def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> str:
+def _turn1_self_only_search_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> str:
     parts: List[str] = []
 
     if isinstance(step, dict):
@@ -6910,8 +6280,8 @@ def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = 
             "player",
         ):
             if key in step:
-                _turn1_v25_add_text_parts(step.get(key), parts)
-        _turn1_v25_add_text_parts(step, parts)
+                _turn1_self_only_search_add_text_parts(step.get(key), parts)
+        _turn1_self_only_search_add_text_parts(step, parts)
 
     if isinstance(card, dict):
         for key in (
@@ -6926,43 +6296,12 @@ def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = 
             "gameplay",
         ):
             if key in card:
-                _turn1_v25_add_text_parts(card.get(key), parts)
+                _turn1_self_only_search_add_text_parts(card.get(key), parts)
 
-    return _turn1_v25_norm_text(" ".join(parts))
-
-
-def _turn1_v25_is_known_self_search_card(card: Dict[str, Any]) -> bool:
-    """Known card-specific self-consistency search cards handled by target_finder."""
-    try:
-        name = tf.norm(tf.card_name(card))
-        if name in {
-            "ultra ball",
-            "buddy buddy poffin",
-            "buddy buddy poffin",
-            "poke pad",
-            "poké pad",
-            "fighting gong",
-            "tera orb",
-            "night stretcher",
-            "dusk ball",
-            "secret box",
-            "capturing aroma",
-            "artazon",
-            "nest ball",
-            "great ball",
-            "earthen vessel",
-            "energy search",
-        }:
-            return True
-        # Preserve target_finder's specific direct-search exceptions.
-        for tn in []:
-            pass
-    except Exception:
-        pass
-    return False
+    return _turn1_self_only_search_norm_text(" ".join(parts))
 
 
-def _turn1_v25_has_opponent_zone_text(text: str) -> bool:
+def _turn1_text_mentions_opponent_zone(text: str) -> bool:
     t = str(text or "")
     opponent_hints = (
         "your opponent",
@@ -6980,7 +6319,7 @@ def _turn1_v25_has_opponent_zone_text(text: str) -> bool:
     return any(h in t for h in opponent_hints)
 
 
-def _turn1_v25_has_self_search_text(text: str) -> bool:
+def _turn1_text_mentions_self_search(text: str) -> bool:
     t = str(text or "")
     self_search_hints = (
         "search your deck",
@@ -7000,7 +6339,7 @@ def _turn1_v25_has_self_search_text(text: str) -> bool:
     return any(h in t for h in self_search_hints)
 
 
-def _turn1_v25_has_self_draw_text(text: str) -> bool:
+def _turn1_text_mentions_self_draw(text: str) -> bool:
     t = str(text or "")
     if "each player" in t and "draw" in t:
         return True
@@ -7023,9 +6362,9 @@ def _turn1_v25_has_self_draw_text(text: str) -> bool:
     return any(h in t for h in self_draw_hints)
 
 
-def _turn1_v25_has_opponent_only_draw_or_search_text(text: str) -> bool:
+def _turn1_text_is_opponent_only_draw_or_search(text: str) -> bool:
     t = str(text or "")
-    if not _turn1_v25_has_opponent_zone_text(t):
+    if not _turn1_text_mentions_opponent_zone(t):
         return False
 
     opponent_action_hints = (
@@ -7052,53 +6391,53 @@ def _turn1_v25_has_opponent_only_draw_or_search_text(text: str) -> bool:
 
     # If the same printed effect also clearly benefits us, do not call it
     # opponent-only. Example: each player draw effects.
-    if _turn1_v25_has_self_search_text(t) or _turn1_v25_has_self_draw_text(t):
+    if _turn1_text_mentions_self_search(t) or _turn1_text_mentions_self_draw(t):
         return False
 
     return True
 
 
-def _turn1_v25_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
+def _turn1_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
     if not isinstance(step, dict):
         return False
     if step.get("op") not in {"search_deck", "choose_cards", "put_card_into_hand"}:
         return False
 
-    text = _turn1_v25_step_text(step, card)
+    text = _turn1_self_only_search_step_text(step, card)
 
-    if _turn1_v25_has_opponent_only_draw_or_search_text(text):
+    if _turn1_text_is_opponent_only_draw_or_search(text):
         return False
 
-    if _turn1_v25_has_opponent_zone_text(text) and not _turn1_v25_has_self_search_text(text):
+    if _turn1_text_mentions_opponent_zone(text) and not _turn1_text_mentions_self_search(text):
         return False
 
-    if _turn1_v25_has_self_search_text(text):
+    if _turn1_text_mentions_self_search(text):
         return True
 
     # If the compiler gave a structured search_deck op with no opponent text,
     # allow it. This preserves normal compiled self-search effects that have
     # sparse metadata.
-    return not _turn1_v25_has_opponent_zone_text(text)
+    return not _turn1_text_mentions_opponent_zone(text)
 
 
-def _turn1_v25_is_self_draw_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
+def _turn1_is_self_draw_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
     if not isinstance(step, dict):
         return False
     if step.get("op") not in {"draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches"}:
         return False
 
-    text = _turn1_v25_step_text(step, card)
+    text = _turn1_self_only_search_step_text(step, card)
 
-    if _turn1_v25_has_opponent_only_draw_or_search_text(text):
+    if _turn1_text_is_opponent_only_draw_or_search(text):
         return False
 
-    if _turn1_v25_has_opponent_zone_text(text) and not _turn1_v25_has_self_draw_text(text):
+    if _turn1_text_mentions_opponent_zone(text) and not _turn1_text_mentions_self_draw(text):
         return False
 
     return True
 
 
-def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _turn1_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not isinstance(card, dict):
         return out
@@ -7108,7 +6447,7 @@ def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str
             continue
         for step in tf.flatten_steps(eff):
             if isinstance(step, dict) and step.get("op") == "search_deck":
-                if _turn1_v25_is_self_search_step(step, card):
+                if _turn1_is_self_search_step(step, card):
                     out.append(step)
                 else:
                     try:
@@ -7120,12 +6459,12 @@ def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str
     return out
 
 
-def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Override v0.22: only self-search steps can feed the multi-goal executor."""
-    return _turn1_v25_self_search_steps_for_card(card)
+def _turn1_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Only self-search steps can feed the multi-goal executor."""
+    return _turn1_self_search_steps_for_card(card)
 
 
-def _turn1_v25_card_directly_searches_target(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+def _turn1_card_directly_searches_target_self_only(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
     target_cards = [c for c in deck if tf.target_matches(c, target_norm)]
     if not target_cards:
         return False
@@ -7142,7 +6481,7 @@ def _turn1_v25_card_directly_searches_target(card: Dict[str, Any], target_norm: 
         if not isinstance(step, dict):
             continue
         if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
-            if not _turn1_v25_is_self_search_step(step, card):
+            if not _turn1_is_self_search_step(step, card):
                 continue
             filt = tf.extract_filter(step)
             if any(tf.filter_allows_card(filt, tc) for tc in target_cards):
@@ -7151,11 +6490,11 @@ def _turn1_v25_card_directly_searches_target(card: Dict[str, Any], target_norm: 
     return False
 
 
-def _turn1_v25_card_has_search(card: Dict[str, Any]) -> bool:
-    return bool(_turn1_v25_self_search_steps_for_card(card))
+def _turn1_card_has_self_search(card: Dict[str, Any]) -> bool:
+    return bool(_turn1_self_search_steps_for_card(card))
 
 
-def _turn1_v25_card_draw_power(card: Dict[str, Any]) -> int:
+def _turn1_card_self_draw_power(card: Dict[str, Any]) -> int:
     total = 0
     if not isinstance(card, dict):
         return 0
@@ -7165,19 +6504,19 @@ def _turn1_v25_card_draw_power(card: Dict[str, Any]) -> int:
             continue
         op = step.get("op")
         if op in {"draw_cards", "draw_cards_per_coin_heads"}:
-            if _turn1_v25_is_self_draw_step(step, card):
+            if _turn1_is_self_draw_step(step, card):
                 total += tf.draw_amount_from_step(step, coin_heads=1)
         elif op == "draw_until_hand_size":
-            if _turn1_v25_is_self_draw_step(step, card):
+            if _turn1_is_self_draw_step(step, card):
                 total += tf.amount_value(step.get("target_hand_size"), default=0)
         elif op == "draw_until_hand_size_matches":
-            if _turn1_v25_is_self_draw_step(step, card):
+            if _turn1_is_self_draw_step(step, card):
                 total += 3
 
     return total
 
 
-def _turn1_v25_ability_directly_searches_target(effect: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+def _turn1_ability_directly_searches_target_self_only(effect: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
     target_cards = [c for c in deck if tf.target_matches(c, target_norm)]
     if not target_cards:
         return False
@@ -7186,7 +6525,7 @@ def _turn1_v25_ability_directly_searches_target(effect: Dict[str, Any], target_n
         if not isinstance(step, dict):
             continue
         if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
-            if not _turn1_v25_is_self_search_step(step, None):
+            if not _turn1_is_self_search_step(step, None):
                 continue
             filt = tf.extract_filter(step)
             if any(tf.filter_allows_card(filt, tc) for tc in target_cards):
@@ -7197,14 +6536,14 @@ def _turn1_v25_ability_directly_searches_target(effect: Dict[str, Any], target_n
 
 # Patch the imported single-target module too, because goal_finder falls back
 # to tf.score_playable_card for draw/special/chain lines.
-tf.card_directly_searches_target = _turn1_v25_card_directly_searches_target
-tf.card_has_search = _turn1_v25_card_has_search
-tf.card_draw_power = _turn1_v25_card_draw_power
-if _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 is not None:
-    tf.ability_directly_searches_target = _turn1_v25_ability_directly_searches_target
+tf.card_directly_searches_target = _turn1_card_directly_searches_target_self_only
+tf.card_has_search = _turn1_card_has_self_search
+tf.card_draw_power = _turn1_card_self_draw_power
+if _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD is not None:
+    tf.ability_directly_searches_target = _turn1_ability_directly_searches_target_self_only
 
 
-def _turn1_v25_action_source_card(action: Any) -> Optional[Dict[str, Any]]:
+def _turn1_action_source_card_for_self_only_guard(action: Any) -> Optional[Dict[str, Any]]:
     if isinstance(action, dict) and action.get("_virtual_action"):
         for key in ("card", "source", "search_card"):
             c = action.get(key)
@@ -7216,8 +6555,8 @@ def _turn1_v25_action_source_card(action: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _turn1_v25_is_opponent_only_consistency_action(action: Any) -> bool:
-    card = _turn1_v25_action_source_card(action)
+def _turn1_is_opponent_only_consistency_action(action: Any) -> bool:
+    card = _turn1_action_source_card_for_self_only_guard(action)
     if not isinstance(card, dict):
         return False
 
@@ -7234,13 +6573,13 @@ def _turn1_v25_is_opponent_only_consistency_action(action: Any) -> bool:
             op = step.get("op")
             if op in {"search_deck", "choose_cards", "put_card_into_hand"}:
                 any_access_like = True
-                if _turn1_v25_is_self_search_step(step, card):
+                if _turn1_is_self_search_step(step, card):
                     any_self_access = True
                 else:
                     any_opponent_only = True
             elif op in {"draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches"}:
                 any_access_like = True
-                if _turn1_v25_is_self_draw_step(step, card):
+                if _turn1_is_self_draw_step(step, card):
                     any_self_access = True
                 else:
                     any_opponent_only = True
@@ -7251,7 +6590,7 @@ def _turn1_v25_is_opponent_only_consistency_action(action: Any) -> bool:
     return bool(any_access_like and any_opponent_only and not any_self_access)
 
 
-def _turn1_v22_score_playable_card_for_goal(
+def _turn1_score_playable_card_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -7260,9 +6599,9 @@ def _turn1_v22_score_playable_card_for_goal(
     going: str,
     enable_chain_search: bool,
 ) -> float:
-    if _turn1_v25_is_opponent_only_consistency_action(card):
+    if _turn1_is_opponent_only_consistency_action(card):
         return -1.0
-    return _TURN1_ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V25(
+    return _TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_SELF_ONLY_GUARD(
         card,
         st,
         reqs,
@@ -7279,10 +6618,10 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
-    scored = _TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_V25(
+    scored = _TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SELF_ONLY_GUARD(
         st,
         missing,
         going,
@@ -7291,7 +6630,7 @@ def score_candidate_for_missing_targets(
 
     filtered: List[Tuple[float, Any, str]] = []
     for score, action, target_norm in scored:
-        if _turn1_v25_is_opponent_only_consistency_action(action):
+        if _turn1_is_opponent_only_consistency_action(action):
             try:
                 st.log.append({
                     "event": "blocked_opponent_only_consistency_action",
@@ -7309,7 +6648,7 @@ def score_candidate_for_missing_targets(
 
 
 # ---------------------------------------------------------------------
-# TURN1_ABILITY_REQUIREMENT_AND_FILTER_GUARD_V27
+# TURN1_ABILITY_REQUIREMENT_AND_FILTER_GUARD
 # ---------------------------------------------------------------------
 # Root issue fixed here:
 # The Turn-1 goal finder reuses broad single-target action scorers. Some
@@ -7326,10 +6665,10 @@ def score_candidate_for_missing_targets(
 #        Energy search -> Energy goal only
 # - opponent-only disruption guards from earlier patches remain compatible
 
-import re as _turn1_v27_re
+import re as _turn1_action_filter_compat_re
 
 
-def turn1_v27_flatten_text(obj: Any, limit: int = 20000) -> str:
+def turn1_action_filter_compat_flatten_text(obj: Any, limit: int = 20000) -> str:
     parts: List[str] = []
 
     def walk(x: Any) -> None:
@@ -7357,23 +6696,19 @@ def turn1_v27_flatten_text(obj: Any, limit: int = 20000) -> str:
     return " ".join(parts)
 
 
-def turn1_v27_norm_blob(s: Any) -> str:
+def turn1_action_filter_compat_norm_blob(s: Any) -> str:
     text = str(s or "").lower()
     text = text.replace("pokémon", "pokemon")
     text = text.replace("’", "'")
-    text = _turn1_v27_re.sub(r"\s+", " ", text)
+    text = _turn1_action_filter_compat_re.sub(r"\s+", " ", text)
     return text.strip()
 
 
-def turn1_v27_card_blob(card: Any) -> str:
-    return turn1_v27_norm_blob(turn1_v27_flatten_text(card))
+def turn1_action_filter_compat_card_blob(card: Any) -> str:
+    return turn1_action_filter_compat_norm_blob(turn1_action_filter_compat_flatten_text(card))
 
 
-def turn1_v27_effect_blob(effect: Any) -> str:
-    return turn1_v27_norm_blob(turn1_v27_flatten_text(effect))
-
-
-def turn1_v27_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
+def turn1_action_filter_compat_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
     if isinstance(action, dict):
         va = action.get("_virtual_action") or ""
         source = action.get("source") or action.get("card") or action.get("search_card")
@@ -7382,7 +6717,7 @@ def turn1_v27_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
     return action, action, "PlayCard"
 
 
-def turn1_v27_source_in_list(source: Any, cards: Sequence[Any]) -> bool:
+def turn1_action_filter_compat_source_in_list(source: Any, cards: Sequence[Any]) -> bool:
     if source is None:
         return False
     source_id = None
@@ -7398,8 +6733,8 @@ def turn1_v27_source_in_list(source: Any, cards: Sequence[Any]) -> bool:
     return False
 
 
-def turn1_v27_requires_active(blob: str) -> bool:
-    b = turn1_v27_norm_blob(blob)
+def turn1_action_filter_compat_requires_active(blob: str) -> bool:
+    b = turn1_action_filter_compat_norm_blob(blob)
     patterns = [
         "if this pokemon is in the active spot",
         "if this pokemon is your active pokemon",
@@ -7411,8 +6746,8 @@ def turn1_v27_requires_active(blob: str) -> bool:
     return any(p in b for p in patterns)
 
 
-def turn1_v27_requires_bench(blob: str) -> bool:
-    b = turn1_v27_norm_blob(blob)
+def turn1_action_filter_compat_requires_bench(blob: str) -> bool:
+    b = turn1_action_filter_compat_norm_blob(blob)
     patterns = [
         "if this pokemon is on your bench",
         "while this pokemon is on your bench",
@@ -7422,38 +6757,38 @@ def turn1_v27_requires_bench(blob: str) -> bool:
     return any(p in b for p in patterns)
 
 
-def turn1_v27_position_allowed(st: Any, action: Any) -> bool:
-    source, effect, va = turn1_v27_action_source_and_effect(action)
-    blob = turn1_v27_norm_blob(turn1_v27_flatten_text(effect) + " " + turn1_v27_flatten_text(source))
+def turn1_action_filter_compat_position_allowed(st: Any, action: Any) -> bool:
+    source, effect, va = turn1_action_filter_compat_action_source_and_effect(action)
+    blob = turn1_action_filter_compat_norm_blob(turn1_action_filter_compat_flatten_text(effect) + " " + turn1_action_filter_compat_flatten_text(source))
 
     if not blob:
         return True
 
     # If an ability says Active Spot, benching the Pokemon from hand is not
     # enough. It must already be the actual Active Pokemon.
-    if turn1_v27_requires_active(blob):
-        return source is not None and st.active is not None and turn1_v27_source_in_list(source, [st.active])
+    if turn1_action_filter_compat_requires_active(blob):
+        return source is not None and st.active is not None and turn1_action_filter_compat_source_in_list(source, [st.active])
 
-    if turn1_v27_requires_bench(blob):
-        return source is not None and turn1_v27_source_in_list(source, list(getattr(st, "bench", []) or []))
+    if turn1_action_filter_compat_requires_bench(blob):
+        return source is not None and turn1_action_filter_compat_source_in_list(source, list(getattr(st, "bench", []) or []))
 
     return True
 
 
-def turn1_v27_card_categories(card: Any) -> set:
+def turn1_action_filter_compat_card_categories(card: Any) -> set:
     cats = set()
     if not isinstance(card, dict):
         return cats
 
-    blob = turn1_v27_card_blob(card)
+    blob = turn1_action_filter_compat_card_blob(card)
 
     identity = card.get("identity") or {}
-    supertype = turn1_v27_norm_blob(identity.get("supertype") or card.get("supertype") or "")
+    supertype = turn1_action_filter_compat_norm_blob(identity.get("supertype") or card.get("supertype") or "")
     subtypes_raw = identity.get("subtypes") or card.get("subtypes") or card.get("subtype") or []
     if isinstance(subtypes_raw, str):
-        sub_blob = turn1_v27_norm_blob(subtypes_raw)
+        sub_blob = turn1_action_filter_compat_norm_blob(subtypes_raw)
     else:
-        sub_blob = turn1_v27_norm_blob(" ".join(str(x) for x in subtypes_raw))
+        sub_blob = turn1_action_filter_compat_norm_blob(" ".join(str(x) for x in subtypes_raw))
 
     if "pokemon" in supertype or "supertype pokemon" in blob:
         cats.add("pokemon")
@@ -7486,7 +6821,7 @@ def turn1_v27_card_categories(card: Any) -> set:
     if "basic" in sub_blob and "energy" in cats:
         cats.add("basic_energy")
 
-    name = turn1_v27_norm_blob(tf.card_name(card))
+    name = turn1_action_filter_compat_norm_blob(tf.card_name(card))
     if "basic" in name and "energy" in name:
         cats.add("energy")
         cats.add("basic_energy")
@@ -7494,12 +6829,12 @@ def turn1_v27_card_categories(card: Any) -> set:
     return cats
 
 
-def turn1_v27_effect_search_categories(blob: str) -> set:
+def turn1_action_filter_compat_effect_search_categories(blob: str) -> set:
     """
     Infer the card class an effect is allowed to search/reveal/put into hand.
     Empty set means either not a restricted search, or parser cannot infer safely.
     """
-    b = turn1_v27_norm_blob(blob)
+    b = turn1_action_filter_compat_norm_blob(blob)
     cats = set()
 
     # Only categorize effects that actually look like access/search effects.
@@ -7547,7 +6882,7 @@ def turn1_v27_effect_search_categories(blob: str) -> set:
     return cats
 
 
-def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
+def turn1_action_filter_compat_categories_compatible(search_cats: set, card_cats: set) -> bool:
     if not search_cats:
         return True
     if "opponent_only" in search_cats:
@@ -7577,7 +6912,7 @@ def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
 
 
 # ---------------------------------------------------------------------
-# TURN1_V62_PRECISE_SEARCH_FILTER_COMPAT
+# TURN1_PRECISE_SEARCH_FILTER_COMPAT
 # ---------------------------------------------------------------------
 # Direct fix, not a wrapper:
 # Replace the old coarse category-only compatibility check with a precise
@@ -7593,19 +6928,19 @@ def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
 #   1. Resolve target_norm to actual card(s) in the current state/deck pools.
 #   2. Extract the action's real search steps/filters.
 #   3. Use the same filter function used by execution:
-#        _turn1_v22_filter_allows_for_action(...)
+#        _turn1_search_filter_allows_for_action(...)
 #   4. Fall back to explicit text/category matching only when structured
 #      filters are unavailable.
 
 
-def _turn1_v62_norm(value: Any) -> str:
+def _turn1_search_text_target_filter_norm(value: Any) -> str:
     try:
-        return turn1_v27_norm_blob(str(value or ""))
+        return turn1_action_filter_compat_norm_blob(str(value or ""))
     except Exception:
         return str(value or "").lower().strip()
 
 
-def _turn1_v62_flatten_strings(obj: Any, max_items: int = 4000) -> str:
+def _turn1_search_text_target_filter_flatten_strings(obj: Any, max_items: int = 4000) -> str:
     out: List[str] = []
     seen = set()
 
@@ -7634,7 +6969,7 @@ def _turn1_v62_flatten_strings(obj: Any, max_items: int = 4000) -> str:
     return " ".join(out)
 
 
-def _turn1_v62_card_name(card: Any) -> str:
+def _turn1_search_text_target_filter_card_name(card: Any) -> str:
     try:
         return tf.card_name(card)
     except Exception:
@@ -7645,18 +6980,18 @@ def _turn1_v62_card_name(card: Any) -> str:
     return str(card or "")
 
 
-def _turn1_v62_card_supertype(card: Any) -> str:
+def _turn1_search_text_target_filter_card_supertype(card: Any) -> str:
     try:
-        return _turn1_v62_norm(tf.card_supertype(card))
+        return _turn1_search_text_target_filter_norm(tf.card_supertype(card))
     except Exception:
         pass
     if isinstance(card, dict):
         ident = card.get("identity") or {}
-        return _turn1_v62_norm(card.get("supertype") or ident.get("supertype") or "")
+        return _turn1_search_text_target_filter_norm(card.get("supertype") or ident.get("supertype") or "")
     return ""
 
 
-def _turn1_v62_card_subtypes(card: Any) -> set:
+def _turn1_search_text_target_filter_card_subtypes(card: Any) -> set:
     vals = []
     if isinstance(card, dict):
         ident = card.get("identity") or {}
@@ -7666,10 +7001,10 @@ def _turn1_v62_card_subtypes(card: Any) -> set:
                 vals.append(v)
             elif isinstance(v, (list, tuple, set)):
                 vals.extend(v)
-    return {_turn1_v62_norm(v) for v in vals if str(v or "").strip()}
+    return {_turn1_search_text_target_filter_norm(v) for v in vals if str(v or "").strip()}
 
 
-def _turn1_v62_card_types(card: Any) -> set:
+def _turn1_search_text_target_filter_card_types(card: Any) -> set:
     vals = []
     if isinstance(card, dict):
         ident = card.get("identity") or {}
@@ -7679,10 +7014,10 @@ def _turn1_v62_card_types(card: Any) -> set:
                 vals.append(v)
             elif isinstance(v, (list, tuple, set)):
                 vals.extend(v)
-    return {_turn1_v62_norm(v) for v in vals if str(v or "").strip()}
+    return {_turn1_search_text_target_filter_norm(v) for v in vals if str(v or "").strip()}
 
 
-def _turn1_v62_card_hp(card: Any) -> int:
+def _turn1_search_text_target_filter_card_hp(card: Any) -> int:
     if isinstance(card, dict):
         ident = card.get("identity") or {}
         for key in ["hp", "HP"]:
@@ -7694,9 +7029,9 @@ def _turn1_v62_card_hp(card: Any) -> int:
     return 0
 
 
-def _turn1_v62_card_has_rule_box(card: Any) -> bool:
-    blob = _turn1_v62_norm(_turn1_v62_flatten_strings(card))
-    name = _turn1_v62_norm(_turn1_v62_card_name(card))
+def _turn1_search_text_target_filter_card_has_rule_box(card: Any) -> bool:
+    blob = _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_flatten_strings(card))
+    name = _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_card_name(card))
     # Conservative: cards with explicit Rule Box text or common rule-box suffixes.
     return (
         "rule box" in blob
@@ -7709,7 +7044,7 @@ def _turn1_v62_card_has_rule_box(card: Any) -> bool:
     )
 
 
-def _turn1_v62_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str, Any]]:
+def _turn1_search_text_target_filter_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str, Any]]:
     pools: List[Any] = []
     for zone in ["deck", "hand", "discard", "bench", "prizes"]:
         try:
@@ -7730,7 +7065,7 @@ def _turn1_v62_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str
         try:
             ok = tf.target_matches(c, target_norm)
         except Exception:
-            ok = _turn1_v62_norm(_turn1_v62_card_name(c)) == _turn1_v62_norm(target_norm)
+            ok = _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_card_name(c)) == _turn1_search_text_target_filter_norm(target_norm)
         if ok:
             key = id(c)
             if key not in seen:
@@ -7739,7 +7074,7 @@ def _turn1_v62_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str
     return out
 
 
-def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
+def _turn1_search_text_target_filter_action_search_steps(action: Any) -> List[Any]:
     steps: List[Any] = []
     seen = set()
 
@@ -7751,7 +7086,7 @@ def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
         steps.append(step)
 
     try:
-        source, effect, _va = turn1_v27_action_source_and_effect(action)
+        source, effect, _va = turn1_action_filter_compat_action_source_and_effect(action)
     except Exception:
         source, effect = action, None
 
@@ -7761,7 +7096,7 @@ def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
         if isinstance(obj, dict):
             # The existing simulator function knows how compiled search steps are stored.
             try:
-                for s in _turn1_v22_search_steps_for_card(obj):
+                for s in _turn1_search_steps_for_card(obj):
                     add_step(s)
             except Exception:
                 pass
@@ -7784,29 +7119,29 @@ def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
     return steps
 
 
-def _turn1_v62_action_blob(action: Any) -> str:
+def _turn1_search_text_target_filter_action_blob(action: Any) -> str:
     try:
-        source, effect, _va = turn1_v27_action_source_and_effect(action)
+        source, effect, _va = turn1_action_filter_compat_action_source_and_effect(action)
     except Exception:
         source, effect = action, None
-    return _turn1_v62_norm(_turn1_v62_flatten_strings(effect) + " " + _turn1_v62_flatten_strings(source) + " " + _turn1_v62_flatten_strings(action))
+    return _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_flatten_strings(effect) + " " + _turn1_search_text_target_filter_flatten_strings(source) + " " + _turn1_search_text_target_filter_flatten_strings(action))
 
 
-def _turn1_v62_text_allows_target(action_blob: str, target_card: Dict[str, Any]) -> bool:
+def _turn1_search_text_target_filter_text_allows_target(action_blob: str, target_card: Dict[str, Any]) -> bool:
     """Fallback for text not represented by structured filters."""
-    s = _turn1_v62_norm(action_blob)
+    s = _turn1_search_text_target_filter_norm(action_blob)
     if not s:
         return False
 
-    stype = _turn1_v62_card_supertype(target_card)
-    subtypes = _turn1_v62_card_subtypes(target_card)
-    types = _turn1_v62_card_types(target_card)
-    hp = _turn1_v62_card_hp(target_card)
+    stype = _turn1_search_text_target_filter_card_supertype(target_card)
+    subtypes = _turn1_search_text_target_filter_card_subtypes(target_card)
+    types = _turn1_search_text_target_filter_card_types(target_card)
+    hp = _turn1_search_text_target_filter_card_hp(target_card)
     is_pokemon = stype == "pokemon"
     is_energy = stype == "energy"
     is_trainer = stype == "trainer"
     is_basic = "basic" in subtypes
-    no_rule_box = not _turn1_v62_card_has_rule_box(target_card)
+    no_rule_box = not _turn1_search_text_target_filter_card_has_rule_box(target_card)
 
     # Explicit negative/positional categories.
     if "opponent" in s and "your opponent" in s and not any(x in s for x in ["your deck", "your hand"]):
@@ -7875,18 +7210,18 @@ def _turn1_v62_text_allows_target(action_blob: str, target_card: Dict[str, Any])
     return False
 
 
-def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, action: Any) -> bool:
-    source, effect, va = turn1_v27_action_source_and_effect(action)
-    blob = turn1_v27_norm_blob(turn1_v27_flatten_text(effect) + " " + turn1_v27_flatten_text(source))
-    search_cats = turn1_v27_effect_search_categories(blob)
+def turn1_action_filter_compat_target_compatible_with_action_filter(st: Any, target_norm: str, action: Any) -> bool:
+    source, effect, va = turn1_action_filter_compat_action_source_and_effect(action)
+    blob = turn1_action_filter_compat_norm_blob(turn1_action_filter_compat_flatten_text(effect) + " " + turn1_action_filter_compat_flatten_text(source))
+    search_cats = turn1_action_filter_compat_effect_search_categories(blob)
 
     if "opponent_only" in search_cats:
         return False
 
     # Resolve the proposed target to actual card(s) and use the same search
-    # filter machinery that execution uses. This is the important v62 change.
-    matching_cards = _turn1_v62_target_cards_for_norm(st, target_norm)
-    steps = _turn1_v62_action_search_steps(action)
+    # filter machinery that execution uses. This is the important precise-search-filter change.
+    matching_cards = _turn1_search_text_target_filter_target_cards_for_norm(st, target_norm)
+    steps = _turn1_search_text_target_filter_action_search_steps(action)
     action_name = action_label(action)
 
     if matching_cards and steps:
@@ -7897,32 +7232,32 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
                 except Exception:
                     filt = {}
                 try:
-                    if _turn1_v22_filter_allows_for_action(filt or {}, target_card, action_name):
+                    if _turn1_search_filter_allows_for_action(filt or {}, target_card, action_name):
                         return True
                 except Exception:
                     pass
                 # Some compiled filters are incomplete; use printed/compiled text fallback.
                 try:
-                    if _turn1_v62_text_allows_target(_turn1_v62_action_blob(action), target_card):
+                    if _turn1_search_text_target_filter_text_allows_target(_turn1_search_text_target_filter_action_blob(action), target_card):
                         return True
                 except Exception:
                     pass
         return False
 
     if matching_cards:
-        action_blob = _turn1_v62_action_blob(action)
+        action_blob = _turn1_search_text_target_filter_action_blob(action)
         for target_card in matching_cards:
-            if _turn1_v62_text_allows_target(action_blob, target_card):
+            if _turn1_search_text_target_filter_text_allows_target(action_blob, target_card):
                 return True
         if search_cats:
-            return any(turn1_v27_categories_compatible(search_cats, turn1_v27_card_categories(c)) for c in matching_cards)
+            return any(turn1_action_filter_compat_categories_compatible(search_cats, turn1_action_filter_compat_card_categories(c)) for c in matching_cards)
         return True
 
     if not search_cats:
         return True
 
     # Conservative textual fallback for unresolved targets.
-    tn = turn1_v27_norm_blob(target_norm)
+    tn = turn1_action_filter_compat_norm_blob(target_norm)
     if "supporter" in search_cats:
         return "supporter" in tn
     if "basic_energy" in search_cats:
@@ -7934,268 +7269,11 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
 
     return True
 
-def _turn1_v58_norm(value):
-    import re as _re
-    import unicodedata as _unicodedata
-
-    s = str(value or "")
-    s = _unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _unicodedata.combining(ch))
-    s = s.lower().replace("’", "'").replace("`", "'")
-    s = _re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def _turn1_v58_flatten_strings(obj, max_items=6000):
-    out = []
-    seen = set()
-
-    def rec(x):
-        if len(out) >= max_items:
-            return
-        oid = id(x)
-        if oid in seen:
-            return
-        seen.add(oid)
-
-        if isinstance(x, str):
-            if x.strip():
-                out.append(x)
-            return
-
-        if isinstance(x, dict):
-            for k, v in x.items():
-                # Keep card-text-bearing values and lightweight keys.
-                if isinstance(k, str) and k in {
-                    "name",
-                    "card_name",
-                    "supertype",
-                    "subtypes",
-                    "types",
-                    "stage",
-                    "text",
-                    "raw_text",
-                    "source_text",
-                    "effect_text",
-                    "rules",
-                    "rule",
-                    "abilities",
-                    "attacks",
-                    "compiled_effects",
-                    "raw_card",
-                    "gameplay",
-                    "filter",
-                    "filters",
-                    "steps",
-                }:
-                    out.append(k)
-                rec(v)
-            return
-
-        if isinstance(x, (list, tuple, set)):
-            for v in x:
-                rec(v)
-
-    rec(obj)
-    return " ".join(out)
-
-
-def _turn1_v58_blob(obj):
-    if isinstance(obj, str):
-        return obj
-    key = id(obj)
-    cached = _TURN1_V58_CARD_TEXT_CACHE.get(key)
-    if cached is not None:
-        return cached
-    blob = _turn1_v58_flatten_strings(obj)
-    if len(_TURN1_V58_CARD_TEXT_CACHE) < 100000:
-        _TURN1_V58_CARD_TEXT_CACHE[key] = blob
-    return blob
-
-
-def _turn1_v58_card_name(card):
-    try:
-        return tf.card_name(card)
-    except Exception:
-        pass
-    if isinstance(card, dict):
-        ident = card.get("identity") or {}
-        return (
-            card.get("name")
-            or card.get("card_name")
-            or ident.get("name")
-            or ident.get("canonical_name")
-            or ""
-        )
-    return str(card or "")
-
-
-def _turn1_v58_zone_iter(st):
-    for attr in ["deck", "hand", "bench", "discard", "prizes", "lost_zone"]:
-        try:
-            zone = getattr(st, attr, None)
-        except Exception:
-            zone = None
-        if isinstance(zone, list):
-            for card in zone:
-                if isinstance(card, dict):
-                    yield card
-
-    try:
-        active = getattr(st, "active", None)
-        if isinstance(active, dict):
-            yield active
-    except Exception:
-        pass
-
-
-def _turn1_v58_resolve_named_target_card(st, target_norm):
-    target = _turn1_v58_norm(target_norm)
-    if not target:
-        return None
-
-    # Remove quantity prefixes and common runtime labels.
-    target = re.sub(r"^\d+x\s+", "", target).strip()
-    target = target.replace("blocked incompatible search target:", "").strip()
-
-    best = None
-    for card in _turn1_v58_zone_iter(st):
-        name = _turn1_v58_norm(_turn1_v58_card_name(card))
-        if not name:
-            continue
-        if name == target:
-            return card
-        if target in name or name in target:
-            best = card
-
-    return best
-
-
-def _turn1_v58_card_is_pokemon(card):
-    blob = _turn1_v58_norm(_turn1_v58_blob(card))
-    try:
-        stype = _turn1_v58_norm(tf.card_supertype(card))
-    except Exception:
-        stype = ""
-    return stype == "pokemon" or stype == "pokémon" or "basic pokemon" in blob or "stage 1" in blob or "stage 2" in blob or "pokemon" in blob or "pokémon" in blob
-
-
-def _turn1_v58_card_is_basic(card):
-    blob = _turn1_v58_norm(_turn1_v58_blob(card))
-    try:
-        subtypes = card.get("subtypes") if isinstance(card, dict) else None
-        if isinstance(subtypes, (list, tuple)) and any(_turn1_v58_norm(x) == "basic" for x in subtypes):
-            return True
-    except Exception:
-        pass
-    return "basic pokemon" in blob or "basic pokémon" in blob or "basic" in blob and _turn1_v58_card_is_pokemon(card)
-
-
-def _turn1_v58_card_has_rule_box(card):
-    blob = _turn1_v58_norm(_turn1_v58_blob(card))
-    name = _turn1_v58_norm(_turn1_v58_card_name(card))
-    # This is intentionally conservative for the no-rule-box restriction.
-    if "rule box" in blob and any(x in blob for x in ["pokemon ex", "pokemon v", "pokemon gx", "pokémon ex", "pokémon v", "pokémon gx"]):
-        return True
-    if any(x in name for x in [" ex", " v", " gx", " vmax", " vstar"]):
-        return True
-    if any(x in blob for x in ["pokemon ex rule", "pokemon v rule", "pokémon ex rule", "pokémon v rule", "vstar rule", "vmax"]):
-        return True
-    return False
-
-
-def _turn1_v58_card_has_fighting_type(card):
-    blob = _turn1_v58_norm(_turn1_v58_blob(card))
-    try:
-        types = card.get("types") if isinstance(card, dict) else None
-        if isinstance(types, (list, tuple)):
-            if any(_turn1_v58_norm(x) in {"f", "fighting", "{f}"} for x in types):
-                return True
-    except Exception:
-        pass
-    return "{f}" in blob or "fighting" in blob
-
-
-def _turn1_v58_access_phrases(action):
-    import re as _re
-
-    # Prefer existing compiled/search step extraction when available.
-    phrases = []
-    try:
-        for step in _turn1_v22_search_steps_for_card(action):
-            try:
-                filt = tf.extract_filter(step)
-            except Exception:
-                filt = step
-            text = _turn1_v58_blob(filt)
-            if text.strip():
-                phrases.append(text)
-    except Exception:
-        pass
-
-    blob = _turn1_v58_norm(_turn1_v58_blob(action))
-
-    # Add explicit self-search text. Avoid whole-card fallback unless search text exists.
-    patterns = [
-        r"search your deck for (.*?)(?:, reveal| reveal| and reveal|,? and put|,? put| then shuffle| shuffle|\.|$)",
-        r"look at the top \d+ cards? of your deck.*?reveal (.*?)(?: card| cards|,| and put| put|$)",
-        r"choose (.*?)(?: from your deck| from among them|,| and put| put|$)",
-    ]
-
-    for pat in patterns:
-        for m in _re.finditer(pat, blob):
-            phrase = m.group(1).strip()
-            if phrase:
-                phrases.append(phrase)
-
-    return [_turn1_v58_norm(p) for p in phrases if _turn1_v58_norm(p)]
-
-
-def _turn1_v58_phrase_allows_named_pokemon(phrase, target_card):
-    p = _turn1_v58_norm(phrase)
-    if not p:
-        return False
-
-    # This fix is only for self-search/reveal Pokémon access. It should not
-    # make arbitrary draw/disruption cards compatible.
-    if not ("pokemon" in p or "pokémon" in p):
-        return False
-    if "opponent" in p and "your deck" not in p:
-        return False
-    if not _turn1_v58_card_is_pokemon(target_card):
-        return False
-
-    if "rule box" in p and ("doesn't have" in p or "does not have" in p or "without" in p):
-        if _turn1_v58_card_has_rule_box(target_card):
-            return False
-
-    if "basic" in p and not _turn1_v58_card_is_basic(target_card):
-        return False
-
-    # Fighting Gong-style typed Pokémon search.
-    if ("{f}" in p or "fighting" in p) and ("pokemon" in p or "pokémon" in p):
-        if not _turn1_v58_card_has_fighting_type(target_card):
-            return False
-
-    return True
-
-
-def _turn1_v58_named_pokemon_search_compatible(st, action, target_norm):
-    target_card = _turn1_v58_resolve_named_target_card(st, target_norm)
-    if target_card is None:
-        return False
-
-    for phrase in _turn1_v58_access_phrases(action):
-        if _turn1_v58_phrase_allows_named_pokemon(phrase, target_card):
-            return True
-
-    return False
-
-def turn1_v27_action_allowed_for_goal(st: Any, action: Any, target_norm: str) -> bool:
-    if not turn1_v27_position_allowed(st, action):
+def turn1_action_filter_compat_action_allowed_for_goal(st: Any, action: Any, target_norm: str) -> bool:
+    if not turn1_action_filter_compat_position_allowed(st, action):
         try:
             st.log.append({
-                "event": "blocked_illegal_ability_position_v27",
+                "event": "blocked_illegal_ability_position",
                 "action": action_label(action),
                 "target_norm": target_norm,
             })
@@ -8203,10 +7281,10 @@ def turn1_v27_action_allowed_for_goal(st: Any, action: Any, target_norm: str) ->
             pass
         return False
 
-    if not turn1_v27_target_compatible_with_action_filter(st, target_norm, action):
+    if not turn1_action_filter_compat_target_compatible_with_action_filter(st, target_norm, action):
         try:
             st.log.append({
-                "event": "blocked_incompatible_search_filter_v27",
+                "event": "blocked_incompatible_search_filter",
                 "action": action_label(action),
                 "target_norm": target_norm,
             })
@@ -8217,7 +7295,7 @@ def turn1_v27_action_allowed_for_goal(st: Any, action: Any, target_norm: str) ->
     return True
 
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V27 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_FILTER_COMPAT = score_candidate_for_missing_targets
 
 def score_candidate_for_missing_targets(
     st: tf.SimState,
@@ -8225,10 +7303,10 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
-    scored = _turn1_v53_cached_score_candidates(st, missing, going, enable_chain_search)
+    scored = _turn1_cached_score_candidates(st, missing, going, enable_chain_search)
     filtered: List[Tuple[float, Any, str]] = []
 
     for score, action, target_norm in scored:
@@ -8240,29 +7318,29 @@ def score_candidate_for_missing_targets(
         except Exception:
             pass
 
-        if turn1_v27_action_allowed_for_goal(st, action, target_norm):
+        if turn1_action_filter_compat_action_allowed_for_goal(st, action, target_norm):
             filtered.append((score, action, target_norm))
 
     return filtered
 
 
-_ORIG_EXECUTE_ACTION_V27 = execute_action
+_ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT = execute_action
 
 def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.Random, going: str, enable_chain_search: bool) -> None:
     # Safety net. Scoring should already filter bad actions. If an older patch or
     # future path bypasses scoring, do not execute illegal/typed-incompatible access.
-    if not turn1_v27_action_allowed_for_goal(st, action, target_norm):
+    if not turn1_action_filter_compat_action_allowed_for_goal(st, action, target_norm):
         # Count it as a consumed consideration so the loop cannot repeatedly pick
         # the same blocked action forever, but do not append it to st.line.
         st.actions_used += 1
         return
-    _ORIG_EXECUTE_ACTION_V27(st, action, target_norm, rng, going, enable_chain_search)
+    _ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT(st, action, target_norm, rng, going, enable_chain_search)
 
 
 
 
 # ---------------------------------------------------------------------
-# TURN1_SEARCH_TARGET_TYPE_SYSTEM_V36
+# TURN1_SEARCH_TARGET_TYPE_SYSTEM
 # ---------------------------------------------------------------------
 # Root fix for search effects:
 # Search/draw-like effects must only be allowed to access cards matching their
@@ -8280,20 +7358,20 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 #   3. Wraps simulate_one_goal_trial at the end so final success rows cannot
 #      include incompatible search/effect actions.
 
-import re as _turn1_v36_re
-import unicodedata as _turn1_v36_unicodedata
+import re as _turn1_result_goal_filter_re
+import unicodedata as _turn1_result_goal_filter_unicodedata
 
 
-def turn1_v36_norm(value):
+def turn1_result_goal_filter_norm(value):
     s = str(value or "")
-    s = _turn1_v36_unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _turn1_v36_unicodedata.combining(ch))
+    s = _turn1_result_goal_filter_unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not _turn1_result_goal_filter_unicodedata.combining(ch))
     s = s.lower().replace("’", "'").replace("`", "'")
-    s = _turn1_v36_re.sub(r"\s+", " ", s)
+    s = _turn1_result_goal_filter_re.sub(r"\s+", " ", s)
     return s.strip()
 
 
-def turn1_v36_card_name(card):
+def turn1_result_goal_filter_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -8311,24 +7389,24 @@ def turn1_v36_card_name(card):
     return ""
 
 
-def turn1_v36_identity(card):
+def turn1_result_goal_filter_identity(card):
     if not isinstance(card, dict):
         return {}
     ident = card.get("identity") or {}
     return ident if isinstance(ident, dict) else {}
 
 
-def turn1_v36_supertype(card):
+def turn1_result_goal_filter_supertype(card):
     if not isinstance(card, dict):
         return ""
-    ident = turn1_v36_identity(card)
+    ident = turn1_result_goal_filter_identity(card)
     return str(card.get("supertype") or ident.get("supertype") or "")
 
 
-def turn1_v36_subtypes(card):
+def turn1_result_goal_filter_subtypes(card):
     vals = []
     if isinstance(card, dict):
-        ident = turn1_v36_identity(card)
+        ident = turn1_result_goal_filter_identity(card)
         for src in (card, ident):
             for key in ("subtypes", "subtype", "trainerType"):
                 v = src.get(key)
@@ -8339,10 +7417,10 @@ def turn1_v36_subtypes(card):
     return vals
 
 
-def turn1_v36_types(card):
+def turn1_result_goal_filter_types(card):
     vals = []
     if isinstance(card, dict):
-        ident = turn1_v36_identity(card)
+        ident = turn1_result_goal_filter_identity(card)
         for src in (card, ident):
             v = src.get("types")
             if isinstance(v, (list, tuple, set)):
@@ -8352,13 +7430,13 @@ def turn1_v36_types(card):
     return vals
 
 
-def turn1_v36_card_classes(card):
+def turn1_result_goal_filter_card_classes(card):
     """Strict identity-based classes. Do not inspect attack/effect text here."""
     classes = set()
-    st = turn1_v36_norm(turn1_v36_supertype(card))
-    subs = {turn1_v36_norm(x) for x in turn1_v36_subtypes(card)}
-    types = {turn1_v36_norm(x) for x in turn1_v36_types(card)}
-    name = turn1_v36_norm(turn1_v36_card_name(card))
+    st = turn1_result_goal_filter_norm(turn1_result_goal_filter_supertype(card))
+    subs = {turn1_result_goal_filter_norm(x) for x in turn1_result_goal_filter_subtypes(card)}
+    types = {turn1_result_goal_filter_norm(x) for x in turn1_result_goal_filter_types(card)}
+    name = turn1_result_goal_filter_norm(turn1_result_goal_filter_card_name(card))
 
     if "pokemon" in st or "pokémon" in st:
         classes.add("pokemon")
@@ -8403,7 +7481,7 @@ def turn1_v36_card_classes(card):
     return classes
 
 
-def turn1_v36_class_implies(classes, wanted):
+def turn1_result_goal_filter_class_implies(classes, wanted):
     if wanted in classes:
         return True
     # Specific card classes imply their broad parents.
@@ -8416,8 +7494,8 @@ def turn1_v36_class_implies(classes, wanted):
     return False
 
 
-def turn1_v36_filter_classes_from_text(text):
-    t = turn1_v36_norm(text)
+def turn1_result_goal_filter_classes_from_text(text):
+    t = turn1_result_goal_filter_norm(text)
     classes = set()
 
     if not t:
@@ -8439,43 +7517,43 @@ def turn1_v36_filter_classes_from_text(text):
         classes.update(["energy", "basic_energy", "fighting_energy", "basic_fighting_energy"])
     elif "basic energy" in t:
         classes.update(["energy", "basic_energy"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put).{0,180}energy", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put).{0,180}energy", t):
         classes.add("energy")
 
     # Pokémon searches.
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic water pokemon|basic water pokémon)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic water pokemon|basic water pokémon)", t):
         classes.update(["pokemon", "basic_pokemon", "water_pokemon", "basic_water_pokemon"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(water pokemon|water pokémon)", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(water pokemon|water pokémon)", t):
         classes.update(["pokemon", "water_pokemon"])
 
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic fighting pokemon|basic fighting pokémon)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic fighting pokemon|basic fighting pokémon)", t):
         classes.update(["pokemon", "basic_pokemon", "fighting_pokemon", "basic_fighting_pokemon"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(fighting pokemon|fighting pokémon)", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(fighting pokemon|fighting pokémon)", t):
         classes.update(["pokemon", "fighting_pokemon"])
 
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon ex|pokémon ex)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon ex|pokémon ex)", t):
         classes.update(["pokemon", "pokemon_ex"])
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic pokemon|basic pokémon)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic pokemon|basic pokémon)", t):
         classes.update(["pokemon", "basic_pokemon"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon|pokémon)", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon|pokémon)", t):
         classes.add("pokemon")
 
     # Trainer searches.
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|look at).{0,220}supporter", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|look at).{0,220}supporter", t):
         classes.update(["trainer", "supporter"])
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|look at).{0,220}item", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|look at).{0,220}item", t):
         classes.update(["trainer", "item"])
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|look at).{0,220}stadium", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|look at).{0,220}stadium", t):
         classes.update(["trainer", "stadium"])
 
     # Generic self-draw is allowed as general access but does not define a search target.
-    if _turn1_v36_re.search(r"\b(draw|draws|draw until)\b.{0,100}\b(card|cards)\b", t) and "your opponent" not in t:
+    if _turn1_result_goal_filter_re.search(r"\b(draw|draws|draw until)\b.{0,100}\b(card|cards)\b", t) and "your opponent" not in t:
         classes.add("generic_draw")
 
     return classes
 
 
-def turn1_v36_filter_classes(filt):
+def turn1_result_goal_filter_classes(filt):
     classes = set()
     if not isinstance(filt, dict):
         return classes
@@ -8503,12 +7581,12 @@ def turn1_v36_filter_classes(filt):
         if val:
             raw_parts.append(str(val))
     if raw_parts:
-        classes.update(turn1_v36_filter_classes_from_text(" ".join(raw_parts)))
+        classes.update(turn1_result_goal_filter_classes_from_text(" ".join(raw_parts)))
 
     return classes
 
 
-def turn1_v36_card_allowed_by_classes(card, allowed):
+def turn1_result_goal_filter_card_allowed_by_classes(card, allowed):
     if not allowed:
         return True
     if "opponent_only" in allowed:
@@ -8516,7 +7594,7 @@ def turn1_v36_card_allowed_by_classes(card, allowed):
     if "generic_draw" in allowed and len(allowed) == 1:
         return True
 
-    cc = turn1_v36_card_classes(card)
+    cc = turn1_result_goal_filter_card_classes(card)
 
     # Remove broad classes from the search side when specific restrictions exist.
     specific = set(allowed)
@@ -8531,27 +7609,27 @@ def turn1_v36_card_allowed_by_classes(card, allowed):
     if not specific:
         specific = set(allowed)
 
-    return any(turn1_v36_class_implies(cc, want) for want in specific)
+    return any(turn1_result_goal_filter_class_implies(cc, want) for want in specific)
 
 
 # Patch target_finder's core filter check. This fixes many bad selections at the source.
-_ORIG_TF_FILTER_ALLOWS_CARD_V36 = getattr(tf, "filter_allows_card", None)
+_ORIG_TF_FILTER_ALLOWS_CARD_BEFORE_RESULT_GOAL_FILTER = getattr(tf, "filter_allows_card", None)
 
-def turn1_v36_filter_allows_card(filt, card):
-    classes = turn1_v36_filter_classes(filt)
+def turn1_result_goal_filter_allows_card(filt, card):
+    classes = turn1_result_goal_filter_classes(filt)
     if classes:
-        return turn1_v36_card_allowed_by_classes(card, classes)
-    if _ORIG_TF_FILTER_ALLOWS_CARD_V36 is not None:
-        return _ORIG_TF_FILTER_ALLOWS_CARD_V36(filt, card)
+        return turn1_result_goal_filter_card_allowed_by_classes(card, classes)
+    if _ORIG_TF_FILTER_ALLOWS_CARD_BEFORE_RESULT_GOAL_FILTER is not None:
+        return _ORIG_TF_FILTER_ALLOWS_CARD_BEFORE_RESULT_GOAL_FILTER(filt, card)
     return True
 
 try:
-    tf.filter_allows_card = turn1_v36_filter_allows_card
+    tf.filter_allows_card = turn1_result_goal_filter_allows_card
 except Exception:
     pass
 
 
-def turn1_v36_flatten_strings(obj, max_items=7000):
+def turn1_result_goal_filter_flatten_strings(obj, max_items=7000):
     out = []
     seen = set()
     def rec(x):
@@ -8578,24 +7656,24 @@ def turn1_v36_flatten_strings(obj, max_items=7000):
     return " ".join(out)
 
 
-def turn1_v36_action_labels(line):
+def turn1_result_goal_filter_action_labels(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v36_deck_name_map(deck):
+def turn1_result_goal_filter_deck_name_map(deck):
     out = {}
     for card in deck or []:
-        name = turn1_v36_card_name(card)
-        n = turn1_v36_norm(name)
+        name = turn1_result_goal_filter_card_name(card)
+        n = turn1_result_goal_filter_norm(name)
         if n and n not in out:
             out[n] = card
     return out
 
 
-def turn1_v36_extract_steps_from_card_or_effect(obj):
+def turn1_result_goal_filter_extract_steps_from_card_or_effect(obj):
     steps = []
     try:
         if isinstance(obj, dict):
@@ -8610,15 +7688,15 @@ def turn1_v36_extract_steps_from_card_or_effect(obj):
     return steps
 
 
-def turn1_v36_action_target_classes(action, deck):
+def turn1_result_goal_filter_action_target_classes(action, deck):
     """What kind of card can this action directly access?"""
-    action_norm = turn1_v36_norm(action)
-    name_map = turn1_v36_deck_name_map(deck)
+    action_norm = turn1_result_goal_filter_norm(action)
+    name_map = turn1_result_goal_filter_deck_name_map(deck)
 
     # Physical card action.
     if action_norm in name_map:
         card = name_map[action_norm]
-        cname = turn1_v36_norm(turn1_v36_card_name(card))
+        cname = turn1_result_goal_filter_norm(turn1_result_goal_filter_card_name(card))
         classes = set()
 
         # Important explicit card policies.
@@ -8635,7 +7713,7 @@ def turn1_v36_action_target_classes(action, deck):
         if cname == "fighting gong":
             return {"pokemon", "basic_pokemon", "fighting_pokemon", "basic_fighting_pokemon", "energy", "basic_energy", "fighting_energy", "basic_fighting_energy"}
 
-        for step in turn1_v36_extract_steps_from_card_or_effect(card):
+        for step in turn1_result_goal_filter_extract_steps_from_card_or_effect(card):
             if not isinstance(step, dict):
                 continue
             op = step.get("op")
@@ -8644,8 +7722,8 @@ def turn1_v36_action_target_classes(action, deck):
                     filt = tf.extract_filter(step)
                 except Exception:
                     filt = step.get("filter") or {}
-                classes.update(turn1_v36_filter_classes(filt))
-                classes.update(turn1_v36_filter_classes_from_text(turn1_v36_flatten_strings(step)))
+                classes.update(turn1_result_goal_filter_classes(filt))
+                classes.update(turn1_result_goal_filter_classes_from_text(turn1_result_goal_filter_flatten_strings(step)))
             elif op in {"draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches"}:
                 classes.add("generic_draw")
 
@@ -8655,19 +7733,19 @@ def turn1_v36_action_target_classes(action, deck):
     # Ability/effect label. Find the owning effect/card text.
     blobs = []
     for card in deck or []:
-        card_blob = turn1_v36_flatten_strings(card)
-        if action_norm and action_norm in turn1_v36_norm(card_blob):
+        card_blob = turn1_result_goal_filter_flatten_strings(card)
+        if action_norm and action_norm in turn1_result_goal_filter_norm(card_blob):
             blobs.append(card_blob)
 
     classes = set()
     for blob in blobs:
-        classes.update(turn1_v36_filter_classes_from_text(blob))
+        classes.update(turn1_result_goal_filter_classes_from_text(blob))
 
     # If it is not a card name and not a known effect label, leave empty.
     return classes
 
 
-def turn1_v36_goal_classes(reqs, deck):
+def turn1_result_goal_filter_goal_classes(reqs, deck):
     classes = set()
     for req in reqs or []:
         for opt in getattr(req, "options", []) or []:
@@ -8675,17 +7753,17 @@ def turn1_v36_goal_classes(reqs, deck):
             for card in deck or []:
                 try:
                     if card_matches_option(card, opt):
-                        classes.update(turn1_v36_card_classes(card))
+                        classes.update(turn1_result_goal_filter_card_classes(card))
                         matched = True
                 except Exception:
                     pass
             if not matched:
                 # Text fallback for goals like "Basic Water Energy" if deck match fails.
-                classes.update(turn1_v36_filter_classes_from_text(getattr(opt, "raw", "")))
+                classes.update(turn1_result_goal_filter_classes_from_text(getattr(opt, "raw", "")))
     return classes
 
 
-def turn1_v36_action_compatible_with_goal(action_classes, goal_classes):
+def turn1_result_goal_filter_action_compatible_with_goal(action_classes, goal_classes):
     if not action_classes:
         # Unknown physical card actions are allowed elsewhere; unknown effect labels are handled by caller.
         return True
@@ -8713,16 +7791,16 @@ def turn1_v36_action_compatible_with_goal(action_classes, goal_classes):
             if allowed == goal:
                 return True
             # Broad search can hit specific goal.
-            if allowed == "pokemon" and turn1_v36_class_implies({goal}, "pokemon"):
+            if allowed == "pokemon" and turn1_result_goal_filter_class_implies({goal}, "pokemon"):
                 return True
-            if allowed == "energy" and turn1_v36_class_implies({goal}, "energy"):
+            if allowed == "energy" and turn1_result_goal_filter_class_implies({goal}, "energy"):
                 return True
-            if allowed == "trainer" and turn1_v36_class_implies({goal}, "trainer"):
+            if allowed == "trainer" and turn1_result_goal_filter_class_implies({goal}, "trainer"):
                 return True
     return False
 
 
-def turn1_v65_goal_target_norms(reqs, deck):
+def turn1_direct_goal_filter_goal_target_norms(reqs, deck):
     # Return normalized concrete target names/card ids for the current goal requirements.
     norms = []
     seen = set()
@@ -8747,18 +7825,18 @@ def turn1_v65_goal_target_norms(reqs, deck):
                 except Exception:
                     pass
             for v in raw_values:
-                n = turn1_v36_norm(v)
+                n = turn1_result_goal_filter_norm(v)
                 if n and n not in seen:
                     seen.add(n)
                     norms.append(n)
     return norms
 
 
-def turn1_v65_action_directly_reaches_goal(action_card, deck, reqs) -> bool:
+def turn1_direct_goal_filter_action_reaches_goal_directly(action_card, deck, reqs) -> bool:
     # True when target_finder says this physical action can directly find a goal card.
     if not isinstance(action_card, dict):
         return False
-    for target_norm in turn1_v65_goal_target_norms(reqs, deck):
+    for target_norm in turn1_direct_goal_filter_goal_target_norms(reqs, deck):
         try:
             if tf.card_directly_searches_target(action_card, target_norm, deck):
                 return True
@@ -8773,25 +7851,25 @@ def turn1_v65_action_directly_reaches_goal(action_card, deck, reqs) -> bool:
     return False
 
 
-def turn1_v36_bad_actions_for_goal(line, deck, reqs):
-    # TURN1_V65_DEWRAP_DIRECT_GOAL_FILTER
-    goal_classes = turn1_v36_goal_classes(reqs, deck)
+def turn1_result_goal_filter_bad_actions_for_goal(line, deck, reqs):
+    # TURN1_DEWRAP_DIRECT_GOAL_FILTER
+    goal_classes = turn1_result_goal_filter_goal_classes(reqs, deck)
     if not goal_classes:
         return []
 
-    name_map = turn1_v36_deck_name_map(deck)
+    name_map = turn1_result_goal_filter_deck_name_map(deck)
     bad = []
 
-    for action in turn1_v36_action_labels(line):
-        action_norm = turn1_v36_norm(action)
+    for action in turn1_result_goal_filter_action_labels(line):
+        action_norm = turn1_result_goal_filter_norm(action)
         action_card = name_map.get(action_norm)
 
         # Physical card action: if target_finder's direct search logic says it
         # can find a goal card, the post-filter must not invalidate the line.
-        if action_card is not None and turn1_v65_action_directly_reaches_goal(action_card, deck, reqs):
+        if action_card is not None and turn1_direct_goal_filter_action_reaches_goal_directly(action_card, deck, reqs):
             continue
 
-        classes = turn1_v36_action_target_classes(action, deck)
+        classes = turn1_result_goal_filter_action_target_classes(action, deck)
 
         # Unknown non-card action = unvalidated ability label. Block.
         if action_norm not in name_map and not classes:
@@ -8802,7 +7880,7 @@ def turn1_v36_bad_actions_for_goal(line, deck, reqs):
         if action_norm in name_map and not classes:
             continue
 
-        if not turn1_v36_action_compatible_with_goal(classes, goal_classes):
+        if not turn1_result_goal_filter_action_compatible_with_goal(classes, goal_classes):
             bad.append({
                 "action": action,
                 "reason": "search_target_incompatible_with_goal",
@@ -8813,7 +7891,7 @@ def turn1_v36_bad_actions_for_goal(line, deck, reqs):
     return bad
 
 
-def turn1_v36_filter_single_result(result, deck, reqs):
+def turn1_result_goal_filter_single_result(result, deck, reqs):
     if not isinstance(result, dict):
         return result
     if not result.get("success"):
@@ -8821,50 +7899,32 @@ def turn1_v36_filter_single_result(result, deck, reqs):
     line = result.get("line") or "none"
     if line == "none":
         return result
-    bad = turn1_v36_bad_actions_for_goal(line, deck, reqs)
+    bad = turn1_result_goal_filter_bad_actions_for_goal(line, deck, reqs)
     if not bad:
         return result
     result["success"] = False
-    result["success_stage"] = "blocked_search_target_type_v36"
-    result["blocked_search_target_type_v36"] = bad
+    result["success_stage"] = "blocked_search_target_type"
+    result["blocked_search_target_type"] = bad
     result["missing_requirements"] = [
         "Blocked incompatible search target: " + ", ".join(b.get("action", "?") for b in bad)
     ]
     return result
 
 
-def turn1_v36_filter_results(results, deck, reqs):
+def turn1_result_goal_filter_results(results, deck, reqs):
     for r in results or []:
-        turn1_v36_filter_single_result(r, deck, reqs)
+        turn1_result_goal_filter_single_result(r, deck, reqs)
     return results
 
 
 # Override old guard functions that were too broad or based on full card text.
-def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
-    before = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    turn1_v36_filter_results(results, deck, reqs)
-    after = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    return {"enabled": True, "invalidated_successes": before - after, "version": "v36"}
-
-
-def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
-    before = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    turn1_v36_filter_results(results, deck, reqs)
-    after = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    return {"enabled": True, "invalidated_successes": before - after, "version": "v36"}
-
-
-def turn1_v32_apply_prereturn_incompatible_effect_guard(result, deck, reqs):
-    return turn1_v36_filter_single_result(result, deck, reqs)
-
-
-# Wrap the trial simulator last. Prefer a pre-v33 base if present so the earlier
+# Wrap the trial simulator last. Prefer a pre-unvalidated-effect-guard base if present so the earlier
 # "block all non-card labels" wrapper does not incorrectly kill valid Shivery Chill
 # lines for Basic Water Energy goals.
-_TURN1_V36_BASE_SIMULATE = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V33") or globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V32") or simulate_one_goal_trial
+_TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD") or simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
-    result = _TURN1_V36_BASE_SIMULATE(*args, **kwargs)
+    result = _TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER(*args, **kwargs)
     deck = kwargs.get("deck")
     reqs = kwargs.get("reqs")
     if deck is None:
@@ -8878,7 +7938,7 @@ def simulate_one_goal_trial(*args, **kwargs):
                 reqs = value
                 break
     if deck is not None and reqs is not None:
-        return turn1_v36_filter_single_result(result, deck, reqs)
+        return turn1_result_goal_filter_single_result(result, deck, reqs)
     return result
 
 
@@ -9005,21 +8065,21 @@ def main() -> None:
 
 
 # ---------------------------------------------------------------------
-# TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE_V41_1
+# TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE
 # ---------------------------------------------------------------------
-# v0.41 added generic compiled-effect checks. Correct direction, but expensive:
+# active-compiled-search added generic compiled-effect checks. Correct direction, but expensive:
 # it can repeatedly flatten/scan the same card/effect text for every trial.
 #
-# This patch adds conservative memoization around known v41 helpers if they
+# This patch adds conservative memoization around known active compiled-search helpers if they
 # exist. It does not change simulator semantics.
 
 try:
-    from functools import lru_cache as _turn1_v411_lru_cache
+    from functools import lru_cache as _turn1_runtime_cache_wrapper_lru_cache
 except Exception:
-    _turn1_v411_lru_cache = None
+    _turn1_runtime_cache_wrapper_lru_cache = None
 
 
-def _turn1_v411_card_cache_key(card):
+def _turn1_runtime_cache_card_key(card):
     if not isinstance(card, dict):
         return str(id(card))
 
@@ -9037,7 +8097,7 @@ def _turn1_v411_card_cache_key(card):
     )
 
 
-def _turn1_v411_install_cache_wrapper(name):
+def _turn1_install_runtime_cache_wrapper(name):
     if name not in globals():
         return False
 
@@ -9054,7 +8114,7 @@ def _turn1_v411_install_cache_wrapper(name):
 
             for arg in args:
                 if isinstance(arg, dict):
-                    key_parts.append(("card", _turn1_v411_card_cache_key(arg)))
+                    key_parts.append(("card", _turn1_runtime_cache_card_key(arg)))
                 elif isinstance(arg, list):
                     # For deck/list args, do not store whole list contents.
                     # Use card ids when it looks like a deck.
@@ -9062,7 +8122,7 @@ def _turn1_v411_install_cache_wrapper(name):
                         key_parts.append(
                             (
                                 "deck",
-                                tuple(_turn1_v411_card_cache_key(x) for x in arg),
+                                tuple(_turn1_runtime_cache_card_key(x) for x in arg),
                             )
                         )
                     else:
@@ -9074,14 +8134,14 @@ def _turn1_v411_install_cache_wrapper(name):
 
             for k, v in sorted(kwargs.items()):
                 if isinstance(v, dict):
-                    key_parts.append((k, "card", _turn1_v411_card_cache_key(v)))
+                    key_parts.append((k, "card", _turn1_runtime_cache_card_key(v)))
                 elif isinstance(v, list):
                     if v and all(isinstance(x, dict) for x in v[: min(5, len(v))]):
                         key_parts.append(
                             (
                                 k,
                                 "deck",
-                                tuple(_turn1_v411_card_cache_key(x) for x in v),
+                                tuple(_turn1_runtime_cache_card_key(x) for x in v),
                             )
                         )
                     else:
@@ -9113,40 +8173,24 @@ def _turn1_v411_install_cache_wrapper(name):
     return True
 
 
-_turn1_v411_wrapped_helpers = []
+_turn1_runtime_cache_wrapper_wrapped_helpers = []
 
-for _turn1_v411_name in [
-    # likely v41/v39 compiled-effect helpers
-    "turn1_v41_flatten_strings",
-    "turn1_v41_norm",
-    "turn1_v41_effect_can_help_goal",
-    "turn1_v41_search_effect_can_help_goal",
-    "turn1_v41_card_has_active_compiled_search",
-    "turn1_v41_active_compiled_search_candidates",
-    "turn1_v41_compiled_search_filter_allows_goal",
-    "turn1_v41_goal_classes",
-    "turn1_v41_access_classes_from_effect",
-    "turn1_v41_best_active_for_goal",
-    "turn1_v39_flatten_strings",
-    "turn1_v39_norm",
-    "turn1_v39_effect_can_help_goal",
-    "turn1_v39_goal_classes",
-    # v36/v37/v38 helper families, if present
-    "turn1_v36_goal_classes",
-    "turn1_v36_access_classes_from_text",
-    "turn1_v38_goal_classes",
-    "turn1_v38_access_classes_from_text",
+for _turn1_runtime_cache_wrapper_name in [
+    # likely compiled-effect helpers
+    # result-goal and later helper families, if present
+    "turn1_result_goal_filter_goal_classes",
+    "turn1_result_goal_filter_classes_from_text",
 ]:
     try:
-        if _turn1_v411_install_cache_wrapper(_turn1_v411_name):
-            _turn1_v411_wrapped_helpers.append(_turn1_v411_name)
+        if _turn1_install_runtime_cache_wrapper(_turn1_runtime_cache_wrapper_name):
+            _turn1_runtime_cache_wrapper_wrapped_helpers.append(_turn1_runtime_cache_wrapper_name)
     except Exception:
         pass
 
 try:
-    TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE_V41_1 = {
+    TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE = {
         "installed": True,
-        "wrapped_helpers": list(_turn1_v411_wrapped_helpers),
+        "wrapped_helpers": list(_turn1_runtime_cache_wrapper_wrapped_helpers),
     }
 except Exception:
     pass
@@ -9155,22 +8199,22 @@ except Exception:
 
 
 # ---------------------------------------------------------------------
-# TURN1_HOTPATH_CLASSIFICATION_CACHE_V42
+# TURN1_HOTPATH_CLASSIFICATION_CACHE
 # ---------------------------------------------------------------------
 # Performance fix after profiling.
 #
 # Hotspots found:
 # - gf.score_candidate_for_missing_targets
-# - gf._turn1_v22_card_goal_search_capacity
+# - gf._turn1_card_goal_search_capacity
 # - tf.score_playable_card
 # - tf.card_directly_searches_target
-# - gf.turn1_v26_flatten_text
+# - gf.turn1_opponent_only_filter_flatten_text
 #
 # The expensive part is repeated classification of the same cards/effects/text.
 # This caches pure classification helpers. It intentionally does NOT cache
 # stateful action execution or draw/deck mutation.
 
-def _turn1_v42_card_key(obj):
+def _turn1_hotpath_cache_card_key(obj):
     if not isinstance(obj, dict):
         return None
 
@@ -9232,14 +8276,14 @@ def _turn1_v42_card_key(obj):
     return None
 
 
-def _turn1_v42_safe_key(obj, depth=0):
+def _turn1_hotpath_cache_safe_key(obj, depth=0):
     if depth > 4:
         return ("deep", id(obj))
 
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
 
-    card_key = _turn1_v42_card_key(obj)
+    card_key = _turn1_hotpath_cache_card_key(obj)
     if card_key is not None:
         return card_key
 
@@ -9272,7 +8316,7 @@ def _turn1_v42_safe_key(obj, depth=0):
                 "source_text",
                 "text",
             }:
-                simple[str(k)] = _turn1_v42_safe_key(v, depth + 1)
+                simple[str(k)] = _turn1_hotpath_cache_safe_key(v, depth + 1)
 
         if simple:
             return ("dict", tuple(sorted(simple.items())))
@@ -9285,18 +8329,18 @@ def _turn1_v42_safe_key(obj, depth=0):
             # full value keys, but still allow repeated same-object cache hits.
             return (type(obj).__name__, "large", len(obj), id(obj))
 
-        return (type(obj).__name__, tuple(_turn1_v42_safe_key(x, depth + 1) for x in obj))
+        return (type(obj).__name__, tuple(_turn1_hotpath_cache_safe_key(x, depth + 1) for x in obj))
 
     if isinstance(obj, set):
         if len(obj) > 80:
             return ("set", "large", len(obj), id(obj))
 
-        return ("set", tuple(sorted(_turn1_v42_safe_key(x, depth + 1) for x in obj)))
+        return ("set", tuple(sorted(_turn1_hotpath_cache_safe_key(x, depth + 1) for x in obj)))
 
     return ("obj", type(obj).__name__, id(obj))
 
 
-def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
+def _turn1_wrap_hotpath_cached(owner, name, max_entries=200000):
     try:
         fn = getattr(owner, name)
     except Exception:
@@ -9305,7 +8349,7 @@ def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
     if not callable(fn):
         return False
 
-    if getattr(fn, "_turn1_v42_cached", False):
+    if getattr(fn, "_turn1_hotpath_cached", False):
         return False
 
     cache = {}
@@ -9314,8 +8358,8 @@ def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
         try:
             key = (
                 name,
-                tuple(_turn1_v42_safe_key(a) for a in args),
-                tuple(sorted((str(k), _turn1_v42_safe_key(v)) for k, v in kwargs.items())),
+                tuple(_turn1_hotpath_cache_safe_key(a) for a in args),
+                tuple(sorted((str(k), _turn1_hotpath_cache_safe_key(v)) for k, v in kwargs.items())),
             )
 
             if key in cache:
@@ -9333,38 +8377,33 @@ def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
 
     wrapped.__name__ = getattr(fn, "__name__", name)
     wrapped.__doc__ = getattr(fn, "__doc__", None)
-    wrapped._turn1_v42_cached = True
+    wrapped._turn1_hotpath_cached = True
 
     setattr(owner, name, wrapped)
     return True
 
 
-_TURN1_V42_CACHED_HELPERS = []
+_TURN1_HOTPATH_CACHED_HELPERS = []
 
 # Goal-finder pure-ish classification hotpaths.
-for _turn1_v42_name in [
-    "_turn1_v22_card_goal_search_capacity",
-    "turn1_v26_flatten_text",
+for _turn1_hotpath_cache_name in [
+    "_turn1_card_goal_search_capacity",
+    "turn1_opponent_only_filter_flatten_text",
     "card_matches_option",
     "requirement_satisfied",
     "goal_satisfied",
     "zone_cards",
-    "turn1_v36_filter_single_result",
-    "turn1_v41_card_has_active_compiled_search",
-    "turn1_v41_search_effect_can_help_goal",
-    "turn1_v41_compiled_search_filter_allows_goal",
-    "turn1_v41_goal_classes",
-    "turn1_v41_access_classes_from_effect",
+    "turn1_result_goal_filter_single_result",
 ]:
     try:
-        if _turn1_v42_wrap_cached(globals(), _turn1_v42_name):
-            _TURN1_V42_CACHED_HELPERS.append("gf." + _turn1_v42_name)
+        if _turn1_wrap_hotpath_cached(globals(), _turn1_hotpath_cache_name):
+            _TURN1_HOTPATH_CACHED_HELPERS.append("gf." + _turn1_hotpath_cache_name)
     except Exception:
         pass
 
 # Target-finder pure classification hotpaths.
 try:
-    for _turn1_v42_name in [
+    for _turn1_hotpath_cache_name in [
         "card_directly_searches_target",
         "filter_text_blob",
         "filter_allows_card",
@@ -9376,635 +8415,21 @@ try:
         "is_energy",
     ]:
         try:
-            if _turn1_v42_wrap_cached(tf, _turn1_v42_name):
-                _TURN1_V42_CACHED_HELPERS.append("tf." + _turn1_v42_name)
+            if _turn1_wrap_hotpath_cached(tf, _turn1_hotpath_cache_name):
+                _TURN1_HOTPATH_CACHED_HELPERS.append("tf." + _turn1_hotpath_cache_name)
         except Exception:
             pass
 except Exception:
     pass
 
-TURN1_HOTPATH_CLASSIFICATION_CACHE_V42 = {
+TURN1_HOTPATH_CLASSIFICATION_CACHE = {
     "installed": True,
-    "cached_helpers": list(_TURN1_V42_CACHED_HELPERS),
+    "cached_helpers": list(_TURN1_HOTPATH_CACHED_HELPERS),
 }
 
 # ---------------------------------------------------------------------
-# TURN1_V75_GOAL_SELECTOR_CANDIDATE_SOURCE_GUARD
-# ---------------------------------------------------------------------
-# Final goal-aware deck selector replacement.
-#
-# Why this exists:
-#   Earlier guards fixed card_directly_searches_target(...) and several target
-#   finder execution paths, but the multi-goal deck selector could still choose a
-#   candidate card if it matched the missing goal option and an older/vague filter
-#   path allowed it. That allowed illegal selections such as:
-#       Poké Pad -> Wally's Compassion
-# because the selected card matched the Wally goal, even though Poké Pad can only
-# search Pokémon without a Rule Box.
-#
-# Broad rule:
-#   A goal-aware search may select candidate C only if all three are true:
-#     1. C matches the missing goal option.
-#     2. The exact search filter/source text allows C.
-#     3. The source card itself can legally search C, using C's actual card name.
-#
-# This is not specific to Poké Pad/Wally. It also guards future cases like
-# Pokémon-only searchers selecting Trainers, Trainer-only searchers selecting
-# Energy, Bench/HP-limited searchers selecting Energy, etc.
 
-def _turn1_v75_deck_with_candidate(deck, candidate):
-    try:
-        out = list(deck or [])
-    except Exception:
-        out = []
-    if isinstance(candidate, dict) and not any(candidate is c for c in out):
-        out.append(candidate)
-    return out
-
-
-def _turn1_v75_candidate_target_norm(candidate_card):
-    if not isinstance(candidate_card, dict):
-        return ""
-    try:
-        name = tf.card_name(candidate_card)
-        if name:
-            return tf.norm(name)
-    except Exception:
-        pass
-    try:
-        ident = candidate_card.get('identity') or {}
-        for key in ('name', 'canonical_name', 'card_name'):
-            val = candidate_card.get(key) or ident.get(key)
-            if val:
-                return tf.norm(str(val))
-    except Exception:
-        pass
-    return ""
-
-
-def _turn1_v75_source_card_can_search_candidate(action_card, candidate_card, deck):
-    # Non-card/internal callers keep legacy behavior. Physical played cards must
-    # prove that their own text can search the exact candidate card.
-    if not isinstance(action_card, dict):
-        return True
-    if not isinstance(candidate_card, dict):
-        return False
-
-    candidate_norm = _turn1_v75_candidate_target_norm(candidate_card)
-    if not candidate_norm:
-        return False
-
-    try:
-        candidate_deck = _turn1_v75_deck_with_candidate(deck, candidate_card)
-        return bool(tf.card_directly_searches_target(action_card, candidate_norm, candidate_deck))
-    except Exception:
-        return False
-
-
-def _turn1_v75_action_can_select_goal_candidate(
-    action_card,
-    opt,
-    candidate_card,
-    deck,
-    filt,
-    action_name,
-    source_step=None,
-) -> bool:
-    if not isinstance(candidate_card, dict):
-        return False
-
-    try:
-        if not card_matches_option(candidate_card, opt):
-            return False
-    except Exception:
-        return False
-
-    try:
-        if not _turn1_v22_filter_allows_for_action(filt, candidate_card, action_name):
-            return False
-    except Exception:
-        return False
-
-    try:
-        if not _turn1_v67_source_text_allows_card(
-            filt,
-            candidate_card,
-            action_name,
-            action_card=action_card,
-            source_step=source_step,
-        ):
-            return False
-    except Exception:
-        # If this helper errors, do not silently allow a physical source card to
-        # select an arbitrary goal option. The direct source-card check below is
-        # still required.
-        pass
-
-    if not _turn1_v75_source_card_can_search_candidate(action_card, candidate_card, deck):
-        return False
-
-    return True
-
-
-def _turn1_v22_goal_select_from_deck(
-    st: tf.SimState,
-    reqs: Sequence[GoalRequirement],
-    mode: str,
-    tracker: GoalTracker,
-    filt: Dict[str, Any],
-    amount: int,
-    action_name: str,
-    action_card=None,
-    source_step=None,
-) -> List[Dict[str, Any]]:
-    """Strict goal-aware deck selector.
-
-    This intentionally replaces the earlier v22/v68 selector at runtime. It is
-    used by both goal-search execution and capacity scoring because those call
-    this global function by name.
-    """
-    selected: List[Dict[str, Any]] = []
-    if amount <= 0:
-        return selected
-
-    virtual_tracker = GoalTracker()
-    virtual_tracker.mark(tracker.accessed)
-    virtual_tracker.mark(selected)
-
-    while len(selected) < amount:
-        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
-        if not deficits:
-            break
-
-        chosen_idx = None
-        chosen_req = None
-
-        if mode == "any":
-            ordered_deficits = deficits
-        else:
-            ordered_deficits = sorted(deficits, key=lambda x: (-x[1], x[0].label))
-
-        for req, _deficit in ordered_deficits:
-            for idx, c in enumerate(st.deck):
-                if not isinstance(c, dict):
-                    continue
-
-                if any(
-                    _turn1_v75_action_can_select_goal_candidate(
-                        action_card,
-                        opt,
-                        c,
-                        st.deck,
-                        filt,
-                        action_name,
-                        source_step=source_step,
-                    )
-                    for opt in req.options
-                ):
-                    chosen_idx = idx
-                    chosen_req = req
-                    break
-
-            if chosen_idx is not None:
-                break
-
-        if chosen_idx is None:
-            break
-
-        chosen = st.deck.pop(chosen_idx)
-        selected.append(chosen)
-        virtual_tracker.mark([chosen])
-
-        if mode == "any" and chosen_req is not None:
-            if requirement_satisfied(chosen_req, st, virtual_tracker):
-                break
-
-    return selected
-
-
-if __name__ == "__main__":
-    main()
-
-# TURN1_APPLY_V30_BEFORE_SUMMARY
-
-# TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_START
-# Final strict selector override for goal-aware deck searches.
-#
-# Why this exists:
-# Older patch layers can still leave a permissive goal selector alive, allowing a
-# source card to select a goal card if the goal card merely matches the goal and
-# the compiled filter is vague (for example {"from_text": True}). That allowed
-# illegal routes like Poké Pad selecting Wally's Compassion. This override is
-# deliberately source-bound and candidate-bound:
-#   1. the candidate must match the missing goal option,
-#   2. the structured/compiled filter must allow the candidate,
-#   3. the source card's printed/search text must allow the candidate,
-#   4. when available, target_finder's card_directly_searches_target must also
-#      agree using the candidate's concrete card name.
-
-
-def _turn1_v76_norm(value):
-    try:
-        return tf.norm(str(value or ""))
-    except Exception:
-        return str(value or "").lower()
-
-
-def _turn1_v76_collect_text(value, parts, depth=0):
-    if value is None or depth > 6:
-        return
-    if isinstance(value, str):
-        if value.strip():
-            parts.append(value)
-        return
-    if isinstance(value, dict):
-        for k, v in value.items():
-            if isinstance(k, str):
-                parts.append(k)
-            _turn1_v76_collect_text(v, parts, depth + 1)
-        return
-    if isinstance(value, (list, tuple, set)):
-        for item in value:
-            _turn1_v76_collect_text(item, parts, depth + 1)
-
-
-def _turn1_v76_source_blob(filt, action_name, action_card=None, source_step=None):
-    parts = [str(action_name or "")]
-    _turn1_v76_collect_text(filt, parts)
-    _turn1_v76_collect_text(source_step, parts)
-    if isinstance(action_card, dict):
-        for key in (
-            "combined_text", "rules", "abilities_text", "attacks_text", "text",
-            "raw_text", "raw_abilities", "raw_attacks", "gameplay", "source",
-        ):
-            if key in action_card:
-                _turn1_v76_collect_text(action_card.get(key), parts)
-        try:
-            parts.append(tf.card_name(action_card))
-        except Exception:
-            pass
-    return _turn1_v76_norm(" ".join(p for p in parts if p))
-
-
-def _turn1_v76_card_types(card):
-    out = set()
-    if not isinstance(card, dict):
-        return out
-    for key in ("types", "type", "energy_types"):
-        val = card.get(key)
-        if isinstance(val, str):
-            out.add(_turn1_v76_norm(val))
-        elif isinstance(val, (list, tuple, set)):
-            for x in val:
-                out.add(_turn1_v76_norm(x))
-    for obj_key in ("identity", "gameplay", "raw_card", "source"):
-        obj = card.get(obj_key)
-        if isinstance(obj, dict):
-            for key in ("types", "type", "energy_types"):
-                val = obj.get(key)
-                if isinstance(val, str):
-                    out.add(_turn1_v76_norm(val))
-                elif isinstance(val, (list, tuple, set)):
-                    for x in val:
-                        out.add(_turn1_v76_norm(x))
-    return out
-
-
-def _turn1_v76_has_type(card, typ):
-    typ = _turn1_v76_norm(typ)
-    aliases = {
-        "electric": "lightning",
-        "steel": "metal",
-        "dark": "darkness",
-    }
-    wanted = aliases.get(typ, typ)
-    types = {aliases.get(t, t) for t in _turn1_v76_card_types(card)}
-    try:
-        name_n = _turn1_v76_norm(tf.card_name(card))
-        # Energy card names often encode the type even when types metadata is sparse.
-        if wanted in name_n:
-            types.add(wanted)
-    except Exception:
-        pass
-    return wanted in types
-
-
-def _turn1_v76_is_pokemon(card):
-    try:
-        return _turn1_v76_norm(tf.card_supertype(card)) in {"pokemon", "pokémon"}
-    except Exception:
-        return False
-
-
-def _turn1_v76_is_basic_pokemon(card):
-    try:
-        return bool(tf.is_basic_pokemon(card))
-    except Exception:
-        return _turn1_v76_is_pokemon(card) and "basic" in _turn1_v76_norm(str(card))
-
-
-def _turn1_v76_is_energy(card):
-    try:
-        return bool(tf.is_energy(card))
-    except Exception:
-        try:
-            return _turn1_v76_norm(tf.card_supertype(card)) == "energy"
-        except Exception:
-            return False
-
-
-def _turn1_v76_is_basic_energy(card):
-    try:
-        fn = getattr(tf, "is_basic_energy", None)
-        if callable(fn):
-            return bool(fn(card))
-    except Exception:
-        pass
-    try:
-        return _turn1_v76_is_energy(card) and "basic" in _turn1_v76_norm(tf.card_name(card))
-    except Exception:
-        return False
-
-
-def _turn1_v76_is_supporter(card):
-    try:
-        return bool(tf.is_supporter(card))
-    except Exception:
-        return False
-
-
-def _turn1_v76_is_trainer(card):
-    try:
-        return bool(tf.is_trainer(card))
-    except Exception:
-        try:
-            return _turn1_v76_norm(tf.card_supertype(card)) == "trainer"
-        except Exception:
-            return False
-
-
-def _turn1_v76_trainer_kind(card, kind):
-    kind = _turn1_v76_norm(kind)
-    if not _turn1_v76_is_trainer(card):
-        return False
-    blob_parts = []
-    _turn1_v76_collect_text(card, blob_parts)
-    try:
-        blob_parts.append(tf.card_name(card))
-    except Exception:
-        pass
-    blob = _turn1_v76_norm(" ".join(blob_parts))
-    return kind in blob
-
-
-def _turn1_v76_card_hp(card):
-    vals = []
-    if isinstance(card, dict):
-        vals.extend([card.get("hp"), card.get("HP"), card.get("raw_hp")])
-        for key in ("identity", "gameplay", "raw_card", "source"):
-            obj = card.get(key)
-            if isinstance(obj, dict):
-                vals.extend([obj.get("hp"), obj.get("HP"), obj.get("raw_hp")])
-    for val in vals:
-        if val is None:
-            continue
-        m = re.search(r"\d+", str(val))
-        if m:
-            try:
-                return int(m.group(0))
-            except Exception:
-                pass
-    return None
-
-
-def _turn1_v76_has_rule_box(card):
-    parts = []
-    if isinstance(card, dict):
-        for key in ("rules", "rule_box", "combined_text", "text", "name", "card_name"):
-            _turn1_v76_collect_text(card.get(key), parts)
-        try:
-            parts.append(tf.card_name(card))
-        except Exception:
-            pass
-    blob = _turn1_v76_norm(" ".join(parts))
-    if "rule box" in blob or "pokemon ex" in blob or "pokémon ex" in blob:
-        return True
-    # Avoid treating words like "executive" as ex.
-    if re.search(r"\b(?:ex|v|vmax|vstar|gx)\b", blob):
-        return True
-    return False
-
-
-def _turn1_v76_source_text_allows_candidate(filt, candidate, action_name, action_card=None, source_step=None):
-    """Return True only if the source card/search text can describe candidate.
-
-    This is intentionally a union of recognized target branches. It handles
-    OR-style searches such as Fighting Gong (Basic Fighting Energy OR Basic
-    Fighting Pokémon) while blocking mismatched categories such as Poké Pad ->
-    Supporter and Buddy-Buddy Poffin -> Energy.
-    """
-    blob = _turn1_v76_source_blob(filt, action_name, action_card, source_step)
-    if not blob:
-        return True
-
-    tests = []
-
-    hp_limit = None
-    hp_match = re.search(r"(\d+)\s*hp\s*or\s*less", blob)
-    if hp_match:
-        try:
-            hp_limit = int(hp_match.group(1))
-        except Exception:
-            hp_limit = None
-
-    def hp_ok(c):
-        if hp_limit is None:
-            return True
-        hp = _turn1_v76_card_hp(c)
-        return hp is not None and hp <= hp_limit
-
-    no_rule_box = ("doesnt have a rule box" in blob or "doesn't have a rule box" in blob or "does not have a rule box" in blob)
-
-    def no_rule_ok(c):
-        return (not no_rule_box) or (not _turn1_v76_has_rule_box(c))
-
-    type_aliases = {
-        "grass": ["grass"],
-        "fire": ["fire"],
-        "water": ["water"],
-        "lightning": ["lightning", "electric"],
-        "psychic": ["psychic"],
-        "fighting": ["fighting"],
-        "darkness": ["darkness", "dark"],
-        "metal": ["metal", "steel"],
-        "colorless": ["colorless", "colourless"],
-    }
-
-    def mentions_typed(kind, aliases):
-        return any(f"{a} {kind}" in blob or f"{a}-type {kind}" in blob for a in aliases)
-
-    # Typed branches first. They accumulate, so OR effects stay legal.
-    for typ, aliases in type_aliases.items():
-        if mentions_typed("energy", aliases):
-            if "basic" in blob:
-                tests.append(lambda c, typ=typ: _turn1_v76_is_basic_energy(c) and _turn1_v76_has_type(c, typ))
-            else:
-                tests.append(lambda c, typ=typ: _turn1_v76_is_energy(c) and _turn1_v76_has_type(c, typ))
-        if mentions_typed("pokemon", aliases) or mentions_typed("pokémon", aliases):
-            if "basic" in blob:
-                tests.append(lambda c, typ=typ: _turn1_v76_is_basic_pokemon(c) and _turn1_v76_has_type(c, typ) and hp_ok(c) and no_rule_ok(c))
-            else:
-                tests.append(lambda c, typ=typ: _turn1_v76_is_pokemon(c) and _turn1_v76_has_type(c, typ) and hp_ok(c) and no_rule_ok(c))
-
-    has_typed_energy = any(mentions_typed("energy", aliases) for aliases in type_aliases.values())
-    has_typed_pokemon = any(mentions_typed("pokemon", aliases) or mentions_typed("pokémon", aliases) for aliases in type_aliases.values())
-
-    if "basic energy" in blob and not has_typed_energy:
-        tests.append(lambda c: _turn1_v76_is_basic_energy(c))
-    elif "energy" in blob and not has_typed_energy:
-        tests.append(lambda c: _turn1_v76_is_energy(c))
-
-    # Avoid misreading Pokémon Tool as generic Pokémon search.
-    pokemon_tool_text = "pokemon tool" in blob or "pokémon tool" in blob
-    if ("basic pokemon" in blob or "basic pokémon" in blob) and not has_typed_pokemon:
-        tests.append(lambda c: _turn1_v76_is_basic_pokemon(c) and hp_ok(c) and no_rule_ok(c))
-    elif ("pokemon" in blob or "pokémon" in blob) and not has_typed_pokemon and not pokemon_tool_text:
-        # This intentionally catches Poké Pad: Pokémon without a Rule Box.
-        tests.append(lambda c: _turn1_v76_is_pokemon(c) and hp_ok(c) and no_rule_ok(c))
-
-    if "supporter" in blob:
-        tests.append(lambda c: _turn1_v76_is_supporter(c))
-    if "stadium" in blob:
-        tests.append(lambda c: _turn1_v76_trainer_kind(c, "stadium"))
-    if "item" in blob and not pokemon_tool_text:
-        tests.append(lambda c: _turn1_v76_trainer_kind(c, "item"))
-    if pokemon_tool_text or re.search(r"\btool\b", blob):
-        tests.append(lambda c: _turn1_v76_trainer_kind(c, "tool") or _turn1_v76_trainer_kind(c, "pokemon tool") or _turn1_v76_trainer_kind(c, "pokémon tool"))
-    if "trainer" in blob and not any(w in blob for w in ["supporter", "stadium", "item", "tool", "pokemon", "pokémon", "energy"]):
-        tests.append(lambda c: _turn1_v76_is_trainer(c))
-
-    if not tests:
-        return True
-    return any(test(candidate) for test in tests)
-
-
-def _turn1_v76_deck_with_candidate(deck, candidate):
-    try:
-        out = list(deck or [])
-    except Exception:
-        out = []
-    if isinstance(candidate, dict) and not any(candidate is c for c in out):
-        out.append(candidate)
-    return out
-
-
-def _turn1_v76_source_can_fetch_candidate(action_card, candidate, deck, filt, action_name, source_step=None):
-    if not isinstance(candidate, dict):
-        return False
-
-    # Structured/compiled filter gate.
-    try:
-        if not _turn1_v22_filter_allows_for_action(filt, candidate, action_name):
-            return False
-    except Exception:
-        return False
-
-    # Printed/source-text gate. This catches vague compiled filters such as
-    # {"from_text": True} by reading the actual source card text.
-    try:
-        if not _turn1_v76_source_text_allows_candidate(filt, candidate, action_name, action_card=action_card, source_step=source_step):
-            return False
-    except Exception:
-        return False
-
-    # Candidate-name direct reachability gate. This prevents a source card from
-    # satisfying a broad goal option by selecting a different category of card.
-    if isinstance(action_card, dict):
-        try:
-            exact_target = _turn1_v76_norm(tf.card_name(candidate))
-            if exact_target:
-                return bool(tf.card_directly_searches_target(action_card, exact_target, _turn1_v76_deck_with_candidate(deck, candidate)))
-        except Exception:
-            return False
-    return True
-
-
-def _turn1_v22_goal_select_from_deck(
-    st: tf.SimState,
-    reqs: Sequence[GoalRequirement],
-    mode: str,
-    tracker: GoalTracker,
-    filt: Dict[str, Any],
-    amount: int,
-    action_name: str,
-    action_card=None,
-    source_step=None,
-) -> List[Dict[str, Any]]:
-    # TURN1_V76_FINAL_STRICT_GOAL_SELECTOR
-    """Strict source-bound goal-aware deck selector.
-
-    This is the canonical selector used by the goal-aware executor and capacity
-    scorer. A selected card must match the goal and be legally searchable by the
-    actual source card/effect. It deliberately rejects cases like Poké Pad ->
-    Wally's Compassion and Buddy-Buddy Poffin -> Basic Water Energy.
-    """
-    selected: List[Dict[str, Any]] = []
-    if amount <= 0:
-        return selected
-
-    virtual_tracker = GoalTracker()
-    virtual_tracker.mark(tracker.accessed)
-    virtual_tracker.mark(selected)
-
-    while len(selected) < amount:
-        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
-        if not deficits:
-            break
-
-        chosen_idx = None
-        chosen_req = None
-        if mode == "any":
-            ordered_deficits = deficits
-        else:
-            ordered_deficits = sorted(deficits, key=lambda x: (-x[1], x[0].label))
-
-        for req, _deficit in ordered_deficits:
-            for idx, candidate in enumerate(st.deck):
-                if not isinstance(candidate, dict):
-                    continue
-                if not any(card_matches_option(candidate, opt) for opt in req.options):
-                    continue
-                if not _turn1_v76_source_can_fetch_candidate(
-                    action_card,
-                    candidate,
-                    st.deck,
-                    filt,
-                    action_name,
-                    source_step=source_step,
-                ):
-                    continue
-                chosen_idx = idx
-                chosen_req = req
-                break
-            if chosen_idx is not None:
-                break
-
-        if chosen_idx is None:
-            break
-
-        chosen = st.deck.pop(chosen_idx)
-        selected.append(chosen)
-        virtual_tracker.mark([chosen])
-
-        if mode == "any" and chosen_req is not None:
-            if _turn1_v22_req_deficit(chosen_req, st, virtual_tracker) <= 0:
-                break
-
-    return selected
-# TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_END
-
-
-# TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
+# TURN1_CLEAN_CANONICAL_GOAL_SELECTOR
 # Canonical source-bound goal selector.
 #
 # This replaces the patch-stack selector path with one readable rule:
@@ -10197,7 +8622,7 @@ def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, actio
 
     # First apply the structured compiled filter.
     try:
-        if not _turn1_v22_filter_allows_for_action(filt or {}, candidate, action_name):
+        if not _turn1_search_filter_allows_for_action(filt or {}, candidate, action_name):
             return False
     except Exception:
         return False
@@ -10207,10 +8632,10 @@ def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, actio
     if specific is not None:
         return bool(specific)
 
-    # Then use the existing v67 printed/source-text guard.
+    # Then use the existing printed/source-text guard.
     try:
-        if "_turn1_v67_source_text_allows_card" in globals():
-            if not _turn1_v67_source_text_allows_card(
+        if "_turn1_source_text_allows_card" in globals():
+            if not _turn1_source_text_allows_card(
                 filt or {},
                 candidate,
                 action_name,
@@ -10232,7 +8657,7 @@ def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, actio
         return False
 
 
-def _turn1_v22_goal_select_from_deck(
+def _turn1_goal_select_from_deck(
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
     mode: str,
@@ -10243,7 +8668,7 @@ def _turn1_v22_goal_select_from_deck(
     action_card=None,
     source_step=None,
 ) -> List[Dict[str, Any]]:
-    # TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
+    # TURN1_CLEAN_CANONICAL_GOAL_SELECTOR
     selected: List[Dict[str, Any]] = []
     if amount <= 0:
         return selected
@@ -10253,7 +8678,7 @@ def _turn1_v22_goal_select_from_deck(
     virtual_tracker.mark(selected)
 
     while len(selected) < amount:
-        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
+        deficits = _turn1_missing_goal_requirements_with_deficits(reqs, mode, st, virtual_tracker)
         if not deficits:
             break
 
@@ -10297,8 +8722,10 @@ def _turn1_v22_goal_select_from_deck(
         virtual_tracker.mark([chosen])
 
         if mode == "any" and chosen_req is not None:
-            if _turn1_v22_req_deficit(chosen_req, st, virtual_tracker) <= 0:
+            if _turn1_goal_requirement_deficit(chosen_req, st, virtual_tracker) <= 0:
                 break
 
     return selected
 
+if __name__ == "__main__":
+    main()
