@@ -1745,34 +1745,6 @@ def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Se
 #   Buddy-Buddy Poffin -> Basic Pokemon access
 
 
-def turn1_v32_norm(s):
-    import re as _re
-    import unicodedata as _unicodedata
-
-    s = str(s or "")
-    s = _unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _unicodedata.combining(ch))
-    s = s.lower().replace("’", "'").replace("`", "'")
-    s = _re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def turn1_v32_card_name(card):
-    try:
-        return tf.card_name(card)
-    except Exception:
-        if isinstance(card, dict):
-            ident = card.get("identity") or {}
-            return (
-                card.get("name")
-                or card.get("card_name")
-                or ident.get("name")
-                or ident.get("canonical_name")
-                or ""
-            )
-        return ""
-
-
 def turn1_v32_action_labels(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
@@ -2805,34 +2777,6 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
 # This blocks cases like:
 #   Shivery Chill in a Pokémon goal
 # because Shivery Chill searches Basic Water Energy, not Pokémon.
-
-def turn1_v30_norm(s):
-    import re as _re
-    import unicodedata as _unicodedata
-
-    s = str(s or "")
-    s = _unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _unicodedata.combining(ch))
-    s = s.lower().replace("’", "'")
-    s = _re.sub(r"\s+", " ", s)
-    return s.strip()
-
-
-def turn1_v30_card_name(card):
-    try:
-        return tf.card_name(card)
-    except Exception:
-        if isinstance(card, dict):
-            ident = card.get("identity") or {}
-            return (
-                card.get("name")
-                or card.get("card_name")
-                or ident.get("name")
-                or ident.get("canonical_name")
-                or ""
-            )
-        return ""
-
 
 def turn1_v30_effect_label_is_compatible(action_label, deck, reqs):
     ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
