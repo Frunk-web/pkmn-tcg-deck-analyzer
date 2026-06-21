@@ -2778,13 +2778,13 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
 #   Shivery Chill in a Pokémon goal
 # because Shivery Chill searches Basic Water Energy, not Pokémon.
 
-def turn1_v30_effect_label_is_compatible(action_label, deck, reqs):
+def turn1_pre_summary_effect_label_is_compatible(action_label, deck, reqs):
     ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
     return ok, reason
 
 
 # TURN1_V35_PATCHED_V30_COMPAT
-def turn1_v30_action_labels(line):
+def turn1_pre_summary_effect_label_actions_from_line(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -2793,7 +2793,7 @@ def turn1_v30_action_labels(line):
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
+def turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs):
     """
     Mutate results in-place before summarize_goal_trials runs.
     """
@@ -2810,8 +2810,8 @@ def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
 
         blocked = []
 
-        for action in turn1_v30_action_labels(line):
-            ok, reason = turn1_v30_effect_label_is_compatible(action, deck, reqs)
+        for action in turn1_pre_summary_effect_label_actions_from_line(line):
+            ok, reason = turn1_pre_summary_effect_label_is_compatible(action, deck, reqs)
 
             if not ok:
                 blocked.append({"action": action, "reason": reason})
@@ -4366,7 +4366,7 @@ def _turn1_v39_neutralize_old_posthoc_effect_filters():
     names_to_noop = [
         "turn1_v26_apply_opponent_only_filter",
         "turn1_v29_apply_effect_name_compatibility_filter",
-        "turn1_v30_apply_pre_summary_effect_label_guard",
+        "turn1_apply_pre_summary_effect_label_compatibility_guard",
         "turn1_v32_apply_prereturn_incompatible_effect_guard",
         "turn1_v36_apply_search_target_type_filter",
     ]
@@ -4986,7 +4986,7 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
     failures = [r for r in results if not r["success"]][: args.example_lines]
     return {
         "going": going,
-        "summary": (turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs), summarize_goal_trials(results))[1],
+        "summary": (turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs), summarize_goal_trials(results))[1],
         "effect_name_compatibility_summary": effect_name_compatibility_summary,
         "played_exclusion_summary": exclusion_summary,
         "opponent_only_filter_summary": opponent_only_filter_summary,
@@ -7921,13 +7921,6 @@ def turn1_v36_filter_results(results, deck, reqs):
 
 # Override old guard functions that were too broad or based on full card text.
 def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
-    before = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    turn1_v36_filter_results(results, deck, reqs)
-    after = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    return {"enabled": True, "invalidated_successes": before - after, "version": "v36"}
-
-
-def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
     before = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
     turn1_v36_filter_results(results, deck, reqs)
     after = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
