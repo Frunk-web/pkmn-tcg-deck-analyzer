@@ -3304,7 +3304,7 @@ def _turn1_unvalidated_effect_guard_actions(line, deck, reqs=None):
         if not action_norm:
             continue
 
-        # Physical card name: allowed. The v34 search-target filter handles
+        # Physical card name: allowed. The action-goal compatibility filter handles
         # whether the physical card's search target is compatible with the goal.
         if action_norm in card_names:
             continue
@@ -3363,7 +3363,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_SEARCH_EFFECT_TARGET_FILTERS_V34
+# TURN1_SEARCH_EFFECT_TARGET_FILTERS
 # ---------------------------------------------------------------------
 # Root fix:
 # The Turn-1 goal finder was reusing single-target scoring/execution too broadly.
@@ -3377,7 +3377,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 # scored. It also post-filters successful lines as a safety net.
 
 
-def _turn1_v34_norm(value):
+def _turn1_action_goal_compat_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -3389,7 +3389,7 @@ def _turn1_v34_norm(value):
     return s.strip()
 
 
-def _turn1_v34_flatten_strings(obj, max_items=6000):
+def _turn1_action_goal_compat_flatten_strings(obj, max_items=6000):
     out = []
     seen = set()
 
@@ -3421,7 +3421,7 @@ def _turn1_v34_flatten_strings(obj, max_items=6000):
     return " ".join(out)
 
 
-def _turn1_v34_card_name(card):
+def _turn1_action_goal_compat_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -3440,7 +3440,7 @@ def _turn1_v34_card_name(card):
     return ""
 
 
-def _turn1_v34_card_identity_blob(card):
+def _turn1_action_goal_compat_card_identity_blob(card):
     if not isinstance(card, dict):
         return ""
 
@@ -3458,7 +3458,7 @@ def _turn1_v34_card_identity_blob(card):
     return " ".join(parts)
 
 
-def _turn1_v34_card_hp(card):
+def _turn1_action_goal_compat_card_hp(card):
     if not isinstance(card, dict):
         return None
 
@@ -3476,9 +3476,9 @@ def _turn1_v34_card_hp(card):
     return None
 
 
-def _turn1_v34_goal_classes_for_card(card):
-    blob = _turn1_v34_norm(_turn1_v34_card_identity_blob(card))
-    name = _turn1_v34_norm(_turn1_v34_card_name(card))
+def _turn1_action_goal_compat_goal_classes_for_card(card):
+    blob = _turn1_action_goal_compat_norm(_turn1_action_goal_compat_card_identity_blob(card))
+    name = _turn1_action_goal_compat_norm(_turn1_action_goal_compat_card_name(card))
     both = f"{blob} {name}"
 
     classes = set()
@@ -3551,19 +3551,19 @@ def _turn1_v34_goal_classes_for_card(card):
     return classes
 
 
-def _turn1_v34_goal_classes_from_norm(target_norm, candidate_cards):
+def _turn1_action_goal_compat_goal_classes_from_norm(target_norm, candidate_cards):
     classes = set()
     target_norm = str(target_norm or "")
 
     for c in candidate_cards or []:
         try:
             if tf.target_matches(c, target_norm):
-                classes.update(_turn1_v34_goal_classes_for_card(c))
+                classes.update(_turn1_action_goal_compat_goal_classes_for_card(c))
         except Exception:
             continue
 
     # Text fallback for goals like "Basic Water Energy".
-    t = _turn1_v34_norm(target_norm)
+    t = _turn1_action_goal_compat_norm(target_norm)
     if "pokemon" in t or "pokémon" in t:
         classes.add("pokemon")
         if "basic" in t:
@@ -3599,10 +3599,10 @@ def _turn1_v34_goal_classes_from_norm(target_norm, candidate_cards):
     return classes
 
 
-def _turn1_v34_access_classes_from_text(text):
+def _turn1_action_goal_compat_access_classes_from_text(text):
     import re as _re
 
-    t = _turn1_v34_norm(text)
+    t = _turn1_action_goal_compat_norm(text)
     classes = set()
 
     # Opponent-only disruption is not self access.
@@ -3665,28 +3665,28 @@ def _turn1_v34_access_classes_from_text(text):
     return classes
 
 
-def _turn1_v34_action_source_and_text(action):
+def _turn1_action_goal_compat_action_source_and_text(action):
     # Returns (label/source_name, text_blob). The text blob should describe the
     # effect's access target, not only the source card identity.
     if isinstance(action, dict) and action.get("_virtual_action"):
         va = str(action.get("_virtual_action") or "")
         if action.get("effect") is not None:
-            return va, _turn1_v34_flatten_strings(action.get("effect"))
+            return va, _turn1_action_goal_compat_flatten_strings(action.get("effect"))
         if action.get("source") is not None:
-            return _turn1_v34_card_name(action.get("source")), _turn1_v34_flatten_strings(action.get("source"))
+            return _turn1_action_goal_compat_card_name(action.get("source")), _turn1_action_goal_compat_flatten_strings(action.get("source"))
         if action.get("card") is not None:
-            return _turn1_v34_card_name(action.get("card")), _turn1_v34_flatten_strings(action.get("card"))
+            return _turn1_action_goal_compat_card_name(action.get("card")), _turn1_action_goal_compat_flatten_strings(action.get("card"))
         if action.get("search_card") is not None:
-            return _turn1_v34_card_name(action.get("search_card")), _turn1_v34_flatten_strings(action.get("search_card"))
-        return va, _turn1_v34_flatten_strings(action)
+            return _turn1_action_goal_compat_card_name(action.get("search_card")), _turn1_action_goal_compat_flatten_strings(action.get("search_card"))
+        return va, _turn1_action_goal_compat_flatten_strings(action)
 
     if isinstance(action, dict):
-        return _turn1_v34_card_name(action), _turn1_v34_flatten_strings(action)
+        return _turn1_action_goal_compat_card_name(action), _turn1_action_goal_compat_flatten_strings(action)
 
     return str(action), str(action)
 
 
-def _turn1_v34_target_cards_for_norm(target_norm, st):
+def _turn1_action_goal_compat_target_cards_for_norm(target_norm, st):
     cards = []
     for attr in ["deck", "hand", "discard", "prizes", "bench"]:
         vals = getattr(st, attr, []) or []
@@ -3698,7 +3698,7 @@ def _turn1_v34_target_cards_for_norm(target_norm, st):
     return [c for c in cards if isinstance(c, dict)]
 
 
-def _turn1_v34_action_matches_target_directly(action, target_norm):
+def _turn1_action_goal_compat_action_matches_target_directly(action, target_norm):
     if isinstance(action, dict) and not action.get("_virtual_action"):
         try:
             return tf.target_matches(action, target_norm)
@@ -3707,14 +3707,14 @@ def _turn1_v34_action_matches_target_directly(action, target_norm):
     return False
 
 
-def _turn1_v34_effect_allows_target_constraints(text, target_cards):
-    t = _turn1_v34_norm(text)
+def _turn1_action_goal_compat_effect_allows_target_constraints(text, target_cards):
+    t = _turn1_action_goal_compat_norm(text)
 
     # Buddy-Buddy Poffin style HP restriction.
     if "70 hp or less" in t or "70 hp or fewer" in t:
         matched = False
         for card in target_cards or []:
-            hp = _turn1_v34_card_hp(card)
+            hp = _turn1_action_goal_compat_card_hp(card)
             if hp is None:
                 continue
             matched = True
@@ -3725,7 +3725,7 @@ def _turn1_v34_effect_allows_target_constraints(text, target_cards):
     return True
 
 
-def _turn1_v34_classes_compatible(action_classes, target_classes):
+def _turn1_action_goal_compat_classes_compatible(action_classes, target_classes):
     if not action_classes:
         return True  # Unknown non-access action; do not block here.
 
@@ -3775,41 +3775,41 @@ def _turn1_v34_classes_compatible(action_classes, target_classes):
     return bool(action_classes.intersection(target_classes))
 
 
-def _turn1_v34_action_can_help_target(action, target_norm, st):
-    if _turn1_v34_action_matches_target_directly(action, target_norm):
+def _turn1_action_goal_compat_action_can_help_target(action, target_norm, st):
+    if _turn1_action_goal_compat_action_matches_target_directly(action, target_norm):
         return True, "action_is_target_card"
 
-    label, text = _turn1_v34_action_source_and_text(action)
-    target_cards = _turn1_v34_target_cards_for_norm(target_norm, st)
-    target_classes = _turn1_v34_goal_classes_from_norm(target_norm, target_cards)
-    action_classes = _turn1_v34_access_classes_from_text(text)
+    label, text = _turn1_action_goal_compat_action_source_and_text(action)
+    target_cards = _turn1_action_goal_compat_target_cards_for_norm(target_norm, st)
+    target_classes = _turn1_action_goal_compat_goal_classes_from_norm(target_norm, target_cards)
+    action_classes = _turn1_action_goal_compat_access_classes_from_text(text)
 
-    if not _turn1_v34_effect_allows_target_constraints(text, [c for c in target_cards if tf.target_matches(c, target_norm)]):
+    if not _turn1_action_goal_compat_effect_allows_target_constraints(text, [c for c in target_cards if tf.target_matches(c, target_norm)]):
         return False, f"effect_constraints_block:{label}"
 
-    if _turn1_v34_classes_compatible(action_classes, target_classes):
+    if _turn1_action_goal_compat_classes_compatible(action_classes, target_classes):
         return True, "compatible"
 
     return False, f"incompatible_search_target:{label}:action={sorted(action_classes)}:target={sorted(target_classes)}"
 
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V34 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_GOAL_COMPAT = score_candidate_for_missing_targets
 
 def score_candidate_for_missing_targets(st, missing, going, enable_chain_search):
     # TURN1_ACTION_BUDGET_GUARD
     if _turn1_action_budget_exhausted(st):
         return []
-    rows = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V34(st, missing, going, enable_chain_search)
+    rows = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_GOAL_COMPAT(st, missing, going, enable_chain_search)
     filtered = []
 
     for score, action, target_norm in rows:
-        ok, reason = _turn1_v34_action_can_help_target(action, target_norm, st)
+        ok, reason = _turn1_action_goal_compat_action_can_help_target(action, target_norm, st)
         if ok:
             filtered.append((score, action, target_norm))
         else:
             try:
                 st.log.append({
-                    "event": "blocked_incompatible_search_target_v34",
+                    "event": "blocked_incompatible_search_target",
                     "action": action_label(action),
                     "target_norm": target_norm,
                     "reason": reason,
@@ -3820,34 +3820,34 @@ def score_candidate_for_missing_targets(st, missing, going, enable_chain_search)
     return filtered
 
 
-def _turn1_v34_goal_classes_for_reqs(reqs, deck):
+def _turn1_action_goal_compat_goal_classes_for_reqs(reqs, deck):
     classes = set()
     for req in reqs or []:
         for opt in getattr(req, "options", []) or []:
-            classes.update(_turn1_v34_goal_classes_from_norm(getattr(opt, "norm", str(opt)), deck))
+            classes.update(_turn1_action_goal_compat_goal_classes_from_norm(getattr(opt, "norm", str(opt)), deck))
     return classes
 
 
-def _turn1_v34_deck_card_by_name(deck):
+def _turn1_action_goal_compat_deck_card_by_name(deck):
     out = {}
     for card in deck or []:
-        name = _turn1_v34_card_name(card)
-        norm = _turn1_v34_norm(name)
+        name = _turn1_action_goal_compat_card_name(card)
+        norm = _turn1_action_goal_compat_norm(name)
         if norm and norm not in out:
             out[norm] = card
     return out
 
 
-def _turn1_v34_action_labels_from_line(line):
+def _turn1_action_goal_compat_action_labels_from_line(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs):
-    by_name = _turn1_v34_deck_card_by_name(deck)
-    norm = _turn1_v34_norm(label)
+def _turn1_action_goal_compat_label_compatible_with_any_goal(label, deck, reqs):
+    by_name = _turn1_action_goal_compat_deck_card_by_name(deck)
+    norm = _turn1_action_goal_compat_norm(label)
 
     # If the action itself is one of the goal cards, keep it.
     action_card = by_name.get(norm)
@@ -3863,12 +3863,12 @@ def _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs):
     # Find text for a physical card name or an ability/effect label.
     texts = []
     if action_card is not None:
-        texts.append(_turn1_v34_flatten_strings(action_card))
+        texts.append(_turn1_action_goal_compat_flatten_strings(action_card))
     else:
         # Ability/effect label: find cards whose text contains that label.
         for card in deck or []:
-            blob = _turn1_v34_flatten_strings(card)
-            if norm and norm in _turn1_v34_norm(blob):
+            blob = _turn1_action_goal_compat_flatten_strings(card)
+            if norm and norm in _turn1_action_goal_compat_norm(blob):
                 texts.append(blob)
 
     if not texts:
@@ -3876,20 +3876,20 @@ def _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs):
 
     action_classes = set()
     for txt in texts:
-        action_classes.update(_turn1_v34_access_classes_from_text(txt))
+        action_classes.update(_turn1_action_goal_compat_access_classes_from_text(txt))
 
-    goal_classes = _turn1_v34_goal_classes_for_reqs(reqs, deck)
+    goal_classes = _turn1_action_goal_compat_goal_classes_for_reqs(reqs, deck)
 
-    if _turn1_v34_classes_compatible(action_classes, goal_classes):
+    if _turn1_action_goal_compat_classes_compatible(action_classes, goal_classes):
         return True, "compatible_with_goal"
 
     return False, f"line_action_incompatible:{label}:action={sorted(action_classes)}:goal={sorted(goal_classes)}"
 
 
-_ORIG_SIMULATE_ONE_GOAL_TRIAL_V34 = simulate_one_goal_trial
+_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_ACTION_GOAL_COMPAT = simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
-    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_V34(*args, **kwargs)
+    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_ACTION_GOAL_COMPAT(*args, **kwargs)
 
     try:
         if not isinstance(result, dict) or not result.get("success"):
@@ -3906,15 +3906,15 @@ def simulate_one_goal_trial(*args, **kwargs):
             return result
 
         blocked = []
-        for label in _turn1_v34_action_labels_from_line(line):
-            ok, reason = _turn1_v34_action_label_compatible_with_any_goal(label, deck, reqs)
+        for label in _turn1_action_goal_compat_action_labels_from_line(line):
+            ok, reason = _turn1_action_goal_compat_label_compatible_with_any_goal(label, deck, reqs)
             if not ok:
                 blocked.append({"action": label, "reason": reason})
 
         if blocked:
             result["success"] = False
-            result["success_stage"] = "blocked_incompatible_search_target_v34"
-            result["blocked_incompatible_search_targets_v34"] = blocked
+            result["success_stage"] = "blocked_incompatible_search_target"
+            result["blocked_incompatible_search_targets"] = blocked
             result["missing_requirements"] = [
                 "Blocked incompatible search target: " + ", ".join(b["action"] for b in blocked)
             ]
@@ -3923,7 +3923,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 
     except Exception as exc:
         try:
-            result["v34_guard_error"] = str(exc)
+            result["action_goal_compat_guard_error"] = str(exc)
         except Exception:
             pass
         return result
