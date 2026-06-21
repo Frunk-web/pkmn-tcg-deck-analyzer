@@ -4391,13 +4391,13 @@ _turn1_neutralize_old_posthoc_effect_filters()
 
 
 # ---------------------------------------------------------------------
-# TURN1_FILTER_OPPONENT_DEPENDENT_SUCCESS_LINES_V40
+# TURN1_FILTER_OPPONENT_DEPENDENT_SUCCESS_LINES
 # ---------------------------------------------------------------------
 # Safety net for chains that were already built by nested runtime code.
 # If a successful line contains a card whose access effect depends on unmodeled
 # opponent state, convert that trial to a failure before summaries/CSV.
 
-def _turn1_gf_v40_norm(value):
+def _turn1_opponent_dependent_filter_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -4410,7 +4410,7 @@ def _turn1_gf_v40_norm(value):
     return s.strip()
 
 
-def _turn1_gf_v40_flatten_strings(obj, max_items=5000):
+def _turn1_opponent_dependent_filter_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -4443,7 +4443,7 @@ def _turn1_gf_v40_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def _turn1_gf_v40_card_name(card):
+def _turn1_opponent_dependent_filter_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -4462,8 +4462,8 @@ def _turn1_gf_v40_card_name(card):
     return ""
 
 
-def _turn1_gf_v40_is_opponent_state_dependent_access_card(card):
-    blob = _turn1_gf_v40_norm(_turn1_gf_v40_flatten_strings(card))
+def _turn1_is_opponent_state_dependent_access_card(card):
+    blob = _turn1_opponent_dependent_filter_norm(_turn1_opponent_dependent_filter_flatten_strings(card))
 
     if not blob:
         return False
@@ -4498,7 +4498,7 @@ def _turn1_gf_v40_is_opponent_state_dependent_access_card(card):
     return any(a in blob for a in access_words) and any(m in blob for m in opponent_state_markers)
 
 
-def _turn1_gf_v40_action_labels(line):
+def _turn1_opponent_dependent_filter_action_labels(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -4507,23 +4507,23 @@ def _turn1_gf_v40_action_labels(line):
     return [part.strip() for part in raw.split("->") if part.strip()]
 
 
-def _turn1_gf_v40_blocked_names_from_deck(deck):
+def _turn1_opponent_dependent_filter_blocked_names_from_deck(deck):
     out = {}
 
     for card in deck or []:
-        name = _turn1_gf_v40_card_name(card)
+        name = _turn1_opponent_dependent_filter_card_name(card)
 
         if not name:
             continue
 
-        if _turn1_gf_v40_is_opponent_state_dependent_access_card(card):
-            out[_turn1_gf_v40_norm(name)] = name
+        if _turn1_is_opponent_state_dependent_access_card(card):
+            out[_turn1_opponent_dependent_filter_norm(name)] = name
 
     return out
 
 
-def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
-    blocked_names = _turn1_gf_v40_blocked_names_from_deck(deck)
+def _turn1_apply_opponent_dependent_filter(results, deck):
+    blocked_names = _turn1_opponent_dependent_filter_blocked_names_from_deck(deck)
 
     if not blocked_names:
         return {
@@ -4545,8 +4545,8 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
 
         used_blocked = []
 
-        for action in _turn1_gf_v40_action_labels(line):
-            action_norm = _turn1_gf_v40_norm(action)
+        for action in _turn1_opponent_dependent_filter_action_labels(line):
+            action_norm = _turn1_opponent_dependent_filter_norm(action)
 
             if action_norm in blocked_names:
                 used_blocked.append(blocked_names[action_norm])
@@ -4555,8 +4555,8 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
             continue
 
         r["success"] = False
-        r["success_stage"] = "blocked_opponent_dependent_access_v40"
-        r["blocked_opponent_dependent_access_cards_v40"] = used_blocked
+        r["success_stage"] = "blocked_opponent_dependent_access"
+        r["blocked_opponent_dependent_access_cards"] = used_blocked
         r["missing_requirements"] = [
             "Blocked opponent-dependent access card: " + ", ".join(used_blocked)
         ]
@@ -4976,8 +4976,8 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
     # TURN1_APPLY_SEARCH_TARGET_TYPE_SYSTEM_V36
     results = turn1_v36_filter_results(results, deck, reqs)
 
-    # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER_V40
-    opponent_dependent_filter_summary = _turn1_gf_v40_apply_opponent_dependent_filter(results, deck)
+    # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER
+    opponent_dependent_filter_summary = _turn1_apply_opponent_dependent_filter(results, deck)
 
     # TURN1_APPLY_ACTIVE_REPEAT_NORMALIZATION_V43_3
     active_repeat_normalization_v43_3 = _turn1_v433_normalize_results(results, deck)
