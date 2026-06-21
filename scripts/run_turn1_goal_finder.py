@@ -4573,7 +4573,7 @@ def _turn1_apply_opponent_dependent_filter(results, deck):
 
 
 # ---------------------------------------------------------------------
-# TURN1_COLLAPSE_ACTIVE_COMPILED_REPEAT_LINES_V43_3
+# TURN1_COLLAPSE_ACTIVE_COMPILED_REPEAT_LINES
 # ---------------------------------------------------------------------
 # Lightweight fix.
 #
@@ -4594,7 +4594,7 @@ def _turn1_apply_opponent_dependent_filter(results, deck):
 #
 # It avoids the expensive v43 runtime wrapper, keeping hotpath-cache performance.
 
-def _turn1_v433_norm(value):
+def _turn1_result_normalizer_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -4606,7 +4606,7 @@ def _turn1_v433_norm(value):
     return s.strip()
 
 
-def _turn1_v433_flatten_strings(obj, max_items=8000):
+def _turn1_result_normalizer_flatten_strings(obj, max_items=8000):
     out = []
     seen = set()
 
@@ -4639,7 +4639,7 @@ def _turn1_v433_flatten_strings(obj, max_items=8000):
     return " ".join(out)
 
 
-def _turn1_v433_card_name(card):
+def _turn1_result_normalizer_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -4658,16 +4658,16 @@ def _turn1_v433_card_name(card):
     return str(card or "")
 
 
-def _turn1_v433_find_card_by_name(deck, source_name):
-    source_n = _turn1_v433_norm(source_name)
+def _turn1_result_normalizer_find_card_by_name(deck, source_name):
+    source_n = _turn1_result_normalizer_norm(source_name)
 
     for card in deck or []:
-        if _turn1_v433_norm(_turn1_v433_card_name(card)) == source_n:
+        if _turn1_result_normalizer_norm(_turn1_result_normalizer_card_name(card)) == source_n:
             return card
 
     # Fuzzy fallback: "Chien-Pao ex" vs "Chien-Pao ex PAL 61"
     for card in deck or []:
-        name_n = _turn1_v433_norm(_turn1_v433_card_name(card))
+        name_n = _turn1_result_normalizer_norm(_turn1_result_normalizer_card_name(card))
 
         if source_n and (source_n in name_n or name_n in source_n):
             return card
@@ -4675,14 +4675,14 @@ def _turn1_v433_find_card_by_name(deck, source_name):
     return None
 
 
-def _turn1_v433_search_amount_from_card(card, ability_name):
+def _turn1_result_normalizer_search_amount_from_card(card, ability_name):
     import re as _re
 
     if not card:
         return 1
 
-    blob = _turn1_v433_norm(_turn1_v433_flatten_strings(card))
-    ability_n = _turn1_v433_norm(ability_name)
+    blob = _turn1_result_normalizer_norm(_turn1_result_normalizer_flatten_strings(card))
+    ability_n = _turn1_result_normalizer_norm(ability_name)
 
     windows = [blob]
 
@@ -4702,7 +4702,7 @@ def _turn1_v433_search_amount_from_card(card, ability_name):
     return 1
 
 
-def _turn1_v433_split_line(line):
+def _turn1_result_normalizer_split_line(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -4711,7 +4711,7 @@ def _turn1_v433_split_line(line):
     return [x.strip() for x in raw.split("->") if x.strip()]
 
 
-def _turn1_v433_join_line(parts):
+def _turn1_result_normalizer_join_line(parts):
     parts = [p for p in parts if str(p).strip()]
 
     if not parts:
@@ -4720,13 +4720,13 @@ def _turn1_v433_join_line(parts):
     return " -> ".join(parts)
 
 
-def _turn1_v433_remove_extra_occurrences(parts, label, keep=1):
+def _turn1_result_normalizer_remove_extra_occurrences(parts, label, keep=1):
     out = []
     seen = 0
-    label_n = _turn1_v433_norm(label)
+    label_n = _turn1_result_normalizer_norm(label)
 
     for part in parts:
-        if _turn1_v433_norm(part) == label_n:
+        if _turn1_result_normalizer_norm(part) == label_n:
             seen += 1
 
             if seen > keep:
@@ -4737,7 +4737,7 @@ def _turn1_v433_remove_extra_occurrences(parts, label, keep=1):
     return out
 
 
-def _turn1_v433_normalize_trial_result(result, deck):
+def _turn1_normalize_trial_result(result, deck):
     if not isinstance(result, dict):
         return result
 
@@ -4768,35 +4768,35 @@ def _turn1_v433_normalize_trial_result(result, deck):
     grouped = {}
 
     for source, ability in active_events:
-        key = (_turn1_v433_norm(source), _turn1_v433_norm(ability))
+        key = (_turn1_result_normalizer_norm(source), _turn1_result_normalizer_norm(ability))
         grouped.setdefault(key, {"source": source, "ability": ability, "count": 0})
         grouped[key]["count"] += 1
 
     changed = False
     blocked = []
 
-    line_parts = _turn1_v433_split_line(result.get("line"))
-    played_parts = _turn1_v433_split_line(result.get("played"))
+    line_parts = _turn1_result_normalizer_split_line(result.get("line"))
+    played_parts = _turn1_result_normalizer_split_line(result.get("played"))
 
     for item in grouped.values():
         source = item["source"]
         ability = item["ability"]
         count = item["count"]
 
-        source_card = _turn1_v433_find_card_by_name(deck, source)
-        amount = _turn1_v433_search_amount_from_card(source_card, ability)
+        source_card = _turn1_result_normalizer_find_card_by_name(deck, source)
+        amount = _turn1_result_normalizer_search_amount_from_card(source_card, ability)
 
         if count <= 1:
             continue
 
         if count <= amount:
-            line_parts = _turn1_v433_remove_extra_occurrences(line_parts, ability, keep=1)
-            played_parts = _turn1_v433_remove_extra_occurrences(played_parts, ability, keep=1)
+            line_parts = _turn1_result_normalizer_remove_extra_occurrences(line_parts, ability, keep=1)
+            played_parts = _turn1_result_normalizer_remove_extra_occurrences(played_parts, ability, keep=1)
             changed = True
 
-            result.setdefault("normalization_events_v43_3", []).append(
+            result.setdefault("normalization_events", []).append(
                 {
-                    "event": "collapsed_repeated_active_compiled_search_v43_3",
+                    "event": "collapsed_repeated_active_compiled_search",
                     "source": source,
                     "ability": ability,
                     "repeat_count": count,
@@ -4816,21 +4816,21 @@ def _turn1_v433_normalize_trial_result(result, deck):
 
     if blocked:
         result["success"] = False
-        result["success_stage"] = "blocked_repeat_active_compiled_search_v43_3"
-        result["blocked_repeat_active_compiled_search_v43_3"] = blocked
+        result["success_stage"] = "blocked_repeat_active_compiled_search"
+        result["blocked_repeat_active_compiled_search"] = blocked
         result["missing_requirements"] = [
             "Blocked repeated Active compiled ability use beyond allowed search amount."
         ]
         return result
 
     if changed:
-        result["line"] = _turn1_v433_join_line(line_parts)
-        result["played"] = _turn1_v433_join_line(played_parts)
+        result["line"] = _turn1_result_normalizer_join_line(line_parts)
+        result["played"] = _turn1_result_normalizer_join_line(played_parts)
 
     return result
 
 
-def _turn1_v433_normalize_results(results, deck):
+def _turn1_normalize_results(results, deck):
     changed = 0
     blocked = 0
 
@@ -4838,7 +4838,7 @@ def _turn1_v433_normalize_results(results, deck):
         before_success = bool(r.get("success")) if isinstance(r, dict) else False
         before_line = r.get("line") if isinstance(r, dict) else None
 
-        _turn1_v433_normalize_trial_result(r, deck)
+        _turn1_normalize_trial_result(r, deck)
 
         if isinstance(r, dict):
             if before_success and not r.get("success"):
@@ -4979,8 +4979,8 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
     # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER
     opponent_dependent_filter_summary = _turn1_apply_opponent_dependent_filter(results, deck)
 
-    # TURN1_APPLY_ACTIVE_REPEAT_NORMALIZATION_V43_3
-    active_repeat_normalization_v43_3 = _turn1_v433_normalize_results(results, deck)
+    # TURN1_APPLY_ACTIVE_REPEAT_NORMALIZATION
+    active_repeat_normalization_summary = _turn1_normalize_results(results, deck)
 
     examples = [r for r in results if r["success"] and r["line"] != "none"][: args.example_lines]
     failures = [r for r in results if not r["success"]][: args.example_lines]
