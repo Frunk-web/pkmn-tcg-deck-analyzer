@@ -5436,11 +5436,11 @@ def _turn1_v67_source_text_allows_card(
 #      equivalent states. Cache the score list by a semantic state key and drop
 #      zero-score actions before later planner filters.
 
-_TURN1_V53_SCORE_CACHE = {}
-_TURN1_V53_SCORE_CACHE_MAX = 200000
+_TURN1_SCORE_CANDIDATE_CACHE = {}
+_TURN1_SCORE_CANDIDATE_CACHE_MAX = 200000
 
 
-def _turn1_v53_copy_container_for_capacity(value):
+def _turn1_copy_container_for_score_capacity(value):
     """Copy containers, but keep card dictionaries by reference.
 
     The capacity scorer simulates selected cards entering hand. It does not need
@@ -5457,7 +5457,7 @@ def _turn1_v53_copy_container_for_capacity(value):
     return value
 
 
-def _turn1_v53_light_state_copy_for_capacity(st):
+def _turn1_light_state_copy_for_score_capacity(st):
     fake = copy.copy(st)
 
     # Known SimState zone/mutable attributes. Missing attributes are ignored so
@@ -5480,14 +5480,14 @@ def _turn1_v53_light_state_copy_for_capacity(st):
     ]:
         if hasattr(st, attr):
             try:
-                setattr(fake, attr, _turn1_v53_copy_container_for_capacity(getattr(st, attr)))
+                setattr(fake, attr, _turn1_copy_container_for_score_capacity(getattr(st, attr)))
             except Exception:
                 pass
 
     return fake
 
 
-def _turn1_v53_card_key(card):
+def _turn1_score_cache_card_key(card):
     if card is None:
         return None
 
@@ -5517,7 +5517,7 @@ def _turn1_v53_card_key(card):
     return ('card', str(name or ''), str(set_code or ''), str(number or ''))
 
 
-def _turn1_v53_freeze_value(value, depth=0):
+def _turn1_score_cache_freeze_value(value, depth=0):
     if depth > 4:
         return ('deep', type(value).__name__)
 
@@ -5527,41 +5527,41 @@ def _turn1_v53_freeze_value(value, depth=0):
     if isinstance(value, dict):
         # Card dictionaries are huge; represent them by identity only.
         if value.get('identity') or value.get('card_id') or value.get('name') or value.get('card_name'):
-            return _turn1_v53_card_key(value)
-        return ('dict', tuple(sorted((str(k), _turn1_v53_freeze_value(v, depth + 1)) for k, v in value.items())))
+            return _turn1_score_cache_card_key(value)
+        return ('dict', tuple(sorted((str(k), _turn1_score_cache_freeze_value(v, depth + 1)) for k, v in value.items())))
 
     if isinstance(value, (list, tuple)):
-        return (type(value).__name__, tuple(_turn1_v53_freeze_value(v, depth + 1) for v in value))
+        return (type(value).__name__, tuple(_turn1_score_cache_freeze_value(v, depth + 1) for v in value))
 
     if isinstance(value, set):
         try:
-            return ('set', tuple(sorted(_turn1_v53_freeze_value(v, depth + 1) for v in value)))
+            return ('set', tuple(sorted(_turn1_score_cache_freeze_value(v, depth + 1) for v in value)))
         except Exception:
-            return ('set', tuple(_turn1_v53_freeze_value(v, depth + 1) for v in value))
+            return ('set', tuple(_turn1_score_cache_freeze_value(v, depth + 1) for v in value))
 
     if hasattr(value, '__dict__'):
         try:
-            return (type(value).__name__, tuple(sorted((str(k), _turn1_v53_freeze_value(v, depth + 1)) for k, v in vars(value).items())))
+            return (type(value).__name__, tuple(sorted((str(k), _turn1_score_cache_freeze_value(v, depth + 1)) for k, v in vars(value).items())))
         except Exception:
             return (type(value).__name__, repr(value))
 
     return (type(value).__name__, repr(value))
 
 
-def _turn1_v53_zone_key(st, attr):
+def _turn1_score_cache_zone_key(st, attr):
     if not hasattr(st, attr):
         return None
     value = getattr(st, attr)
     if isinstance(value, list):
-        return tuple(_turn1_v53_card_key(x) for x in value)
+        return tuple(_turn1_score_cache_card_key(x) for x in value)
     if isinstance(value, tuple):
-        return tuple(_turn1_v53_card_key(x) for x in value)
+        return tuple(_turn1_score_cache_card_key(x) for x in value)
     if isinstance(value, dict):
-        return tuple(sorted((str(k), _turn1_v53_freeze_value(v)) for k, v in value.items()))
-    return _turn1_v53_freeze_value(value)
+        return tuple(sorted((str(k), _turn1_score_cache_freeze_value(v)) for k, v in value.items()))
+    return _turn1_score_cache_freeze_value(value)
 
 
-def _turn1_v53_score_key(st, missing, going, enable_chain_search):
+def _turn1_score_cache_key(st, missing, going, enable_chain_search):
     zones = []
     for attr in [
         'deck',
@@ -5576,20 +5576,20 @@ def _turn1_v53_score_key(st, missing, going, enable_chain_search):
         'supporter_played',
         'attached_energy',
     ]:
-        zones.append((attr, _turn1_v53_zone_key(st, attr)))
+        zones.append((attr, _turn1_score_cache_zone_key(st, attr)))
 
     return (
         tuple(zones),
-        _turn1_v53_freeze_value(missing),
+        _turn1_score_cache_freeze_value(missing),
         str(going),
         bool(enable_chain_search),
     )
 
 
-def _turn1_v53_cached_score_candidates(st, missing, going, enable_chain_search):
+def _turn1_cached_score_candidates(st, missing, going, enable_chain_search):
     try:
-        key = _turn1_v53_score_key(st, missing, going, enable_chain_search)
-        cached = _TURN1_V53_SCORE_CACHE.get(key)
+        key = _turn1_score_cache_key(st, missing, going, enable_chain_search)
+        cached = _TURN1_SCORE_CANDIDATE_CACHE.get(key)
         if cached is not None:
             return cached
     except Exception:
@@ -5597,8 +5597,8 @@ def _turn1_v53_cached_score_candidates(st, missing, going, enable_chain_search):
 
     scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V27(st, missing, going, enable_chain_search)
 
-    if key is not None and len(_TURN1_V53_SCORE_CACHE) < _TURN1_V53_SCORE_CACHE_MAX:
-        _TURN1_V53_SCORE_CACHE[key] = scored
+    if key is not None and len(_TURN1_SCORE_CANDIDATE_CACHE) < _TURN1_SCORE_CANDIDATE_CACHE_MAX:
+        _TURN1_SCORE_CANDIDATE_CACHE[key] = scored
 
     return scored
 
@@ -5618,7 +5618,7 @@ def _turn1_v22_card_goal_search_capacity(
     max_amt = 0
 
     # Simulate selection without mutating real state.
-    fake_st = _turn1_v53_light_state_copy_for_capacity(st)
+    fake_st = _turn1_light_state_copy_for_score_capacity(st)
     fake_tracker = GoalTracker()
     fake_tracker.mark(tracker.accessed)
 
@@ -7308,7 +7308,7 @@ def score_candidate_for_missing_targets(
     # TURN1_ACTION_BUDGET_GUARD
     if _turn1_action_budget_exhausted(st):
         return []
-    scored = _turn1_v53_cached_score_candidates(st, missing, going, enable_chain_search)
+    scored = _turn1_cached_score_candidates(st, missing, going, enable_chain_search)
     filtered: List[Tuple[float, Any, str]] = []
 
     for score, action, target_norm in scored:
