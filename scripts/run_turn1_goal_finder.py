@@ -8076,12 +8076,12 @@ def main() -> None:
 # exist. It does not change simulator semantics.
 
 try:
-    from functools import lru_cache as _turn1_v411_lru_cache
+    from functools import lru_cache as _turn1_runtime_cache_wrapper_lru_cache
 except Exception:
-    _turn1_v411_lru_cache = None
+    _turn1_runtime_cache_wrapper_lru_cache = None
 
 
-def _turn1_v411_card_cache_key(card):
+def _turn1_runtime_cache_card_key(card):
     if not isinstance(card, dict):
         return str(id(card))
 
@@ -8099,7 +8099,7 @@ def _turn1_v411_card_cache_key(card):
     )
 
 
-def _turn1_v411_install_cache_wrapper(name):
+def _turn1_install_runtime_cache_wrapper(name):
     if name not in globals():
         return False
 
@@ -8116,7 +8116,7 @@ def _turn1_v411_install_cache_wrapper(name):
 
             for arg in args:
                 if isinstance(arg, dict):
-                    key_parts.append(("card", _turn1_v411_card_cache_key(arg)))
+                    key_parts.append(("card", _turn1_runtime_cache_card_key(arg)))
                 elif isinstance(arg, list):
                     # For deck/list args, do not store whole list contents.
                     # Use card ids when it looks like a deck.
@@ -8124,7 +8124,7 @@ def _turn1_v411_install_cache_wrapper(name):
                         key_parts.append(
                             (
                                 "deck",
-                                tuple(_turn1_v411_card_cache_key(x) for x in arg),
+                                tuple(_turn1_runtime_cache_card_key(x) for x in arg),
                             )
                         )
                     else:
@@ -8136,14 +8136,14 @@ def _turn1_v411_install_cache_wrapper(name):
 
             for k, v in sorted(kwargs.items()):
                 if isinstance(v, dict):
-                    key_parts.append((k, "card", _turn1_v411_card_cache_key(v)))
+                    key_parts.append((k, "card", _turn1_runtime_cache_card_key(v)))
                 elif isinstance(v, list):
                     if v and all(isinstance(x, dict) for x in v[: min(5, len(v))]):
                         key_parts.append(
                             (
                                 k,
                                 "deck",
-                                tuple(_turn1_v411_card_cache_key(x) for x in v),
+                                tuple(_turn1_runtime_cache_card_key(x) for x in v),
                             )
                         )
                     else:
@@ -8175,9 +8175,9 @@ def _turn1_v411_install_cache_wrapper(name):
     return True
 
 
-_turn1_v411_wrapped_helpers = []
+_turn1_runtime_cache_wrapper_wrapped_helpers = []
 
-for _turn1_v411_name in [
+for _turn1_runtime_cache_wrapper_name in [
     # likely compiled-effect helpers
     "turn1_v41_flatten_strings",
     "turn1_v41_norm",
@@ -8196,15 +8196,15 @@ for _turn1_v411_name in [
     "turn1_v38_access_classes_from_text",
 ]:
     try:
-        if _turn1_v411_install_cache_wrapper(_turn1_v411_name):
-            _turn1_v411_wrapped_helpers.append(_turn1_v411_name)
+        if _turn1_install_runtime_cache_wrapper(_turn1_runtime_cache_wrapper_name):
+            _turn1_runtime_cache_wrapper_wrapped_helpers.append(_turn1_runtime_cache_wrapper_name)
     except Exception:
         pass
 
 try:
     TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE_V41_1 = {
         "installed": True,
-        "wrapped_helpers": list(_turn1_v411_wrapped_helpers),
+        "wrapped_helpers": list(_turn1_runtime_cache_wrapper_wrapped_helpers),
     }
 except Exception:
     pass
