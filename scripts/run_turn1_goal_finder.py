@@ -5594,7 +5594,7 @@ def _turn1_cached_score_candidates(st, missing, going, enable_chain_search):
     except Exception:
         key = None
 
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V27(st, missing, going, enable_chain_search)
+    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_FILTER_COMPAT(st, missing, going, enable_chain_search)
 
     if key is not None and len(_TURN1_SCORE_CANDIDATE_CACHE) < _TURN1_SCORE_CANDIDATE_CACHE_MAX:
         _TURN1_SCORE_CANDIDATE_CACHE[key] = scored
@@ -6649,7 +6649,7 @@ def score_candidate_for_missing_targets(
 
 
 # ---------------------------------------------------------------------
-# TURN1_ABILITY_REQUIREMENT_AND_FILTER_GUARD_V27
+# TURN1_ABILITY_REQUIREMENT_AND_FILTER_GUARD
 # ---------------------------------------------------------------------
 # Root issue fixed here:
 # The Turn-1 goal finder reuses broad single-target action scorers. Some
@@ -6666,10 +6666,10 @@ def score_candidate_for_missing_targets(
 #        Energy search -> Energy goal only
 # - opponent-only disruption guards from earlier patches remain compatible
 
-import re as _turn1_v27_re
+import re as _turn1_action_filter_compat_re
 
 
-def turn1_v27_flatten_text(obj: Any, limit: int = 20000) -> str:
+def turn1_action_filter_compat_flatten_text(obj: Any, limit: int = 20000) -> str:
     parts: List[str] = []
 
     def walk(x: Any) -> None:
@@ -6697,19 +6697,19 @@ def turn1_v27_flatten_text(obj: Any, limit: int = 20000) -> str:
     return " ".join(parts)
 
 
-def turn1_v27_norm_blob(s: Any) -> str:
+def turn1_action_filter_compat_norm_blob(s: Any) -> str:
     text = str(s or "").lower()
     text = text.replace("pokémon", "pokemon")
     text = text.replace("’", "'")
-    text = _turn1_v27_re.sub(r"\s+", " ", text)
+    text = _turn1_action_filter_compat_re.sub(r"\s+", " ", text)
     return text.strip()
 
 
-def turn1_v27_card_blob(card: Any) -> str:
-    return turn1_v27_norm_blob(turn1_v27_flatten_text(card))
+def turn1_action_filter_compat_card_blob(card: Any) -> str:
+    return turn1_action_filter_compat_norm_blob(turn1_action_filter_compat_flatten_text(card))
 
 
-def turn1_v27_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
+def turn1_action_filter_compat_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
     if isinstance(action, dict):
         va = action.get("_virtual_action") or ""
         source = action.get("source") or action.get("card") or action.get("search_card")
@@ -6718,7 +6718,7 @@ def turn1_v27_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
     return action, action, "PlayCard"
 
 
-def turn1_v27_source_in_list(source: Any, cards: Sequence[Any]) -> bool:
+def turn1_action_filter_compat_source_in_list(source: Any, cards: Sequence[Any]) -> bool:
     if source is None:
         return False
     source_id = None
@@ -6734,8 +6734,8 @@ def turn1_v27_source_in_list(source: Any, cards: Sequence[Any]) -> bool:
     return False
 
 
-def turn1_v27_requires_active(blob: str) -> bool:
-    b = turn1_v27_norm_blob(blob)
+def turn1_action_filter_compat_requires_active(blob: str) -> bool:
+    b = turn1_action_filter_compat_norm_blob(blob)
     patterns = [
         "if this pokemon is in the active spot",
         "if this pokemon is your active pokemon",
@@ -6747,8 +6747,8 @@ def turn1_v27_requires_active(blob: str) -> bool:
     return any(p in b for p in patterns)
 
 
-def turn1_v27_requires_bench(blob: str) -> bool:
-    b = turn1_v27_norm_blob(blob)
+def turn1_action_filter_compat_requires_bench(blob: str) -> bool:
+    b = turn1_action_filter_compat_norm_blob(blob)
     patterns = [
         "if this pokemon is on your bench",
         "while this pokemon is on your bench",
@@ -6758,38 +6758,38 @@ def turn1_v27_requires_bench(blob: str) -> bool:
     return any(p in b for p in patterns)
 
 
-def turn1_v27_position_allowed(st: Any, action: Any) -> bool:
-    source, effect, va = turn1_v27_action_source_and_effect(action)
-    blob = turn1_v27_norm_blob(turn1_v27_flatten_text(effect) + " " + turn1_v27_flatten_text(source))
+def turn1_action_filter_compat_position_allowed(st: Any, action: Any) -> bool:
+    source, effect, va = turn1_action_filter_compat_action_source_and_effect(action)
+    blob = turn1_action_filter_compat_norm_blob(turn1_action_filter_compat_flatten_text(effect) + " " + turn1_action_filter_compat_flatten_text(source))
 
     if not blob:
         return True
 
     # If an ability says Active Spot, benching the Pokemon from hand is not
     # enough. It must already be the actual Active Pokemon.
-    if turn1_v27_requires_active(blob):
-        return source is not None and st.active is not None and turn1_v27_source_in_list(source, [st.active])
+    if turn1_action_filter_compat_requires_active(blob):
+        return source is not None and st.active is not None and turn1_action_filter_compat_source_in_list(source, [st.active])
 
-    if turn1_v27_requires_bench(blob):
-        return source is not None and turn1_v27_source_in_list(source, list(getattr(st, "bench", []) or []))
+    if turn1_action_filter_compat_requires_bench(blob):
+        return source is not None and turn1_action_filter_compat_source_in_list(source, list(getattr(st, "bench", []) or []))
 
     return True
 
 
-def turn1_v27_card_categories(card: Any) -> set:
+def turn1_action_filter_compat_card_categories(card: Any) -> set:
     cats = set()
     if not isinstance(card, dict):
         return cats
 
-    blob = turn1_v27_card_blob(card)
+    blob = turn1_action_filter_compat_card_blob(card)
 
     identity = card.get("identity") or {}
-    supertype = turn1_v27_norm_blob(identity.get("supertype") or card.get("supertype") or "")
+    supertype = turn1_action_filter_compat_norm_blob(identity.get("supertype") or card.get("supertype") or "")
     subtypes_raw = identity.get("subtypes") or card.get("subtypes") or card.get("subtype") or []
     if isinstance(subtypes_raw, str):
-        sub_blob = turn1_v27_norm_blob(subtypes_raw)
+        sub_blob = turn1_action_filter_compat_norm_blob(subtypes_raw)
     else:
-        sub_blob = turn1_v27_norm_blob(" ".join(str(x) for x in subtypes_raw))
+        sub_blob = turn1_action_filter_compat_norm_blob(" ".join(str(x) for x in subtypes_raw))
 
     if "pokemon" in supertype or "supertype pokemon" in blob:
         cats.add("pokemon")
@@ -6822,7 +6822,7 @@ def turn1_v27_card_categories(card: Any) -> set:
     if "basic" in sub_blob and "energy" in cats:
         cats.add("basic_energy")
 
-    name = turn1_v27_norm_blob(tf.card_name(card))
+    name = turn1_action_filter_compat_norm_blob(tf.card_name(card))
     if "basic" in name and "energy" in name:
         cats.add("energy")
         cats.add("basic_energy")
@@ -6830,12 +6830,12 @@ def turn1_v27_card_categories(card: Any) -> set:
     return cats
 
 
-def turn1_v27_effect_search_categories(blob: str) -> set:
+def turn1_action_filter_compat_effect_search_categories(blob: str) -> set:
     """
     Infer the card class an effect is allowed to search/reveal/put into hand.
     Empty set means either not a restricted search, or parser cannot infer safely.
     """
-    b = turn1_v27_norm_blob(blob)
+    b = turn1_action_filter_compat_norm_blob(blob)
     cats = set()
 
     # Only categorize effects that actually look like access/search effects.
@@ -6883,7 +6883,7 @@ def turn1_v27_effect_search_categories(blob: str) -> set:
     return cats
 
 
-def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
+def turn1_action_filter_compat_categories_compatible(search_cats: set, card_cats: set) -> bool:
     if not search_cats:
         return True
     if "opponent_only" in search_cats:
@@ -6936,7 +6936,7 @@ def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
 
 def _turn1_search_text_target_filter_norm(value: Any) -> str:
     try:
-        return turn1_v27_norm_blob(str(value or ""))
+        return turn1_action_filter_compat_norm_blob(str(value or ""))
     except Exception:
         return str(value or "").lower().strip()
 
@@ -7087,7 +7087,7 @@ def _turn1_search_text_target_filter_action_search_steps(action: Any) -> List[An
         steps.append(step)
 
     try:
-        source, effect, _va = turn1_v27_action_source_and_effect(action)
+        source, effect, _va = turn1_action_filter_compat_action_source_and_effect(action)
     except Exception:
         source, effect = action, None
 
@@ -7122,7 +7122,7 @@ def _turn1_search_text_target_filter_action_search_steps(action: Any) -> List[An
 
 def _turn1_search_text_target_filter_action_blob(action: Any) -> str:
     try:
-        source, effect, _va = turn1_v27_action_source_and_effect(action)
+        source, effect, _va = turn1_action_filter_compat_action_source_and_effect(action)
     except Exception:
         source, effect = action, None
     return _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_flatten_strings(effect) + " " + _turn1_search_text_target_filter_flatten_strings(source) + " " + _turn1_search_text_target_filter_flatten_strings(action))
@@ -7211,10 +7211,10 @@ def _turn1_search_text_target_filter_text_allows_target(action_blob: str, target
     return False
 
 
-def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, action: Any) -> bool:
-    source, effect, va = turn1_v27_action_source_and_effect(action)
-    blob = turn1_v27_norm_blob(turn1_v27_flatten_text(effect) + " " + turn1_v27_flatten_text(source))
-    search_cats = turn1_v27_effect_search_categories(blob)
+def turn1_action_filter_compat_target_compatible_with_action_filter(st: Any, target_norm: str, action: Any) -> bool:
+    source, effect, va = turn1_action_filter_compat_action_source_and_effect(action)
+    blob = turn1_action_filter_compat_norm_blob(turn1_action_filter_compat_flatten_text(effect) + " " + turn1_action_filter_compat_flatten_text(source))
+    search_cats = turn1_action_filter_compat_effect_search_categories(blob)
 
     if "opponent_only" in search_cats:
         return False
@@ -7251,14 +7251,14 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
             if _turn1_search_text_target_filter_text_allows_target(action_blob, target_card):
                 return True
         if search_cats:
-            return any(turn1_v27_categories_compatible(search_cats, turn1_v27_card_categories(c)) for c in matching_cards)
+            return any(turn1_action_filter_compat_categories_compatible(search_cats, turn1_action_filter_compat_card_categories(c)) for c in matching_cards)
         return True
 
     if not search_cats:
         return True
 
     # Conservative textual fallback for unresolved targets.
-    tn = turn1_v27_norm_blob(target_norm)
+    tn = turn1_action_filter_compat_norm_blob(target_norm)
     if "supporter" in search_cats:
         return "supporter" in tn
     if "basic_energy" in search_cats:
@@ -7270,11 +7270,11 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
 
     return True
 
-def turn1_v27_action_allowed_for_goal(st: Any, action: Any, target_norm: str) -> bool:
-    if not turn1_v27_position_allowed(st, action):
+def turn1_action_filter_compat_action_allowed_for_goal(st: Any, action: Any, target_norm: str) -> bool:
+    if not turn1_action_filter_compat_position_allowed(st, action):
         try:
             st.log.append({
-                "event": "blocked_illegal_ability_position_v27",
+                "event": "blocked_illegal_ability_position",
                 "action": action_label(action),
                 "target_norm": target_norm,
             })
@@ -7282,10 +7282,10 @@ def turn1_v27_action_allowed_for_goal(st: Any, action: Any, target_norm: str) ->
             pass
         return False
 
-    if not turn1_v27_target_compatible_with_action_filter(st, target_norm, action):
+    if not turn1_action_filter_compat_target_compatible_with_action_filter(st, target_norm, action):
         try:
             st.log.append({
-                "event": "blocked_incompatible_search_filter_v27",
+                "event": "blocked_incompatible_search_filter",
                 "action": action_label(action),
                 "target_norm": target_norm,
             })
@@ -7296,7 +7296,7 @@ def turn1_v27_action_allowed_for_goal(st: Any, action: Any, target_norm: str) ->
     return True
 
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V27 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_FILTER_COMPAT = score_candidate_for_missing_targets
 
 def score_candidate_for_missing_targets(
     st: tf.SimState,
@@ -7319,23 +7319,23 @@ def score_candidate_for_missing_targets(
         except Exception:
             pass
 
-        if turn1_v27_action_allowed_for_goal(st, action, target_norm):
+        if turn1_action_filter_compat_action_allowed_for_goal(st, action, target_norm):
             filtered.append((score, action, target_norm))
 
     return filtered
 
 
-_ORIG_EXECUTE_ACTION_V27 = execute_action
+_ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT = execute_action
 
 def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.Random, going: str, enable_chain_search: bool) -> None:
     # Safety net. Scoring should already filter bad actions. If an older patch or
     # future path bypasses scoring, do not execute illegal/typed-incompatible access.
-    if not turn1_v27_action_allowed_for_goal(st, action, target_norm):
+    if not turn1_action_filter_compat_action_allowed_for_goal(st, action, target_norm):
         # Count it as a consumed consideration so the loop cannot repeatedly pick
         # the same blocked action forever, but do not append it to st.line.
         st.actions_used += 1
         return
-    _ORIG_EXECUTE_ACTION_V27(st, action, target_norm, rng, going, enable_chain_search)
+    _ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT(st, action, target_norm, rng, going, enable_chain_search)
 
 
 
