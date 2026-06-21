@@ -186,12 +186,12 @@ def instantiate_deck(deck: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # The profiler showed millions of card_matches_option calls from
 # requirement_satisfied / goal_satisfied. The original matching logic is kept;
 # this patch injects a cache into the original function body and routes every
-# original return through _turn1_v54_card_match_store(...).
+# original return through _turn1_card_goal_match_store(...).
 
-_TURN1_V54_CARD_MATCH_CACHE = {}
+_TURN1_CARD_MATCH_CACHE = {}
 
 
-def _turn1_v54_card_key_for_match(card):
+def _turn1_card_key_for_match(card):
     if isinstance(card, dict):
         ident = card.get("identity") or {}
         key = (
@@ -212,48 +212,48 @@ def _turn1_v54_card_key_for_match(card):
     return ("obj", id(card))
 
 
-def _turn1_v54_option_key_for_match(option):
+def _turn1_goal_option_key_for_match(option):
     if option is None or isinstance(option, (str, int, float, bool)):
         return option
     if hasattr(option, "__dict__"):
         try:
-            return (type(option).__name__, tuple(sorted((str(k), _turn1_v54_option_key_for_match(v)) for k, v in vars(option).items())))
+            return (type(option).__name__, tuple(sorted((str(k), _turn1_goal_option_key_for_match(v)) for k, v in vars(option).items())))
         except Exception:
             return (type(option).__name__, id(option))
     if isinstance(option, dict):
         keep = {}
         for k, v in option.items():
             if str(k) in {"label", "name", "target", "target_norm", "options", "aliases", "card", "card_name", "set_code", "number", "collector_number"}:
-                keep[str(k)] = _turn1_v54_option_key_for_match(v)
+                keep[str(k)] = _turn1_goal_option_key_for_match(v)
         if keep:
             return ("dict", tuple(sorted(keep.items())))
         return ("dict_id", id(option))
     if isinstance(option, (list, tuple)):
-        return (type(option).__name__, tuple(_turn1_v54_option_key_for_match(x) for x in option))
+        return (type(option).__name__, tuple(_turn1_goal_option_key_for_match(x) for x in option))
     if isinstance(option, set):
         try:
-            return ("set", tuple(sorted(_turn1_v54_option_key_for_match(x) for x in option)))
+            return ("set", tuple(sorted(_turn1_goal_option_key_for_match(x) for x in option)))
         except Exception:
             return ("set_id", id(option))
     return (type(option).__name__, repr(option))
 
 
-def _turn1_v54_card_match_key(card, option):
-    return (_turn1_v54_card_key_for_match(card), _turn1_v54_option_key_for_match(option))
+def _turn1_card_goal_match_key(card, option):
+    return (_turn1_card_key_for_match(card), _turn1_goal_option_key_for_match(option))
 
 
-def _turn1_v54_card_match_store(key, value):
+def _turn1_card_goal_match_store(key, value):
     result = bool(value)
-    if len(_TURN1_V54_CARD_MATCH_CACHE) < 500000:
-        _TURN1_V54_CARD_MATCH_CACHE[key] = result
+    if len(_TURN1_CARD_MATCH_CACHE) < 500000:
+        _TURN1_CARD_MATCH_CACHE[key] = result
     return result
 
 def card_matches_option(card: Dict[str, Any], option: GoalOption) -> bool:
-    _turn1_v54_cache_key = _turn1_v54_card_match_key(card, option)
-    _turn1_v54_cached = _TURN1_V54_CARD_MATCH_CACHE.get(_turn1_v54_cache_key)
-    if _turn1_v54_cached is not None:
-        return _turn1_v54_card_match_store(_turn1_v54_cache_key, _turn1_v54_cached)
-    return _turn1_v54_card_match_store(_turn1_v54_cache_key, tf.target_matches(card, option.norm))
+    _turn1_card_match_cache_key = _turn1_card_goal_match_key(card, option)
+    _turn1_card_match_cached = _TURN1_CARD_MATCH_CACHE.get(_turn1_card_match_cache_key)
+    if _turn1_card_match_cached is not None:
+        return _turn1_card_goal_match_store(_turn1_card_match_cache_key, _turn1_card_match_cached)
+    return _turn1_card_goal_match_store(_turn1_card_match_cache_key, tf.target_matches(card, option.norm))
 
 def zone_cards(st: tf.SimState, tracker: GoalTracker, zone: str) -> List[Dict[str, Any]]:
     z = zone.lower().replace("-", "_")
