@@ -4351,18 +4351,18 @@ def _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs):
 
 
 # -----------------------------------------------------------------------------
-# TURN1_USE_COMPILED_EFFECT_RUNTIME_V39
+# TURN1_USE_COMPILED_EFFECT_RUNTIME
 # -----------------------------------------------------------------------------
 # Older debugging patches added post-hoc effect-label blockers. Those were useful
 # for finding bad rows, but they are too blunt once target_finder has a real
 # compiled-effect runtime. Neutralize them so validated ability labels can be
 # used when their compiled/source effect is legal for the target.
 
-def _turn1_v39_noop_filter_summary(*args, **kwargs):
-    return {"enabled": False, "invalidated_successes": 0, "reason": "v0.39 target_finder compiled-effect runtime is source of truth"}
+def _turn1_noop_filter_summary(*args, **kwargs):
+    return {"enabled": False, "invalidated_successes": 0, "reason": "target_finder compiled-effect runtime is source of truth"}
 
 
-def _turn1_v39_neutralize_old_posthoc_effect_filters():
+def _turn1_neutralize_old_posthoc_effect_filters():
     names_to_noop = [
         "turn1_apply_opponent_only_filter",
         "turn1_apply_effect_name_compatibility_filter",
@@ -4372,7 +4372,7 @@ def _turn1_v39_neutralize_old_posthoc_effect_filters():
     ]
     for name in names_to_noop:
         if name in globals():
-            globals()[name] = _turn1_v39_noop_filter_summary
+            globals()[name] = _turn1_noop_filter_summary
 
     # v0.33 blocked every non-card action label. That is no longer correct:
     # validated ability labels such as Shivery Chill should be legal when their
@@ -4385,7 +4385,7 @@ def _turn1_v39_neutralize_old_posthoc_effect_filters():
         globals()["_turn1_v35_unvalidated_effect_actions"] = lambda line, deck, reqs=None: []
 
 
-_turn1_v39_neutralize_old_posthoc_effect_filters()
+_turn1_neutralize_old_posthoc_effect_filters()
 
 
 
@@ -8178,7 +8178,7 @@ def _turn1_v411_install_cache_wrapper(name):
 _turn1_v411_wrapped_helpers = []
 
 for _turn1_v411_name in [
-    # likely v41/v39 compiled-effect helpers
+    # likely compiled-effect helpers
     "turn1_v41_flatten_strings",
     "turn1_v41_norm",
     "turn1_v41_effect_can_help_goal",
@@ -8189,10 +8189,6 @@ for _turn1_v411_name in [
     "turn1_v41_goal_classes",
     "turn1_v41_access_classes_from_effect",
     "turn1_v41_best_active_for_goal",
-    "turn1_v39_flatten_strings",
-    "turn1_v39_norm",
-    "turn1_v39_effect_can_help_goal",
-    "turn1_v39_goal_classes",
     # v36/v37/v38 helper families, if present
     "turn1_v36_goal_classes",
     "turn1_v36_access_classes_from_text",
