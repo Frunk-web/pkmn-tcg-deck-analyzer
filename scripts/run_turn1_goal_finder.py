@@ -2839,7 +2839,7 @@ def turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs
 
 
 # ---------------------------------------------------------------------
-# TURN1_SCORE_TIME_ABILITY_FILTER_V31
+# TURN1_SCORE_TIME_ACCESS_COMPAT_FILTER
 # ---------------------------------------------------------------------
 # The previous Shivery Chill / Attract Customers guards were mostly post-hoc:
 # they tried to invalidate successful rows after the single-target engine had
@@ -2855,10 +2855,10 @@ def turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs
 #   Concealed Cards    -> generic self draw
 #   Buddy-Buddy Poffin -> searches Basic Pokémon
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V31 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SCORE_ACCESS_COMPAT = score_candidate_for_missing_targets
 
 
-def turn1_v31_norm(s):
+def turn1_score_access_compat_norm(s):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -2870,7 +2870,7 @@ def turn1_v31_norm(s):
     return s.strip()
 
 
-def turn1_v31_flatten_strings(obj, max_items=5000):
+def turn1_score_access_compat_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -2906,7 +2906,7 @@ def turn1_v31_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def turn1_v31_card_identity_blob(card):
+def turn1_score_access_compat_card_identity_blob(card):
     if not isinstance(card, dict):
         return ""
 
@@ -2931,8 +2931,8 @@ def turn1_v31_card_identity_blob(card):
     return " ".join(parts)
 
 
-def turn1_v31_classes_for_goal_card(card):
-    blob = turn1_v31_norm(turn1_v31_card_identity_blob(card))
+def turn1_score_access_compat_classes_for_goal_card(card):
+    blob = turn1_score_access_compat_norm(turn1_score_access_compat_card_identity_blob(card))
     classes = set()
 
     if "pokemon" in blob or "pokémon" in blob:
@@ -2975,7 +2975,7 @@ def turn1_v31_classes_for_goal_card(card):
     return classes
 
 
-def turn1_v31_all_known_cards_from_state(st):
+def turn1_score_access_compat_all_known_cards_from_state(st):
     cards = []
     for attr in ["deck", "hand", "discard", "prizes", "bench"]:
         try:
@@ -2991,22 +2991,22 @@ def turn1_v31_all_known_cards_from_state(st):
     return cards
 
 
-def turn1_v31_goal_classes(missing, st):
+def turn1_score_access_compat_goal_classes(missing, st):
     classes = set()
-    cards = turn1_v31_all_known_cards_from_state(st)
+    cards = turn1_score_access_compat_all_known_cards_from_state(st)
 
     for req in missing or []:
         for c in cards:
             try:
                 if any(card_matches_option(c, opt) for opt in req.options):
-                    classes.update(turn1_v31_classes_for_goal_card(c))
+                    classes.update(turn1_score_access_compat_classes_for_goal_card(c))
             except Exception:
                 continue
 
     return classes
 
 
-def turn1_v31_effect_text_for_action(action):
+def turn1_score_access_compat_effect_text_for_action(action):
     """Return the tightest effect/action text available for a candidate action."""
     if isinstance(action, dict) and action.get("_virtual_action"):
         chunks = []
@@ -3015,12 +3015,12 @@ def turn1_v31_effect_text_for_action(action):
         # a Pokémon search just because the source card's identity says Pokémon.
         for key in ["effect", "compiled_effect", "ability", "attack", "step"]:
             if key in action:
-                chunks.append(turn1_v31_flatten_strings(action.get(key)))
+                chunks.append(turn1_score_access_compat_flatten_strings(action.get(key)))
 
         # Some actions store the useful text inside these fields.
         for key in ["source_effect", "search_effect", "requirement", "raw_effect"]:
             if key in action:
-                chunks.append(turn1_v31_flatten_strings(action.get(key)))
+                chunks.append(turn1_score_access_compat_flatten_strings(action.get(key)))
 
         text = " ".join(x for x in chunks if x.strip())
 
@@ -3030,20 +3030,20 @@ def turn1_v31_effect_text_for_action(action):
         # Fallback to source/card only when no effect text exists.
         for key in ["source", "card", "search_card"]:
             if key in action:
-                return turn1_v31_flatten_strings(action.get(key))
+                return turn1_score_access_compat_flatten_strings(action.get(key))
 
-        return turn1_v31_flatten_strings(action)
+        return turn1_score_access_compat_flatten_strings(action)
 
     if isinstance(action, dict):
-        return turn1_v31_flatten_strings(action)
+        return turn1_score_access_compat_flatten_strings(action)
 
     return str(action or "")
 
 
-def turn1_v31_access_classes_from_effect_text(text):
+def turn1_score_access_compat_access_classes_from_effect_text(text):
     import re as _re
 
-    t = turn1_v31_norm(text)
+    t = turn1_score_access_compat_norm(text)
     classes = set()
 
     if not t:
@@ -3113,15 +3113,15 @@ def turn1_v31_access_classes_from_effect_text(text):
     return classes
 
 
-def turn1_v31_action_access_is_compatible(action, missing, st):
+def turn1_score_access_compat_action_is_compatible(action, missing, st):
     # Only filter actions where we can classify the effect target class.
-    text = turn1_v31_effect_text_for_action(action)
-    access_classes = turn1_v31_access_classes_from_effect_text(text)
+    text = turn1_score_access_compat_effect_text_for_action(action)
+    access_classes = turn1_score_access_compat_access_classes_from_effect_text(text)
 
     if not access_classes:
         return True
 
-    goal_classes = turn1_v31_goal_classes(missing, st)
+    goal_classes = turn1_score_access_compat_goal_classes(missing, st)
 
     # If the goal is unclassified, do not block; keep the simulator usable.
     if not goal_classes:
@@ -3153,7 +3153,7 @@ def turn1_v31_action_access_is_compatible(action, missing, st):
     try:
         st.log.append(
             {
-                "event": "blocked_score_time_incompatible_access_v31",
+                "event": "blocked_score_time_incompatible_access",
                 "action": label,
                 "access_classes": sorted(access_classes),
                 "goal_classes": sorted(goal_classes),
@@ -3174,7 +3174,7 @@ def score_candidate_for_missing_targets(
     # TURN1_ACTION_BUDGET_GUARD
     if _turn1_action_budget_exhausted(st):
         return []
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V31(
+    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SCORE_ACCESS_COMPAT(
         st,
         missing,
         going,
@@ -3183,7 +3183,7 @@ def score_candidate_for_missing_targets(
 
     filtered = []
     for score, action, target_norm in scored:
-        if turn1_v31_action_access_is_compatible(action, missing, st):
+        if turn1_score_access_compat_action_is_compatible(action, missing, st):
             filtered.append((score, action, target_norm))
 
     return filtered
