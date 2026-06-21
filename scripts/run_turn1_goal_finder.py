@@ -1826,48 +1826,6 @@ def turn1_v32_identity_blob(card):
     return " ".join(parts)
 
 
-def turn1_v32_goal_classes(reqs, deck):
-    classes = set()
-
-    for req in reqs:
-        for card in deck:
-            try:
-                if not any(card_matches_option(card, opt) for opt in req.options):
-                    continue
-            except Exception:
-                continue
-
-            ident = turn1_v32_norm(turn1_v32_identity_blob(card))
-            name = turn1_v32_norm(turn1_v32_card_name(card))
-
-            if "pokemon" in ident or "pokemon" in name or "pokémon" in ident or "pokémon" in name:
-                classes.add("pokemon")
-                if "basic" in ident:
-                    classes.add("basic_pokemon")
-
-            if "energy" in ident or " energy" in name or name.endswith("energy"):
-                classes.add("energy")
-                if "basic" in ident or name.startswith("basic "):
-                    classes.add("basic_energy")
-                if "water" in ident or "water" in name or "{w}" in ident:
-                    classes.add("water_energy")
-                    if "basic" in ident or name.startswith("basic "):
-                        classes.add("basic_water_energy")
-                if "fighting" in ident or "fighting" in name or "{f}" in ident:
-                    classes.add("fighting_energy")
-
-            if "trainer" in ident:
-                classes.add("trainer")
-            if "supporter" in ident:
-                classes.update(["trainer", "supporter"])
-            if "item" in ident:
-                classes.update(["trainer", "item"])
-            if "stadium" in ident:
-                classes.update(["trainer", "stadium"])
-
-    return classes
-
-
 def turn1_v32_deck_card_name_norms(deck):
     names = set()
     for card in deck:
@@ -1882,99 +1840,6 @@ def turn1_v32_action_labels(line):
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
-
-
-def turn1_v32_tight_effect_snippets_for_label(action_label, deck):
-    action_norm = turn1_v32_norm(action_label)
-    if not action_norm:
-        return []
-
-    # Card names are handled by card execution. This guard is for ability/effect
-    # labels such as Shivery Chill or Attract Customers.
-    if action_norm in turn1_v32_deck_card_name_norms(deck):
-        return []
-
-    snippets = []
-
-    for card in deck:
-        blob = turn1_v32_flatten_strings(card)
-        blob_norm = turn1_v32_norm(blob)
-        idx = blob_norm.find(action_norm)
-        if idx < 0:
-            continue
-
-        # Use a tight window after the effect label. This avoids treating source
-        # metadata like "Pokemon - Basic" as the target class of the effect.
-        start = max(0, idx - 80)
-        end = min(len(blob_norm), idx + 900)
-        snippets.append(blob_norm[start:end])
-
-    return snippets
-
-
-def turn1_v32_access_classes_from_effect_snippet(snippet):
-    import re as _re
-    t = turn1_v32_norm(snippet)
-    classes = set()
-
-    # Opponent-only disruption should never be credited as self-access.
-    opponent_markers = [
-        "your opponent shuffles",
-        "your opponent reveals",
-        "your opponent draws",
-        "opponent's hand",
-        "opponents hand",
-        "their hand",
-        "their deck",
-    ]
-    self_markers = [
-        "your deck",
-        "your hand",
-        "put into your hand",
-        "onto your bench",
-        "put it onto your bench",
-        "draw a card",
-        "draw 2 cards",
-        "draw cards",
-    ]
-    if any(m in t for m in opponent_markers) and not any(m in t for m in self_markers):
-        classes.add("opponent_only")
-        return classes
-
-    # Restricted energy access, e.g. Shivery Chill.
-    if "basic water energy" in t or "basic {w} energy" in t or "basic [w] energy" in t:
-        classes.update(["energy", "basic_energy", "water_energy", "basic_water_energy"])
-    elif "basic energy" in t:
-        classes.update(["energy", "basic_energy"])
-    elif _re.search(r"(search|reveal|choose|put).{0,160}energy", t):
-        classes.add("energy")
-
-    # Restricted Supporter access, e.g. Attract Customers / Luminous Sign.
-    if _re.search(r"(search|look at|reveal|choose|put).{0,220}supporter", t):
-        classes.update(["trainer", "supporter"])
-
-    # Pokemon access. Tie this to access verbs so source text like
-    # "if this Pokemon is in the Active Spot" does not count.
-    if _re.search(r"(search|reveal|choose|put|bench).{0,220}(basic pokemon|basic pokémon)", t):
-        classes.update(["pokemon", "basic_pokemon"])
-    elif _re.search(r"(search|reveal|choose|put|bench).{0,220}(pokemon|pokémon)", t):
-        classes.add("pokemon")
-    elif "put onto your bench" in t or "put it onto your bench" in t:
-        classes.add("pokemon")
-
-    # Trainer/item/stadium access.
-    if _re.search(r"(search|reveal|choose|put).{0,180}item", t):
-        classes.update(["trainer", "item"])
-    if _re.search(r"(search|reveal|choose|put).{0,180}stadium", t):
-        classes.update(["trainer", "stadium"])
-
-    # Generic self draw can help any goal. Concealed Cards should land here.
-    # Do not mark search-energy effects as generic just because they put energy
-    # into hand.
-    if not classes and _re.search(r"(draw|draw until).{0,120}(card|cards)", t) and "your opponent" not in t:
-        classes.add("generic_draw")
-
-    return classes
 
 
 def turn1_v32_effect_label_incompatible_reason(action_label, deck, reqs):
@@ -3073,161 +2938,6 @@ def turn1_v30_deck_card_name_norms(deck):
             names.add(turn1_v30_norm(name))
 
     return names
-
-
-def turn1_v30_goal_classes(reqs, deck):
-    classes = set()
-
-    for req in reqs:
-        for card in deck:
-            try:
-                if not any(card_matches_option(card, opt) for opt in req.options):
-                    continue
-            except Exception:
-                continue
-
-            blob = turn1_v30_norm(turn1_v30_flatten_strings(card))
-
-            if "pokemon" in blob or "pokémon" in blob:
-                classes.add("pokemon")
-                if "basic" in blob:
-                    classes.add("basic_pokemon")
-
-            if "energy" in blob:
-                classes.add("energy")
-                if "basic" in blob:
-                    classes.add("basic_energy")
-                if "water" in blob:
-                    classes.add("water_energy")
-                    if "basic" in blob:
-                        classes.add("basic_water_energy")
-
-            if "supporter" in blob:
-                classes.add("supporter")
-                classes.add("trainer")
-
-            if "item" in blob:
-                classes.add("item")
-                classes.add("trainer")
-
-            if "stadium" in blob:
-                classes.add("stadium")
-                classes.add("trainer")
-
-    return classes
-
-
-def turn1_v30_extract_effect_blobs_for_label(action_label, deck):
-    """
-    Find the tightest likely text blobs for an ability/effect label.
-
-    For a label like "Shivery Chill", this tries to return the ability dict/text,
-    not the whole Chien-Pao card. If tight extraction fails, it falls back to the
-    whole card blob only when the label appears somewhere in that card.
-    """
-    action_norm = turn1_v30_norm(action_label)
-
-    if not action_norm:
-        return []
-
-    card_names = turn1_v30_deck_card_name_norms(deck)
-
-    # Normal card names are not effect labels.
-    if action_norm in card_names:
-        return []
-
-    blobs = []
-
-    def walk(obj, card_blob):
-        if isinstance(obj, dict):
-            local_blob = turn1_v30_flatten_strings(obj)
-            local_norm = turn1_v30_norm(local_blob)
-
-            if action_norm in local_norm:
-                blobs.append(local_blob)
-                return
-
-            for v in obj.values():
-                walk(v, card_blob)
-
-        elif isinstance(obj, (list, tuple, set)):
-            for v in obj:
-                walk(v, card_blob)
-
-    for card in deck:
-        card_blob = turn1_v30_flatten_strings(card)
-        card_norm = turn1_v30_norm(card_blob)
-
-        if action_norm not in card_norm:
-            continue
-
-        before = len(blobs)
-        walk(card, card_blob)
-
-        # Fallback to card blob if no smaller blob was found.
-        if len(blobs) == before:
-            blobs.append(card_blob)
-
-    return blobs
-
-
-def turn1_v30_access_classes_from_effect_text(text):
-    import re as _re
-
-    t = turn1_v30_norm(text)
-    classes = set()
-
-    # Opponent-only disruption should not be a self-access line.
-    opponent_markers = [
-        "your opponent shuffles",
-        "your opponent reveals",
-        "your opponent draws",
-        "opponent's hand",
-        "opponents hand",
-        "their hand",
-        "their deck",
-    ]
-
-    self_markers = [
-        "your deck",
-        "your hand",
-        "put into your hand",
-        "onto your bench",
-        "put it onto your bench",
-        "draw ",
-        "you may draw",
-    ]
-
-    if any(m in t for m in opponent_markers) and not any(m in t for m in self_markers):
-        classes.add("opponent_only")
-        return classes
-
-    # Energy-only access.
-    if "basic water energy" in t:
-        classes.update(["energy", "basic_energy", "water_energy", "basic_water_energy"])
-    elif "basic energy" in t:
-        classes.update(["energy", "basic_energy"])
-    elif _re.search(r"(search|reveal|choose|put).{0,140}energy", t):
-        classes.add("energy")
-
-    # Supporter access.
-    if _re.search(r"(search|look at|reveal|choose|put).{0,180}supporter", t):
-        classes.update(["supporter", "trainer"])
-
-    # Pokémon access. Keep it tied to access verbs so active-condition text does not count.
-    if _re.search(r"(search|reveal|choose|put|bench).{0,180}(basic pokemon|basic pokémon)", t):
-        classes.update(["pokemon", "basic_pokemon"])
-    elif _re.search(r"(search|reveal|choose|put|bench).{0,180}(pokemon|pokémon)", t):
-        classes.add("pokemon")
-    elif "put onto your bench" in t or "put it onto your bench" in t:
-        classes.add("pokemon")
-
-    # General self draw can help any goal, so mark as generic access.
-    # This lets things like Concealed Cards remain possible.
-    if _re.search(r"(draw|draw until).{0,80}(card|cards)", t) and "your opponent" not in t:
-        classes.add("generic_draw")
-
-    return classes
 
 
 def turn1_v30_effect_label_is_compatible(action_label, deck, reqs):
@@ -4617,13 +4327,6 @@ def _turn1_v35_deck_card_names(deck):
         if name:
             names.add(_turn1_v35_norm(name))
     return names
-
-
-def _turn1_v35_action_labels(line):
-    raw = str(line or "").strip()
-    if not raw or raw == "none":
-        return []
-    return [part.strip() for part in raw.split("->") if part.strip()]
 
 
 def _turn1_v35_effect_texts_for_label(action_label, deck):
@@ -6368,20 +6071,6 @@ def _turn1_v23_norm_text(value: Any) -> str:
         return str(value or "").lower()
 
 
-def _turn1_v23_is_basic_energy(card: Dict[str, Any]) -> bool:
-    try:
-        fn = getattr(tf, "is_basic_energy", None)
-        if callable(fn):
-            return bool(fn(card))
-    except Exception:
-        pass
-
-    try:
-        return bool(tf.is_energy(card) and "basic" in tf.norm(tf.card_name(card)))
-    except Exception:
-        return False
-
-
 def _turn1_v23_card_is_item(card: Dict[str, Any]) -> bool:
     try:
         name_blob = tf.norm(tf.card_name(card))
@@ -6774,37 +6463,6 @@ def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = 
                 _turn1_v25_add_text_parts(card.get(key), parts)
 
     return _turn1_v25_norm_text(" ".join(parts))
-
-
-def _turn1_v25_is_known_self_search_card(card: Dict[str, Any]) -> bool:
-    """Known card-specific self-consistency search cards handled by target_finder."""
-    try:
-        name = tf.norm(tf.card_name(card))
-        if name in {
-            "ultra ball",
-            "buddy buddy poffin",
-            "buddy buddy poffin",
-            "poke pad",
-            "poké pad",
-            "fighting gong",
-            "tera orb",
-            "night stretcher",
-            "dusk ball",
-            "secret box",
-            "capturing aroma",
-            "artazon",
-            "nest ball",
-            "great ball",
-            "earthen vessel",
-            "energy search",
-        }:
-            return True
-        # Preserve target_finder's specific direct-search exceptions.
-        for tn in []:
-            pass
-    except Exception:
-        pass
-    return False
 
 
 def _turn1_v25_has_opponent_zone_text(text: str) -> bool:
@@ -7212,10 +6870,6 @@ def turn1_v27_norm_blob(s: Any) -> str:
 
 def turn1_v27_card_blob(card: Any) -> str:
     return turn1_v27_norm_blob(turn1_v27_flatten_text(card))
-
-
-def turn1_v27_effect_blob(effect: Any) -> str:
-    return turn1_v27_norm_blob(turn1_v27_flatten_text(effect))
 
 
 def turn1_v27_action_source_and_effect(action: Any) -> Tuple[Any, Any, str]:
