@@ -4368,7 +4368,6 @@ def _turn1_neutralize_old_posthoc_effect_filters():
         "turn1_apply_effect_name_compatibility_filter",
         "turn1_apply_pre_summary_effect_label_compatibility_guard",
         "turn1_v32_apply_prereturn_incompatible_effect_guard",
-        "turn1_v36_apply_search_target_type_filter",
     ]
     for name in names_to_noop:
         if name in globals():
@@ -4973,8 +4972,8 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
         reqs,
     )
 
-    # TURN1_APPLY_SEARCH_TARGET_TYPE_SYSTEM_V36
-    results = turn1_v36_filter_results(results, deck, reqs)
+    # TURN1_APPLY_SEARCH_TARGET_TYPE_SYSTEM
+    results = turn1_result_goal_filter_results(results, deck, reqs)
 
     # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER
     opponent_dependent_filter_summary = _turn1_apply_opponent_dependent_filter(results, deck)
@@ -7342,7 +7341,7 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 
 
 # ---------------------------------------------------------------------
-# TURN1_SEARCH_TARGET_TYPE_SYSTEM_V36
+# TURN1_SEARCH_TARGET_TYPE_SYSTEM
 # ---------------------------------------------------------------------
 # Root fix for search effects:
 # Search/draw-like effects must only be allowed to access cards matching their
@@ -7360,20 +7359,20 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 #   3. Wraps simulate_one_goal_trial at the end so final success rows cannot
 #      include incompatible search/effect actions.
 
-import re as _turn1_v36_re
-import unicodedata as _turn1_v36_unicodedata
+import re as _turn1_result_goal_filter_re
+import unicodedata as _turn1_result_goal_filter_unicodedata
 
 
-def turn1_v36_norm(value):
+def turn1_result_goal_filter_norm(value):
     s = str(value or "")
-    s = _turn1_v36_unicodedata.normalize("NFKD", s)
-    s = "".join(ch for ch in s if not _turn1_v36_unicodedata.combining(ch))
+    s = _turn1_result_goal_filter_unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not _turn1_result_goal_filter_unicodedata.combining(ch))
     s = s.lower().replace("’", "'").replace("`", "'")
-    s = _turn1_v36_re.sub(r"\s+", " ", s)
+    s = _turn1_result_goal_filter_re.sub(r"\s+", " ", s)
     return s.strip()
 
 
-def turn1_v36_card_name(card):
+def turn1_result_goal_filter_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -7391,24 +7390,24 @@ def turn1_v36_card_name(card):
     return ""
 
 
-def turn1_v36_identity(card):
+def turn1_result_goal_filter_identity(card):
     if not isinstance(card, dict):
         return {}
     ident = card.get("identity") or {}
     return ident if isinstance(ident, dict) else {}
 
 
-def turn1_v36_supertype(card):
+def turn1_result_goal_filter_supertype(card):
     if not isinstance(card, dict):
         return ""
-    ident = turn1_v36_identity(card)
+    ident = turn1_result_goal_filter_identity(card)
     return str(card.get("supertype") or ident.get("supertype") or "")
 
 
-def turn1_v36_subtypes(card):
+def turn1_result_goal_filter_subtypes(card):
     vals = []
     if isinstance(card, dict):
-        ident = turn1_v36_identity(card)
+        ident = turn1_result_goal_filter_identity(card)
         for src in (card, ident):
             for key in ("subtypes", "subtype", "trainerType"):
                 v = src.get(key)
@@ -7419,10 +7418,10 @@ def turn1_v36_subtypes(card):
     return vals
 
 
-def turn1_v36_types(card):
+def turn1_result_goal_filter_types(card):
     vals = []
     if isinstance(card, dict):
-        ident = turn1_v36_identity(card)
+        ident = turn1_result_goal_filter_identity(card)
         for src in (card, ident):
             v = src.get("types")
             if isinstance(v, (list, tuple, set)):
@@ -7432,13 +7431,13 @@ def turn1_v36_types(card):
     return vals
 
 
-def turn1_v36_card_classes(card):
+def turn1_result_goal_filter_card_classes(card):
     """Strict identity-based classes. Do not inspect attack/effect text here."""
     classes = set()
-    st = turn1_v36_norm(turn1_v36_supertype(card))
-    subs = {turn1_v36_norm(x) for x in turn1_v36_subtypes(card)}
-    types = {turn1_v36_norm(x) for x in turn1_v36_types(card)}
-    name = turn1_v36_norm(turn1_v36_card_name(card))
+    st = turn1_result_goal_filter_norm(turn1_result_goal_filter_supertype(card))
+    subs = {turn1_result_goal_filter_norm(x) for x in turn1_result_goal_filter_subtypes(card)}
+    types = {turn1_result_goal_filter_norm(x) for x in turn1_result_goal_filter_types(card)}
+    name = turn1_result_goal_filter_norm(turn1_result_goal_filter_card_name(card))
 
     if "pokemon" in st or "pokémon" in st:
         classes.add("pokemon")
@@ -7483,7 +7482,7 @@ def turn1_v36_card_classes(card):
     return classes
 
 
-def turn1_v36_class_implies(classes, wanted):
+def turn1_result_goal_filter_class_implies(classes, wanted):
     if wanted in classes:
         return True
     # Specific card classes imply their broad parents.
@@ -7496,8 +7495,8 @@ def turn1_v36_class_implies(classes, wanted):
     return False
 
 
-def turn1_v36_filter_classes_from_text(text):
-    t = turn1_v36_norm(text)
+def turn1_result_goal_filter_classes_from_text(text):
+    t = turn1_result_goal_filter_norm(text)
     classes = set()
 
     if not t:
@@ -7519,43 +7518,43 @@ def turn1_v36_filter_classes_from_text(text):
         classes.update(["energy", "basic_energy", "fighting_energy", "basic_fighting_energy"])
     elif "basic energy" in t:
         classes.update(["energy", "basic_energy"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put).{0,180}energy", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put).{0,180}energy", t):
         classes.add("energy")
 
     # Pokémon searches.
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic water pokemon|basic water pokémon)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic water pokemon|basic water pokémon)", t):
         classes.update(["pokemon", "basic_pokemon", "water_pokemon", "basic_water_pokemon"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(water pokemon|water pokémon)", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(water pokemon|water pokémon)", t):
         classes.update(["pokemon", "water_pokemon"])
 
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic fighting pokemon|basic fighting pokémon)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic fighting pokemon|basic fighting pokémon)", t):
         classes.update(["pokemon", "basic_pokemon", "fighting_pokemon", "basic_fighting_pokemon"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(fighting pokemon|fighting pokémon)", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(fighting pokemon|fighting pokémon)", t):
         classes.update(["pokemon", "fighting_pokemon"])
 
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon ex|pokémon ex)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon ex|pokémon ex)", t):
         classes.update(["pokemon", "pokemon_ex"])
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic pokemon|basic pokémon)", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(basic pokemon|basic pokémon)", t):
         classes.update(["pokemon", "basic_pokemon"])
-    elif _turn1_v36_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon|pokémon)", t):
+    elif _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|bench).{0,220}(pokemon|pokémon)", t):
         classes.add("pokemon")
 
     # Trainer searches.
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|look at).{0,220}supporter", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|look at).{0,220}supporter", t):
         classes.update(["trainer", "supporter"])
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|look at).{0,220}item", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|look at).{0,220}item", t):
         classes.update(["trainer", "item"])
-    if _turn1_v36_re.search(r"(search|choose|reveal|find|put|look at).{0,220}stadium", t):
+    if _turn1_result_goal_filter_re.search(r"(search|choose|reveal|find|put|look at).{0,220}stadium", t):
         classes.update(["trainer", "stadium"])
 
     # Generic self-draw is allowed as general access but does not define a search target.
-    if _turn1_v36_re.search(r"\b(draw|draws|draw until)\b.{0,100}\b(card|cards)\b", t) and "your opponent" not in t:
+    if _turn1_result_goal_filter_re.search(r"\b(draw|draws|draw until)\b.{0,100}\b(card|cards)\b", t) and "your opponent" not in t:
         classes.add("generic_draw")
 
     return classes
 
 
-def turn1_v36_filter_classes(filt):
+def turn1_result_goal_filter_classes(filt):
     classes = set()
     if not isinstance(filt, dict):
         return classes
@@ -7583,12 +7582,12 @@ def turn1_v36_filter_classes(filt):
         if val:
             raw_parts.append(str(val))
     if raw_parts:
-        classes.update(turn1_v36_filter_classes_from_text(" ".join(raw_parts)))
+        classes.update(turn1_result_goal_filter_classes_from_text(" ".join(raw_parts)))
 
     return classes
 
 
-def turn1_v36_card_allowed_by_classes(card, allowed):
+def turn1_result_goal_filter_card_allowed_by_classes(card, allowed):
     if not allowed:
         return True
     if "opponent_only" in allowed:
@@ -7596,7 +7595,7 @@ def turn1_v36_card_allowed_by_classes(card, allowed):
     if "generic_draw" in allowed and len(allowed) == 1:
         return True
 
-    cc = turn1_v36_card_classes(card)
+    cc = turn1_result_goal_filter_card_classes(card)
 
     # Remove broad classes from the search side when specific restrictions exist.
     specific = set(allowed)
@@ -7611,27 +7610,27 @@ def turn1_v36_card_allowed_by_classes(card, allowed):
     if not specific:
         specific = set(allowed)
 
-    return any(turn1_v36_class_implies(cc, want) for want in specific)
+    return any(turn1_result_goal_filter_class_implies(cc, want) for want in specific)
 
 
 # Patch target_finder's core filter check. This fixes many bad selections at the source.
-_ORIG_TF_FILTER_ALLOWS_CARD_V36 = getattr(tf, "filter_allows_card", None)
+_ORIG_TF_FILTER_ALLOWS_CARD_BEFORE_RESULT_GOAL_FILTER = getattr(tf, "filter_allows_card", None)
 
-def turn1_v36_filter_allows_card(filt, card):
-    classes = turn1_v36_filter_classes(filt)
+def turn1_result_goal_filter_allows_card(filt, card):
+    classes = turn1_result_goal_filter_classes(filt)
     if classes:
-        return turn1_v36_card_allowed_by_classes(card, classes)
-    if _ORIG_TF_FILTER_ALLOWS_CARD_V36 is not None:
-        return _ORIG_TF_FILTER_ALLOWS_CARD_V36(filt, card)
+        return turn1_result_goal_filter_card_allowed_by_classes(card, classes)
+    if _ORIG_TF_FILTER_ALLOWS_CARD_BEFORE_RESULT_GOAL_FILTER is not None:
+        return _ORIG_TF_FILTER_ALLOWS_CARD_BEFORE_RESULT_GOAL_FILTER(filt, card)
     return True
 
 try:
-    tf.filter_allows_card = turn1_v36_filter_allows_card
+    tf.filter_allows_card = turn1_result_goal_filter_allows_card
 except Exception:
     pass
 
 
-def turn1_v36_flatten_strings(obj, max_items=7000):
+def turn1_result_goal_filter_flatten_strings(obj, max_items=7000):
     out = []
     seen = set()
     def rec(x):
@@ -7658,24 +7657,24 @@ def turn1_v36_flatten_strings(obj, max_items=7000):
     return " ".join(out)
 
 
-def turn1_v36_action_labels(line):
+def turn1_result_goal_filter_action_labels(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v36_deck_name_map(deck):
+def turn1_result_goal_filter_deck_name_map(deck):
     out = {}
     for card in deck or []:
-        name = turn1_v36_card_name(card)
-        n = turn1_v36_norm(name)
+        name = turn1_result_goal_filter_card_name(card)
+        n = turn1_result_goal_filter_norm(name)
         if n and n not in out:
             out[n] = card
     return out
 
 
-def turn1_v36_extract_steps_from_card_or_effect(obj):
+def turn1_result_goal_filter_extract_steps_from_card_or_effect(obj):
     steps = []
     try:
         if isinstance(obj, dict):
@@ -7690,15 +7689,15 @@ def turn1_v36_extract_steps_from_card_or_effect(obj):
     return steps
 
 
-def turn1_v36_action_target_classes(action, deck):
+def turn1_result_goal_filter_action_target_classes(action, deck):
     """What kind of card can this action directly access?"""
-    action_norm = turn1_v36_norm(action)
-    name_map = turn1_v36_deck_name_map(deck)
+    action_norm = turn1_result_goal_filter_norm(action)
+    name_map = turn1_result_goal_filter_deck_name_map(deck)
 
     # Physical card action.
     if action_norm in name_map:
         card = name_map[action_norm]
-        cname = turn1_v36_norm(turn1_v36_card_name(card))
+        cname = turn1_result_goal_filter_norm(turn1_result_goal_filter_card_name(card))
         classes = set()
 
         # Important explicit card policies.
@@ -7715,7 +7714,7 @@ def turn1_v36_action_target_classes(action, deck):
         if cname == "fighting gong":
             return {"pokemon", "basic_pokemon", "fighting_pokemon", "basic_fighting_pokemon", "energy", "basic_energy", "fighting_energy", "basic_fighting_energy"}
 
-        for step in turn1_v36_extract_steps_from_card_or_effect(card):
+        for step in turn1_result_goal_filter_extract_steps_from_card_or_effect(card):
             if not isinstance(step, dict):
                 continue
             op = step.get("op")
@@ -7724,8 +7723,8 @@ def turn1_v36_action_target_classes(action, deck):
                     filt = tf.extract_filter(step)
                 except Exception:
                     filt = step.get("filter") or {}
-                classes.update(turn1_v36_filter_classes(filt))
-                classes.update(turn1_v36_filter_classes_from_text(turn1_v36_flatten_strings(step)))
+                classes.update(turn1_result_goal_filter_classes(filt))
+                classes.update(turn1_result_goal_filter_classes_from_text(turn1_result_goal_filter_flatten_strings(step)))
             elif op in {"draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches"}:
                 classes.add("generic_draw")
 
@@ -7735,19 +7734,19 @@ def turn1_v36_action_target_classes(action, deck):
     # Ability/effect label. Find the owning effect/card text.
     blobs = []
     for card in deck or []:
-        card_blob = turn1_v36_flatten_strings(card)
-        if action_norm and action_norm in turn1_v36_norm(card_blob):
+        card_blob = turn1_result_goal_filter_flatten_strings(card)
+        if action_norm and action_norm in turn1_result_goal_filter_norm(card_blob):
             blobs.append(card_blob)
 
     classes = set()
     for blob in blobs:
-        classes.update(turn1_v36_filter_classes_from_text(blob))
+        classes.update(turn1_result_goal_filter_classes_from_text(blob))
 
     # If it is not a card name and not a known effect label, leave empty.
     return classes
 
 
-def turn1_v36_goal_classes(reqs, deck):
+def turn1_result_goal_filter_goal_classes(reqs, deck):
     classes = set()
     for req in reqs or []:
         for opt in getattr(req, "options", []) or []:
@@ -7755,17 +7754,17 @@ def turn1_v36_goal_classes(reqs, deck):
             for card in deck or []:
                 try:
                     if card_matches_option(card, opt):
-                        classes.update(turn1_v36_card_classes(card))
+                        classes.update(turn1_result_goal_filter_card_classes(card))
                         matched = True
                 except Exception:
                     pass
             if not matched:
                 # Text fallback for goals like "Basic Water Energy" if deck match fails.
-                classes.update(turn1_v36_filter_classes_from_text(getattr(opt, "raw", "")))
+                classes.update(turn1_result_goal_filter_classes_from_text(getattr(opt, "raw", "")))
     return classes
 
 
-def turn1_v36_action_compatible_with_goal(action_classes, goal_classes):
+def turn1_result_goal_filter_action_compatible_with_goal(action_classes, goal_classes):
     if not action_classes:
         # Unknown physical card actions are allowed elsewhere; unknown effect labels are handled by caller.
         return True
@@ -7793,11 +7792,11 @@ def turn1_v36_action_compatible_with_goal(action_classes, goal_classes):
             if allowed == goal:
                 return True
             # Broad search can hit specific goal.
-            if allowed == "pokemon" and turn1_v36_class_implies({goal}, "pokemon"):
+            if allowed == "pokemon" and turn1_result_goal_filter_class_implies({goal}, "pokemon"):
                 return True
-            if allowed == "energy" and turn1_v36_class_implies({goal}, "energy"):
+            if allowed == "energy" and turn1_result_goal_filter_class_implies({goal}, "energy"):
                 return True
-            if allowed == "trainer" and turn1_v36_class_implies({goal}, "trainer"):
+            if allowed == "trainer" and turn1_result_goal_filter_class_implies({goal}, "trainer"):
                 return True
     return False
 
@@ -7827,7 +7826,7 @@ def turn1_direct_goal_filter_goal_target_norms(reqs, deck):
                 except Exception:
                     pass
             for v in raw_values:
-                n = turn1_v36_norm(v)
+                n = turn1_result_goal_filter_norm(v)
                 if n and n not in seen:
                     seen.add(n)
                     norms.append(n)
@@ -7853,17 +7852,17 @@ def turn1_direct_goal_filter_action_reaches_goal_directly(action_card, deck, req
     return False
 
 
-def turn1_v36_bad_actions_for_goal(line, deck, reqs):
+def turn1_result_goal_filter_bad_actions_for_goal(line, deck, reqs):
     # TURN1_DEWRAP_DIRECT_GOAL_FILTER
-    goal_classes = turn1_v36_goal_classes(reqs, deck)
+    goal_classes = turn1_result_goal_filter_goal_classes(reqs, deck)
     if not goal_classes:
         return []
 
-    name_map = turn1_v36_deck_name_map(deck)
+    name_map = turn1_result_goal_filter_deck_name_map(deck)
     bad = []
 
-    for action in turn1_v36_action_labels(line):
-        action_norm = turn1_v36_norm(action)
+    for action in turn1_result_goal_filter_action_labels(line):
+        action_norm = turn1_result_goal_filter_norm(action)
         action_card = name_map.get(action_norm)
 
         # Physical card action: if target_finder's direct search logic says it
@@ -7871,7 +7870,7 @@ def turn1_v36_bad_actions_for_goal(line, deck, reqs):
         if action_card is not None and turn1_direct_goal_filter_action_reaches_goal_directly(action_card, deck, reqs):
             continue
 
-        classes = turn1_v36_action_target_classes(action, deck)
+        classes = turn1_result_goal_filter_action_target_classes(action, deck)
 
         # Unknown non-card action = unvalidated ability label. Block.
         if action_norm not in name_map and not classes:
@@ -7882,7 +7881,7 @@ def turn1_v36_bad_actions_for_goal(line, deck, reqs):
         if action_norm in name_map and not classes:
             continue
 
-        if not turn1_v36_action_compatible_with_goal(classes, goal_classes):
+        if not turn1_result_goal_filter_action_compatible_with_goal(classes, goal_classes):
             bad.append({
                 "action": action,
                 "reason": "search_target_incompatible_with_goal",
@@ -7893,7 +7892,7 @@ def turn1_v36_bad_actions_for_goal(line, deck, reqs):
     return bad
 
 
-def turn1_v36_filter_single_result(result, deck, reqs):
+def turn1_result_goal_filter_single_result(result, deck, reqs):
     if not isinstance(result, dict):
         return result
     if not result.get("success"):
@@ -7901,21 +7900,21 @@ def turn1_v36_filter_single_result(result, deck, reqs):
     line = result.get("line") or "none"
     if line == "none":
         return result
-    bad = turn1_v36_bad_actions_for_goal(line, deck, reqs)
+    bad = turn1_result_goal_filter_bad_actions_for_goal(line, deck, reqs)
     if not bad:
         return result
     result["success"] = False
-    result["success_stage"] = "blocked_search_target_type_v36"
-    result["blocked_search_target_type_v36"] = bad
+    result["success_stage"] = "blocked_search_target_type"
+    result["blocked_search_target_type"] = bad
     result["missing_requirements"] = [
         "Blocked incompatible search target: " + ", ".join(b.get("action", "?") for b in bad)
     ]
     return result
 
 
-def turn1_v36_filter_results(results, deck, reqs):
+def turn1_result_goal_filter_results(results, deck, reqs):
     for r in results or []:
-        turn1_v36_filter_single_result(r, deck, reqs)
+        turn1_result_goal_filter_single_result(r, deck, reqs)
     return results
 
 
@@ -7923,10 +7922,10 @@ def turn1_v36_filter_results(results, deck, reqs):
 # Wrap the trial simulator last. Prefer a pre-unvalidated-effect-guard base if present so the earlier
 # "block all non-card labels" wrapper does not incorrectly kill valid Shivery Chill
 # lines for Basic Water Energy goals.
-_TURN1_V36_BASE_SIMULATE = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD") or globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V32") or simulate_one_goal_trial
+_TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD") or globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V32") or simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
-    result = _TURN1_V36_BASE_SIMULATE(*args, **kwargs)
+    result = _TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER(*args, **kwargs)
     deck = kwargs.get("deck")
     reqs = kwargs.get("reqs")
     if deck is None:
@@ -7940,7 +7939,7 @@ def simulate_one_goal_trial(*args, **kwargs):
                 reqs = value
                 break
     if deck is not None and reqs is not None:
-        return turn1_v36_filter_single_result(result, deck, reqs)
+        return turn1_result_goal_filter_single_result(result, deck, reqs)
     return result
 
 
@@ -8189,9 +8188,9 @@ for _turn1_runtime_cache_wrapper_name in [
     "turn1_v41_goal_classes",
     "turn1_v41_access_classes_from_effect",
     "turn1_v41_best_active_for_goal",
-    # v36/v37/v38 helper families, if present
-    "turn1_v36_goal_classes",
-    "turn1_v36_access_classes_from_text",
+    # result-goal and later helper families, if present
+    "turn1_result_goal_filter_goal_classes",
+    "turn1_result_goal_filter_classes_from_text",
     "turn1_v38_goal_classes",
     "turn1_v38_access_classes_from_text",
 ]:
@@ -8407,7 +8406,7 @@ for _turn1_hotpath_cache_name in [
     "requirement_satisfied",
     "goal_satisfied",
     "zone_cards",
-    "turn1_v36_filter_single_result",
+    "turn1_result_goal_filter_single_result",
     "turn1_v41_card_has_active_compiled_search",
     "turn1_v41_search_effect_can_help_goal",
     "turn1_v41_compiled_search_filter_allows_goal",
