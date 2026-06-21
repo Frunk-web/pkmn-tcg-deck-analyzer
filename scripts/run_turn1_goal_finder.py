@@ -3192,7 +3192,7 @@ def score_candidate_for_missing_targets(
 
 
 # ---------------------------------------------------------------------
-# TURN1_BLOCK_UNVALIDATED_EFFECT_ACTIONS_V33
+# TURN1_BLOCK_UNVALIDATED_EFFECT_ACTIONS
 # ---------------------------------------------------------------------
 # Root fix:
 # The Turn-1 goal finder sometimes appends ability/effect labels into the
@@ -3209,7 +3209,7 @@ def score_candidate_for_missing_targets(
 # This wrapper converts successful trials into failures if the played line
 # contains an action segment that is not an actual card name in the deck.
 
-def _turn1_v33_norm_name(value):
+def _turn1_unvalidated_effect_guard_norm_name(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -3222,7 +3222,7 @@ def _turn1_v33_norm_name(value):
     return s.strip()
 
 
-def _turn1_v33_card_name(card):
+def _turn1_unvalidated_effect_guard_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -3241,7 +3241,7 @@ def _turn1_v33_card_name(card):
     return ""
 
 
-def _turn1_v33_find_deck_from_call(args, kwargs):
+def _turn1_unvalidated_effect_guard_find_deck_from_call(args, kwargs):
     values = list(kwargs.values()) + list(args)
 
     for value in values:
@@ -3256,7 +3256,7 @@ def _turn1_v33_find_deck_from_call(args, kwargs):
         if not all(isinstance(x, dict) for x in sample):
             continue
 
-        names = [_turn1_v33_card_name(x) for x in sample]
+        names = [_turn1_unvalidated_effect_guard_card_name(x) for x in sample]
 
         if any(names):
             return value
@@ -3264,24 +3264,24 @@ def _turn1_v33_find_deck_from_call(args, kwargs):
     return None
 
 
-def _turn1_v33_deck_card_name_norms(deck):
+def _turn1_unvalidated_effect_guard_deck_card_name_norms(deck):
     names = set()
 
     if not deck:
         return names
 
     for card in deck:
-        name = _turn1_v33_card_name(card)
+        name = _turn1_unvalidated_effect_guard_card_name(card)
 
         if not name:
             continue
 
-        names.add(_turn1_v33_norm_name(name))
+        names.add(_turn1_unvalidated_effect_guard_norm_name(name))
 
     return names
 
 
-def _turn1_v33_action_labels(line):
+def _turn1_unvalidated_effect_guard_action_labels(line):
     raw = str(line or "").strip()
 
     if not raw or raw == "none":
@@ -3290,16 +3290,16 @@ def _turn1_v33_action_labels(line):
     return [part.strip() for part in raw.split("->") if part.strip()]
 
 
-def _turn1_v33_unvalidated_effect_actions(line, deck, reqs=None):
-    card_names = _turn1_v33_deck_card_name_norms(deck)
+def _turn1_unvalidated_effect_guard_actions(line, deck, reqs=None):
+    card_names = _turn1_unvalidated_effect_guard_deck_card_name_norms(deck)
 
     if not card_names:
         return []
 
     blocked = []
 
-    for action in _turn1_v33_action_labels(line):
-        action_norm = _turn1_v33_norm_name(action)
+    for action in _turn1_unvalidated_effect_guard_action_labels(line):
+        action_norm = _turn1_unvalidated_effect_guard_norm_name(action)
 
         if not action_norm:
             continue
@@ -3318,10 +3318,10 @@ def _turn1_v33_unvalidated_effect_actions(line, deck, reqs=None):
     return blocked
 
 
-_ORIG_SIMULATE_ONE_GOAL_TRIAL_V33 = simulate_one_goal_trial
+_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD = simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
-    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_V33(*args, **kwargs)
+    result = _ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD(*args, **kwargs)
 
     try:
         if not isinstance(result, dict):
@@ -3335,16 +3335,16 @@ def simulate_one_goal_trial(*args, **kwargs):
         if line == "none":
             return result
 
-        deck = _turn1_v33_find_deck_from_call(args, kwargs)
+        deck = _turn1_unvalidated_effect_guard_find_deck_from_call(args, kwargs)
         reqs = _turn1_v35_find_reqs_from_call(args, kwargs)
-        blocked = _turn1_v33_unvalidated_effect_actions(line, deck, reqs)
+        blocked = _turn1_unvalidated_effect_guard_actions(line, deck, reqs)
 
         if not blocked:
             return result
 
         result["success"] = False
-        result["success_stage"] = "blocked_unvalidated_effect_action_v33"
-        result["blocked_unvalidated_effect_actions_v33"] = blocked
+        result["success_stage"] = "blocked_unvalidated_effect_action"
+        result["blocked_unvalidated_effect_actions"] = blocked
         result["missing_requirements"] = [
             "Blocked unvalidated ability/effect action: " + ", ".join(blocked)
         ]
@@ -3354,7 +3354,7 @@ def simulate_one_goal_trial(*args, **kwargs):
     except Exception as exc:
         # Do not crash the simulation from the safety guard.
         try:
-            result["v33_guard_error"] = str(exc)
+            result["unvalidated_effect_guard_error"] = str(exc)
         except Exception:
             pass
         return result
@@ -3936,7 +3936,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 # ---------------------------------------------------------------------
 # Root fix for ability/effect labels in Turn-1 access lines.
 #
-# Earlier safety patch v33 blocked every action label that was not a physical
+# Earlier unvalidated-effect guard blocked every action label that was not a physical
 # card name in the deck. That correctly stopped fake lines like:
 #   Ultra Ball -> Shivery Chill
 # for Pokemon goals, but it was too conservative for legitimate ability effects.
@@ -3945,7 +3945,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 #   Goal: 4x Basic Water Energy
 #   Chien-Pao ex / Shivery Chill searches up to 2 Basic Water Energy.
 #
-# This patch changes the v33 blocker from:
+# This patch changes the unvalidated-effect guard from:
 #   "block all non-card-name action labels"
 # to:
 #   "block non-card-name labels unless their owning effect text proves that
@@ -4374,11 +4374,11 @@ def _turn1_neutralize_old_posthoc_effect_filters():
         if name in globals():
             globals()[name] = _turn1_noop_filter_summary
 
-    # v0.33 blocked every non-card action label. That is no longer correct:
+    # unvalidated-effect-guard blocked every non-card action label. That is no longer correct:
     # validated ability labels such as Shivery Chill should be legal when their
     # compiled effect can satisfy the target.
-    if "_turn1_v33_unvalidated_effect_actions" in globals():
-        globals()["_turn1_v33_unvalidated_effect_actions"] = lambda line, deck: []
+    if "_turn1_unvalidated_effect_guard_actions" in globals():
+        globals()["_turn1_unvalidated_effect_guard_actions"] = lambda line, deck: []
 
     # v0.35 had a validated-effect pass, but it was still not the source of truth.
     if "_turn1_v35_unvalidated_effect_actions" in globals():
@@ -7920,10 +7920,10 @@ def turn1_v36_filter_results(results, deck, reqs):
 
 
 # Override old guard functions that were too broad or based on full card text.
-# Wrap the trial simulator last. Prefer a pre-v33 base if present so the earlier
+# Wrap the trial simulator last. Prefer a pre-unvalidated-effect-guard base if present so the earlier
 # "block all non-card labels" wrapper does not incorrectly kill valid Shivery Chill
 # lines for Basic Water Energy goals.
-_TURN1_V36_BASE_SIMULATE = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V33") or globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V32") or simulate_one_goal_trial
+_TURN1_V36_BASE_SIMULATE = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD") or globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V32") or simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
     result = _TURN1_V36_BASE_SIMULATE(*args, **kwargs)
