@@ -1757,39 +1757,6 @@ def turn1_v32_norm(s):
     return s.strip()
 
 
-def turn1_v32_flatten_strings(obj, max_items=6000):
-    out = []
-    seen = set()
-
-    def rec(x):
-        if len(out) >= max_items:
-            return
-        oid = id(x)
-        if oid in seen:
-            return
-        seen.add(oid)
-
-        if isinstance(x, str):
-            if x.strip():
-                out.append(x)
-            return
-
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if isinstance(k, str) and k.strip():
-                    out.append(k)
-                rec(v)
-            return
-
-        if isinstance(x, (list, tuple, set)):
-            for v in x:
-                rec(v)
-            return
-
-    rec(obj)
-    return " ".join(out)
-
-
 def turn1_v32_card_name(card):
     try:
         return tf.card_name(card)
@@ -1804,35 +1771,6 @@ def turn1_v32_card_name(card):
                 or ""
             )
         return ""
-
-
-def turn1_v32_identity_blob(card):
-    if not isinstance(card, dict):
-        return ""
-
-    ident = card.get("identity") or {}
-    parts = []
-
-    for src in [ident, card]:
-        if not isinstance(src, dict):
-            continue
-        for key in ["name", "canonical_name", "supertype", "subtype", "subtypes", "types", "trainerType"]:
-            val = src.get(key)
-            if isinstance(val, list):
-                parts.extend(str(x) for x in val)
-            elif val:
-                parts.append(str(val))
-
-    return " ".join(parts)
-
-
-def turn1_v32_deck_card_name_norms(deck):
-    names = set()
-    for card in deck:
-        name = turn1_v32_card_name(card)
-        if name:
-            names.add(turn1_v32_norm(name))
-    return names
 
 
 def turn1_v32_action_labels(line):
@@ -2880,39 +2818,6 @@ def turn1_v30_norm(s):
     return s.strip()
 
 
-def turn1_v30_flatten_strings(obj, max_items=5000):
-    out = []
-    seen = set()
-
-    def rec(x):
-        if len(out) >= max_items:
-            return
-
-        oid = id(x)
-        if oid in seen:
-            return
-        seen.add(oid)
-
-        if isinstance(x, str):
-            if x.strip():
-                out.append(x)
-            return
-
-        if isinstance(x, dict):
-            for k, v in x.items():
-                if isinstance(k, str) and k.strip():
-                    out.append(k)
-                rec(v)
-            return
-
-        if isinstance(x, (list, tuple, set)):
-            for v in x:
-                rec(v)
-
-    rec(obj)
-    return " ".join(out)
-
-
 def turn1_v30_card_name(card):
     try:
         return tf.card_name(card)
@@ -2927,17 +2832,6 @@ def turn1_v30_card_name(card):
                 or ""
             )
         return ""
-
-
-def turn1_v30_deck_card_name_norms(deck):
-    names = set()
-
-    for card in deck:
-        name = turn1_v30_card_name(card)
-        if name:
-            names.add(turn1_v30_norm(name))
-
-    return names
 
 
 def turn1_v30_effect_label_is_compatible(action_label, deck, reqs):
@@ -8094,10 +7988,6 @@ def turn1_v30_apply_pre_summary_effect_label_guard(results, deck, reqs):
     turn1_v36_filter_results(results, deck, reqs)
     after = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
     return {"enabled": True, "invalidated_successes": before - after, "version": "v36"}
-
-
-def turn1_v32_apply_prereturn_incompatible_effect_guard(result, deck, reqs):
-    return turn1_v36_filter_single_result(result, deck, reqs)
 
 
 # Wrap the trial simulator last. Prefer a pre-v33 base if present so the earlier
