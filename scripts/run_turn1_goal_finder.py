@@ -2419,7 +2419,7 @@ def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 #   Buddy-Buddy Poffin -> Basic Pokémon           -> valid for Pokémon goals
 
 
-def turn1_v29_norm_text(s):
+def turn1_effect_name_compat_norm_text(s):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -2432,7 +2432,7 @@ def turn1_v29_norm_text(s):
     return s.strip()
 
 
-def turn1_v29_flatten_strings(obj, max_items=5000):
+def turn1_effect_name_compat_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -2466,7 +2466,7 @@ def turn1_v29_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def turn1_v29_card_name(card):
+def turn1_effect_name_compat_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -2482,7 +2482,7 @@ def turn1_v29_card_name(card):
         return ""
 
 
-def turn1_v29_card_supertype(card):
+def turn1_effect_name_compat_card_supertype(card):
     if not isinstance(card, dict):
         return ""
 
@@ -2495,7 +2495,7 @@ def turn1_v29_card_supertype(card):
     )
 
 
-def turn1_v29_card_subtype_blob(card):
+def turn1_effect_name_compat_card_subtype_blob(card):
     if not isinstance(card, dict):
         return ""
 
@@ -2513,14 +2513,14 @@ def turn1_v29_card_subtype_blob(card):
     return " ".join(parts)
 
 
-def turn1_v29_classes_for_goal_card(card):
-    blob = turn1_v29_norm_text(
+def turn1_effect_name_compat_classes_for_goal_card(card):
+    blob = turn1_effect_name_compat_norm_text(
         " ".join(
             [
-                turn1_v29_card_name(card),
-                turn1_v29_card_supertype(card),
-                turn1_v29_card_subtype_blob(card),
-                turn1_v29_flatten_strings(card),
+                turn1_effect_name_compat_card_name(card),
+                turn1_effect_name_compat_card_supertype(card),
+                turn1_effect_name_compat_card_subtype_blob(card),
+                turn1_effect_name_compat_flatten_strings(card),
             ]
         )
     )
@@ -2558,21 +2558,21 @@ def turn1_v29_classes_for_goal_card(card):
     return classes
 
 
-def turn1_v29_goal_access_classes(reqs, deck):
+def turn1_effect_name_compat_goal_access_classes(reqs, deck):
     classes = set()
 
     for req in reqs:
         for card in deck:
             try:
                 if any(card_matches_option(card, opt) for opt in req.options):
-                    classes.update(turn1_v29_classes_for_goal_card(card))
+                    classes.update(turn1_effect_name_compat_classes_for_goal_card(card))
             except Exception:
                 continue
 
     return classes
 
 
-def turn1_v29_access_target_classes_from_text(text):
+def turn1_effect_name_compat_access_target_classes_from_text(text):
     """
     Classify what an effect can access.
 
@@ -2582,7 +2582,7 @@ def turn1_v29_access_target_classes_from_text(text):
     """
     import re as _re
 
-    t = turn1_v29_norm_text(text)
+    t = turn1_effect_name_compat_norm_text(text)
     classes = set()
 
     # Supporter-only access, e.g. Tatsugiri's Attract Customers.
@@ -2618,16 +2618,16 @@ def turn1_v29_access_target_classes_from_text(text):
     return classes
 
 
-def turn1_v29_deck_card_name_norms(deck):
+def turn1_effect_name_compat_deck_card_name_norms(deck):
     out = set()
     for card in deck:
-        name = turn1_v29_card_name(card)
+        name = turn1_effect_name_compat_card_name(card)
         if name:
-            out.add(turn1_v29_norm_text(name))
+            out.add(turn1_effect_name_compat_norm_text(name))
     return out
 
 
-def turn1_v29_effect_texts_for_action_label(action_label, deck):
+def turn1_effect_name_compat_effect_texts_for_action_label(action_label, deck):
     """
     Return possible owning card/effect text blobs for an action label.
 
@@ -2638,12 +2638,12 @@ def turn1_v29_effect_texts_for_action_label(action_label, deck):
     It skips normal card names. Card-name actions are handled by the normal
     card filters and executor.
     """
-    action_norm = turn1_v29_norm_text(action_label)
+    action_norm = turn1_effect_name_compat_norm_text(action_label)
 
     if not action_norm:
         return []
 
-    card_name_norms = turn1_v29_deck_card_name_norms(deck)
+    card_name_norms = turn1_effect_name_compat_deck_card_name_norms(deck)
 
     # If the action is literally a card name, do not treat it as an ability label.
     if action_norm in card_name_norms:
@@ -2652,8 +2652,8 @@ def turn1_v29_effect_texts_for_action_label(action_label, deck):
     matches = []
 
     for card in deck:
-        blob = turn1_v29_flatten_strings(card)
-        blob_norm = turn1_v29_norm_text(blob)
+        blob = turn1_effect_name_compat_flatten_strings(card)
+        blob_norm = turn1_effect_name_compat_norm_text(blob)
 
         if action_norm and action_norm in blob_norm:
             matches.append(blob)
@@ -2661,7 +2661,7 @@ def turn1_v29_effect_texts_for_action_label(action_label, deck):
     return matches
 
 
-def turn1_v29_action_labels(line):
+def turn1_effect_name_compat_action_labels(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
@@ -2669,23 +2669,23 @@ def turn1_v29_action_labels(line):
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v29_incompatible_effect_actions(line, deck, reqs):
-    goal_classes = turn1_v29_goal_access_classes(reqs, deck)
+def turn1_effect_name_compat_incompatible_actions(line, deck, reqs):
+    goal_classes = turn1_effect_name_compat_goal_access_classes(reqs, deck)
 
     if not goal_classes:
         return []
 
     blocked = []
 
-    for action in turn1_v29_action_labels(line):
-        effect_texts = turn1_v29_effect_texts_for_action_label(action, deck)
+    for action in turn1_effect_name_compat_action_labels(line):
+        effect_texts = turn1_effect_name_compat_effect_texts_for_action_label(action, deck)
 
         if not effect_texts:
             continue
 
         combined_classes = set()
         for txt in effect_texts:
-            combined_classes.update(turn1_v29_access_target_classes_from_text(txt))
+            combined_classes.update(turn1_effect_name_compat_access_target_classes_from_text(txt))
 
         # If we could not classify target classes, do not block.
         if not combined_classes:
@@ -2719,7 +2719,7 @@ def turn1_v29_incompatible_effect_actions(line, deck, reqs):
     return blocked
 
 
-def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
+def turn1_apply_effect_name_compatibility_filter(results, deck, reqs):
     summary = {
         "enabled": True,
         "invalidated_successes": 0,
@@ -2733,7 +2733,7 @@ def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
             continue
 
         line = r.get("line") or "none"
-        blocked = turn1_v29_incompatible_effect_actions(line, deck, reqs)
+        blocked = turn1_effect_name_compat_incompatible_actions(line, deck, reqs)
 
         if not blocked:
             continue
@@ -4365,7 +4365,7 @@ def _turn1_v39_noop_filter_summary(*args, **kwargs):
 def _turn1_v39_neutralize_old_posthoc_effect_filters():
     names_to_noop = [
         "turn1_v26_apply_opponent_only_filter",
-        "turn1_v29_apply_effect_name_compatibility_filter",
+        "turn1_apply_effect_name_compatibility_filter",
         "turn1_apply_pre_summary_effect_label_compatibility_guard",
         "turn1_v32_apply_prereturn_incompatible_effect_guard",
         "turn1_v36_apply_search_target_type_filter",
@@ -4967,7 +4967,7 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
     )
 
     # TURN1_APPLY_EFFECT_NAME_COMPATIBILITY_GUARD_V29
-    effect_name_compatibility_summary = turn1_v29_apply_effect_name_compatibility_filter(
+    effect_name_compatibility_summary = turn1_apply_effect_name_compatibility_filter(
         results,
         deck,
         reqs,
@@ -7920,13 +7920,6 @@ def turn1_v36_filter_results(results, deck, reqs):
 
 
 # Override old guard functions that were too broad or based on full card text.
-def turn1_v29_apply_effect_name_compatibility_filter(results, deck, reqs):
-    before = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    turn1_v36_filter_results(results, deck, reqs)
-    after = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
-    return {"enabled": True, "invalidated_successes": before - after, "version": "v36"}
-
-
 # Wrap the trial simulator last. Prefer a pre-v33 base if present so the earlier
 # "block all non-card labels" wrapper does not incorrectly kill valid Shivery Chill
 # lines for Basic Water Energy goals.
