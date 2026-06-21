@@ -1422,7 +1422,7 @@ def turn1_apply_excluded_played_paths(results: List[Dict[str, Any]], raw_exclude
 
 
 # ---------------------------------------------------------------------
-# TURN1_OPPONENT_ONLY_TEXT_GUARD_V26
+# TURN1_OPPONENT_ONLY_TEXT_GUARD
 # ---------------------------------------------------------------------
 # General guard: opponent-only hand/deck disruption is not a consistency/search card.
 # Examples this should block generically:
@@ -1435,7 +1435,7 @@ def turn1_apply_excluded_played_paths(results: List[Dict[str, Any]], raw_exclude
 #   - each player / both players draw effects
 
 
-def turn1_v26_card_name(card: Any) -> str:
+def turn1_opponent_only_filter_card_name(card: Any) -> str:
     try:
         return tf.card_name(card)
     except Exception:
@@ -1448,7 +1448,7 @@ def turn1_v26_card_name(card: Any) -> str:
     return str(getattr(card, "name", "") or "").strip()
 
 
-def turn1_v26_flatten_text(obj: Any, limit: int = 30000) -> str:
+def turn1_opponent_only_filter_flatten_text(obj: Any, limit: int = 30000) -> str:
     """Collect text from nested card dictionaries/lists without relying on one schema."""
     out: List[str] = []
     seen = set()
@@ -1494,14 +1494,14 @@ def turn1_v26_flatten_text(obj: Any, limit: int = 30000) -> str:
     return " \n ".join(out)
 
 
-def turn1_v26_norm_text(s: str) -> str:
+def turn1_opponent_only_filter_norm_text(s: str) -> str:
     s = str(s or "").lower()
     s = s.replace("’", "'").replace("“", '"').replace("”", '"')
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
 
-def turn1_v26_has_self_access_text(t: str) -> bool:
+def turn1_text_has_self_access(t: str) -> bool:
     """True when the card text clearly gives us access/cards, not only the opponent."""
     if not t:
         return False
@@ -1529,7 +1529,7 @@ def turn1_v26_has_self_access_text(t: str) -> bool:
     return any(re.search(p, t) for p in self_access_patterns)
 
 
-def turn1_v26_has_opponent_only_disruption_text(t: str) -> bool:
+def turn1_text_has_opponent_only_disruption(t: str) -> bool:
     if not t:
         return False
 
@@ -1553,7 +1553,7 @@ def turn1_v26_has_opponent_only_disruption_text(t: str) -> bool:
     return any(re.search(p, t) for p in opponent_patterns)
 
 
-def turn1_v26_has_opponent_only_compiled_step(card: Any) -> bool:
+def turn1_compiled_step_is_opponent_only(card: Any) -> bool:
     """
     Schema-agnostic compiled-step guard.
     Blocks effects where draw/search/move-like operations target opponent/their zones.
@@ -1572,8 +1572,8 @@ def turn1_v26_has_opponent_only_compiled_step(card: Any) -> bool:
         nonlocal saw_opponent_access, saw_self_access
 
         if isinstance(x, dict):
-            blob = turn1_v26_norm_text(" ".join(str(v) for v in x.values() if not isinstance(v, (dict, list, tuple))))
-            op = turn1_v26_norm_text(x.get("op") or x.get("operation") or x.get("type") or "")
+            blob = turn1_opponent_only_filter_norm_text(" ".join(str(v) for v in x.values() if not isinstance(v, (dict, list, tuple))))
+            op = turn1_opponent_only_filter_norm_text(x.get("op") or x.get("operation") or x.get("type") or "")
 
             access_op = any(key in op for key in ["search", "draw", "move", "shuffle", "reveal", "look"])
             access_blob = any(key in blob for key in ["search", "draw", "hand", "deck", "shuffle"])
@@ -1596,21 +1596,21 @@ def turn1_v26_has_opponent_only_compiled_step(card: Any) -> bool:
     return saw_opponent_access and not saw_self_access
 
 
-def turn1_v26_is_opponent_only_access_card(card: Any) -> bool:
+def turn1_card_is_opponent_only_access(card: Any) -> bool:
     """
     Generic block decision.
 
     Important: this is not a name blacklist. It uses card text/effect ownership.
     """
-    blob = turn1_v26_norm_text(turn1_v26_flatten_text(card))
+    blob = turn1_opponent_only_filter_norm_text(turn1_opponent_only_filter_flatten_text(card))
 
     # If compiled steps are explicitly opponent-only, block.
-    if turn1_v26_has_opponent_only_compiled_step(card):
+    if turn1_compiled_step_is_opponent_only(card):
         return True
 
     # If text has opponent-only disruption and no clear self-access, block.
-    if turn1_v26_has_opponent_only_disruption_text(blob):
-        if not turn1_v26_has_self_access_text(blob):
+    if turn1_text_has_opponent_only_disruption(blob):
+        if not turn1_text_has_self_access(blob):
             return True
 
         # Strong opponent-only sentence forms. Ignore generic condition text like
@@ -1632,36 +1632,36 @@ def turn1_v26_is_opponent_only_access_card(card: Any) -> bool:
 # Guard fallback single-target scorer too. The multi-goal planner still delegates
 # to target-finder scoring in some cases, so blocking only the executor is not enough.
 try:
-    _TURN1_V26_ORIG_SCORE_PLAYABLE_CARD = tf.score_playable_card
+    _TURN1_ORIG_SCORE_PLAYABLE_CARD_BEFORE_OPPONENT_ONLY_GUARD = tf.score_playable_card
 
-    def _turn1_v26_score_playable_card_guard(card: Any, *args: Any, **kwargs: Any):
-        if turn1_v26_is_opponent_only_access_card(card):
+    def _turn1_score_playable_card_opponent_only_guard(card: Any, *args: Any, **kwargs: Any):
+        if turn1_card_is_opponent_only_access(card):
             return 0
-        return _TURN1_V26_ORIG_SCORE_PLAYABLE_CARD(card, *args, **kwargs)
+        return _TURN1_ORIG_SCORE_PLAYABLE_CARD_BEFORE_OPPONENT_ONLY_GUARD(card, *args, **kwargs)
 
-    tf.score_playable_card = _turn1_v26_score_playable_card_guard
+    tf.score_playable_card = _turn1_score_playable_card_opponent_only_guard
 except Exception:
     pass
 
 
-def turn1_v26_action_names(line: str) -> List[str]:
+def turn1_opponent_only_filter_action_names(line: str) -> List[str]:
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v26_build_blocked_name_map(deck: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+def turn1_build_opponent_only_blocked_name_map(deck: Sequence[Dict[str, Any]]) -> Dict[str, str]:
     blocked: Dict[str, str] = {}
 
     for card in deck or []:
         if not isinstance(card, dict):
             continue
 
-        if not turn1_v26_is_opponent_only_access_card(card):
+        if not turn1_card_is_opponent_only_access(card):
             continue
 
-        name = turn1_v26_card_name(card)
+        name = turn1_opponent_only_filter_card_name(card)
         norm = tf.norm(name)
         if norm:
             blocked[norm] = name
@@ -1669,15 +1669,15 @@ def turn1_v26_build_blocked_name_map(deck: Sequence[Dict[str, Any]]) -> Dict[str
     return blocked
 
 
-def turn1_v26_auto_blocked_played_cards(line: str, deck: Sequence[Dict[str, Any]]) -> List[str]:
-    blocked_map = turn1_v26_build_blocked_name_map(deck)
+def turn1_auto_block_opponent_only_played_cards(line: str, deck: Sequence[Dict[str, Any]]) -> List[str]:
+    blocked_map = turn1_build_opponent_only_blocked_name_map(deck)
     if not blocked_map:
         return []
 
     out: List[str] = []
     seen = set()
 
-    for action in turn1_v26_action_names(line):
+    for action in turn1_opponent_only_filter_action_names(line):
         an = tf.norm(action)
         if not an:
             continue
@@ -1691,7 +1691,7 @@ def turn1_v26_auto_blocked_played_cards(line: str, deck: Sequence[Dict[str, Any]
     return out
 
 
-def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+def turn1_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     summary = {
         "enabled": True,
         "invalidated_successes": 0,
@@ -1707,7 +1707,7 @@ def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Se
         if line == "none":
             continue
 
-        blocked = turn1_v26_auto_blocked_played_cards(line, deck)
+        blocked = turn1_auto_block_opponent_only_played_cards(line, deck)
         if not blocked:
             continue
 
@@ -4364,7 +4364,7 @@ def _turn1_v39_noop_filter_summary(*args, **kwargs):
 
 def _turn1_v39_neutralize_old_posthoc_effect_filters():
     names_to_noop = [
-        "turn1_v26_apply_opponent_only_filter",
+        "turn1_apply_opponent_only_filter",
         "turn1_apply_effect_name_compatibility_filter",
         "turn1_apply_pre_summary_effect_label_compatibility_guard",
         "turn1_v32_apply_prereturn_incompatible_effect_guard",
@@ -4957,8 +4957,8 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
         )
         for _ in range(args.trials)
     ]
-    # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD_V26
-    opponent_only_filter_summary = turn1_v26_apply_opponent_only_filter(results, deck)
+    # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD
+    opponent_only_filter_summary = turn1_apply_opponent_only_filter(results, deck)
 
     # TURN1_APPLY_EXCLUDE_PLAYED_PATHS_V15
     exclusion_summary = turn1_apply_excluded_played_paths(
@@ -8226,7 +8226,7 @@ except Exception:
 # - gf._turn1_card_goal_search_capacity
 # - tf.score_playable_card
 # - tf.card_directly_searches_target
-# - gf.turn1_v26_flatten_text
+# - gf.turn1_opponent_only_filter_flatten_text
 #
 # The expensive part is repeated classification of the same cards/effects/text.
 # This caches pure classification helpers. It intentionally does NOT cache
@@ -8406,7 +8406,7 @@ _TURN1_V42_CACHED_HELPERS = []
 # Goal-finder pure-ish classification hotpaths.
 for _turn1_v42_name in [
     "_turn1_card_goal_search_capacity",
-    "turn1_v26_flatten_text",
+    "turn1_opponent_only_filter_flatten_text",
     "card_matches_option",
     "requirement_satisfied",
     "goal_satisfied",
