@@ -4592,7 +4592,7 @@ def _turn1_gf_v40_apply_opponent_dependent_filter(results, deck):
 #   collapsed to one line label when repeat_count <= compiled/source amount.
 # - if repeat_count exceeds the allowed amount, the trial is marked failed.
 #
-# It avoids the expensive v43 runtime wrapper, keeping v42 performance.
+# It avoids the expensive v43 runtime wrapper, keeping hotpath-cache performance.
 
 def _turn1_v433_norm(value):
     import re as _re
@@ -8213,7 +8213,7 @@ except Exception:
 
 
 # ---------------------------------------------------------------------
-# TURN1_HOTPATH_CLASSIFICATION_CACHE_V42
+# TURN1_HOTPATH_CLASSIFICATION_CACHE
 # ---------------------------------------------------------------------
 # Performance fix after profiling.
 #
@@ -8228,7 +8228,7 @@ except Exception:
 # This caches pure classification helpers. It intentionally does NOT cache
 # stateful action execution or draw/deck mutation.
 
-def _turn1_v42_card_key(obj):
+def _turn1_hotpath_cache_card_key(obj):
     if not isinstance(obj, dict):
         return None
 
@@ -8290,14 +8290,14 @@ def _turn1_v42_card_key(obj):
     return None
 
 
-def _turn1_v42_safe_key(obj, depth=0):
+def _turn1_hotpath_cache_safe_key(obj, depth=0):
     if depth > 4:
         return ("deep", id(obj))
 
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
 
-    card_key = _turn1_v42_card_key(obj)
+    card_key = _turn1_hotpath_cache_card_key(obj)
     if card_key is not None:
         return card_key
 
@@ -8330,7 +8330,7 @@ def _turn1_v42_safe_key(obj, depth=0):
                 "source_text",
                 "text",
             }:
-                simple[str(k)] = _turn1_v42_safe_key(v, depth + 1)
+                simple[str(k)] = _turn1_hotpath_cache_safe_key(v, depth + 1)
 
         if simple:
             return ("dict", tuple(sorted(simple.items())))
@@ -8343,18 +8343,18 @@ def _turn1_v42_safe_key(obj, depth=0):
             # full value keys, but still allow repeated same-object cache hits.
             return (type(obj).__name__, "large", len(obj), id(obj))
 
-        return (type(obj).__name__, tuple(_turn1_v42_safe_key(x, depth + 1) for x in obj))
+        return (type(obj).__name__, tuple(_turn1_hotpath_cache_safe_key(x, depth + 1) for x in obj))
 
     if isinstance(obj, set):
         if len(obj) > 80:
             return ("set", "large", len(obj), id(obj))
 
-        return ("set", tuple(sorted(_turn1_v42_safe_key(x, depth + 1) for x in obj)))
+        return ("set", tuple(sorted(_turn1_hotpath_cache_safe_key(x, depth + 1) for x in obj)))
 
     return ("obj", type(obj).__name__, id(obj))
 
 
-def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
+def _turn1_wrap_hotpath_cached(owner, name, max_entries=200000):
     try:
         fn = getattr(owner, name)
     except Exception:
@@ -8363,7 +8363,7 @@ def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
     if not callable(fn):
         return False
 
-    if getattr(fn, "_turn1_v42_cached", False):
+    if getattr(fn, "_turn1_hotpath_cached", False):
         return False
 
     cache = {}
@@ -8372,8 +8372,8 @@ def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
         try:
             key = (
                 name,
-                tuple(_turn1_v42_safe_key(a) for a in args),
-                tuple(sorted((str(k), _turn1_v42_safe_key(v)) for k, v in kwargs.items())),
+                tuple(_turn1_hotpath_cache_safe_key(a) for a in args),
+                tuple(sorted((str(k), _turn1_hotpath_cache_safe_key(v)) for k, v in kwargs.items())),
             )
 
             if key in cache:
@@ -8391,16 +8391,16 @@ def _turn1_v42_wrap_cached(owner, name, max_entries=200000):
 
     wrapped.__name__ = getattr(fn, "__name__", name)
     wrapped.__doc__ = getattr(fn, "__doc__", None)
-    wrapped._turn1_v42_cached = True
+    wrapped._turn1_hotpath_cached = True
 
     setattr(owner, name, wrapped)
     return True
 
 
-_TURN1_V42_CACHED_HELPERS = []
+_TURN1_HOTPATH_CACHED_HELPERS = []
 
 # Goal-finder pure-ish classification hotpaths.
-for _turn1_v42_name in [
+for _turn1_hotpath_cache_name in [
     "_turn1_card_goal_search_capacity",
     "turn1_opponent_only_filter_flatten_text",
     "card_matches_option",
@@ -8415,14 +8415,14 @@ for _turn1_v42_name in [
     "turn1_v41_access_classes_from_effect",
 ]:
     try:
-        if _turn1_v42_wrap_cached(globals(), _turn1_v42_name):
-            _TURN1_V42_CACHED_HELPERS.append("gf." + _turn1_v42_name)
+        if _turn1_wrap_hotpath_cached(globals(), _turn1_hotpath_cache_name):
+            _TURN1_HOTPATH_CACHED_HELPERS.append("gf." + _turn1_hotpath_cache_name)
     except Exception:
         pass
 
 # Target-finder pure classification hotpaths.
 try:
-    for _turn1_v42_name in [
+    for _turn1_hotpath_cache_name in [
         "card_directly_searches_target",
         "filter_text_blob",
         "filter_allows_card",
@@ -8434,16 +8434,16 @@ try:
         "is_energy",
     ]:
         try:
-            if _turn1_v42_wrap_cached(tf, _turn1_v42_name):
-                _TURN1_V42_CACHED_HELPERS.append("tf." + _turn1_v42_name)
+            if _turn1_wrap_hotpath_cached(tf, _turn1_hotpath_cache_name):
+                _TURN1_HOTPATH_CACHED_HELPERS.append("tf." + _turn1_hotpath_cache_name)
         except Exception:
             pass
 except Exception:
     pass
 
-TURN1_HOTPATH_CLASSIFICATION_CACHE_V42 = {
+TURN1_HOTPATH_CLASSIFICATION_CACHE = {
     "installed": True,
-    "cached_helpers": list(_TURN1_V42_CACHED_HELPERS),
+    "cached_helpers": list(_TURN1_HOTPATH_CACHED_HELPERS),
 }
 
 # ---------------------------------------------------------------------
