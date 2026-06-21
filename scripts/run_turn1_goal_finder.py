@@ -668,7 +668,7 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 
 
 # ---------------------------------------------------------------------
-# TURN1_GOAL_COMPATIBLE_ACCESS_FILTERS_V28
+# TURN1_GOAL_COMPATIBLE_ACCESS_FILTERS
 # ---------------------------------------------------------------------
 # Broad Turn-1 access guard:
 # - A search/draw/search-like action can only help if its search filter is
@@ -683,10 +683,10 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 #   searches Supporters.
 # - Active-only abilities being used from the Bench after Nest Ball.
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V28 = score_candidate_for_missing_targets
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_ACCESS_FILTER = score_candidate_for_missing_targets
 
 
-def turn1_v28_flatten_text(obj: Any, depth: int = 0) -> str:
+def turn1_goal_access_filter_flatten_text(obj: Any, depth: int = 0) -> str:
     if obj is None or depth > 4:
         return ""
 
@@ -697,7 +697,7 @@ def turn1_v28_flatten_text(obj: Any, depth: int = 0) -> str:
         return str(obj)
 
     if isinstance(obj, (list, tuple, set)):
-        return " ".join(turn1_v28_flatten_text(x, depth + 1) for x in obj)
+        return " ".join(turn1_goal_access_filter_flatten_text(x, depth + 1) for x in obj)
 
     if isinstance(obj, dict):
         pieces: List[str] = []
@@ -730,20 +730,20 @@ def turn1_v28_flatten_text(obj: Any, depth: int = 0) -> str:
 
         for k in preferred:
             if k in obj:
-                pieces.append(turn1_v28_flatten_text(obj.get(k), depth + 1))
+                pieces.append(turn1_goal_access_filter_flatten_text(obj.get(k), depth + 1))
 
         # Include nested identity/gameplay/source too; these often contain the
         # original card text in compiled-card records.
         for k in ["identity", "gameplay", "source", "ability", "attack"]:
             if k in obj:
-                pieces.append(turn1_v28_flatten_text(obj.get(k), depth + 1))
+                pieces.append(turn1_goal_access_filter_flatten_text(obj.get(k), depth + 1))
 
         return " ".join(p for p in pieces if p)
 
     return str(obj)
 
 
-def turn1_v28_norm_text(s: str) -> str:
+def turn1_goal_access_filter_norm_text(s: str) -> str:
     s = str(s or "").lower()
     s = s.replace("’", "'").replace("–", "-").replace("—", "-")
     s = s.replace("{w}", " water ").replace("[w]", " water ")
@@ -759,7 +759,7 @@ def turn1_v28_norm_text(s: str) -> str:
     return s
 
 
-def turn1_v28_action_text(action: Any) -> str:
+def turn1_goal_access_filter_action_text(action: Any) -> str:
     pieces: List[str] = []
 
     try:
@@ -770,14 +770,14 @@ def turn1_v28_action_text(action: Any) -> str:
     if isinstance(action, dict):
         for k in ["source", "card", "search_card", "effect", "ability", "compiled_effect", "step"]:
             if k in action:
-                pieces.append(turn1_v28_flatten_text(action.get(k)))
+                pieces.append(turn1_goal_access_filter_flatten_text(action.get(k)))
     else:
-        pieces.append(turn1_v28_flatten_text(action))
+        pieces.append(turn1_goal_access_filter_flatten_text(action))
 
-    return turn1_v28_norm_text(" ".join(p for p in pieces if p))
+    return turn1_goal_access_filter_norm_text(" ".join(p for p in pieces if p))
 
 
-def turn1_v28_card_name(card: Dict[str, Any]) -> str:
+def turn1_goal_access_filter_card_name(card: Dict[str, Any]) -> str:
     try:
         return tf.card_name(card)
     except Exception:
@@ -787,14 +787,14 @@ def turn1_v28_card_name(card: Dict[str, Any]) -> str:
         return ""
 
 
-def turn1_v28_card_supertype(card: Dict[str, Any]) -> str:
+def turn1_goal_access_filter_card_supertype(card: Dict[str, Any]) -> str:
     if not isinstance(card, dict):
         return ""
     ident = card.get("identity") if isinstance(card.get("identity"), dict) else {}
     return str(card.get("supertype") or ident.get("supertype") or "").lower()
 
 
-def turn1_v28_card_subtypes(card: Dict[str, Any]) -> List[str]:
+def turn1_goal_access_filter_card_subtypes(card: Dict[str, Any]) -> List[str]:
     if not isinstance(card, dict):
         return []
 
@@ -818,7 +818,7 @@ def turn1_v28_card_subtypes(card: Dict[str, Any]) -> List[str]:
     return out
 
 
-def turn1_v28_card_types(card: Dict[str, Any]) -> List[str]:
+def turn1_goal_access_filter_card_types(card: Dict[str, Any]) -> List[str]:
     if not isinstance(card, dict):
         return []
 
@@ -832,8 +832,8 @@ def turn1_v28_card_types(card: Dict[str, Any]) -> List[str]:
         elif v:
             vals.append(v)
 
-    name = turn1_v28_card_name(card).lower()
-    text = turn1_v28_norm_text(turn1_v28_flatten_text(card))
+    name = turn1_goal_access_filter_card_name(card).lower()
+    text = turn1_goal_access_filter_norm_text(turn1_goal_access_filter_flatten_text(card))
 
     out = [str(v).strip().lower() for v in vals if str(v).strip()]
     for t in ["water", "fire", "grass", "lightning", "psychic", "fighting", "darkness", "metal", "dragon", "colorless"]:
@@ -843,14 +843,14 @@ def turn1_v28_card_types(card: Dict[str, Any]) -> List[str]:
     return out
 
 
-def turn1_v28_is_basic_pokemon(card: Dict[str, Any]) -> bool:
+def turn1_goal_access_filter_is_basic_pokemon(card: Dict[str, Any]) -> bool:
     try:
         return bool(tf.is_basic_pokemon(card))
     except Exception:
-        return turn1_v28_card_supertype(card) == "pokémon" and any("basic" in s for s in turn1_v28_card_subtypes(card))
+        return turn1_goal_access_filter_card_supertype(card) == "pokémon" and any("basic" in s for s in turn1_goal_access_filter_card_subtypes(card))
 
 
-def turn1_v28_same_card_instance(a: Any, b: Any) -> bool:
+def turn1_goal_access_filter_same_card_instance(a: Any, b: Any) -> bool:
     if not isinstance(a, dict) or not isinstance(b, dict):
         return False
 
@@ -860,10 +860,10 @@ def turn1_v28_same_card_instance(a: Any, b: Any) -> bool:
     if aid and bid and aid == bid:
         return True
 
-    return turn1_v28_card_name(a) and turn1_v28_card_name(a) == turn1_v28_card_name(b)
+    return turn1_goal_access_filter_card_name(a) and turn1_goal_access_filter_card_name(a) == turn1_goal_access_filter_card_name(b)
 
 
-def turn1_v28_source_card_from_action(action: Any) -> Optional[Dict[str, Any]]:
+def turn1_goal_access_filter_source_card_from_action(action: Any) -> Optional[Dict[str, Any]]:
     if isinstance(action, dict):
         for k in ["source", "card", "search_card"]:
             v = action.get(k)
@@ -874,8 +874,8 @@ def turn1_v28_source_card_from_action(action: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def turn1_v28_requires_active_spot(action_text: str) -> bool:
-    t = turn1_v28_norm_text(action_text)
+def turn1_goal_access_filter_requires_active_spot(action_text: str) -> bool:
+    t = turn1_goal_access_filter_norm_text(action_text)
     phrases = [
         "if this pokemon is in the active spot",
         "if this pokémon is in the active spot",
@@ -889,20 +889,20 @@ def turn1_v28_requires_active_spot(action_text: str) -> bool:
     return any(p in t for p in phrases)
 
 
-def turn1_v28_active_requirement_ok(action: Any, st: tf.SimState) -> bool:
-    text = turn1_v28_action_text(action)
-    if not turn1_v28_requires_active_spot(text):
+def turn1_goal_access_filter_active_requirement_ok(action: Any, st: tf.SimState) -> bool:
+    text = turn1_goal_access_filter_action_text(action)
+    if not turn1_goal_access_filter_requires_active_spot(text):
         return True
 
-    source = turn1_v28_source_card_from_action(action)
+    source = turn1_goal_access_filter_source_card_from_action(action)
     if source is None:
         return False
 
-    return st.active is not None and turn1_v28_same_card_instance(source, st.active)
+    return st.active is not None and turn1_goal_access_filter_same_card_instance(source, st.active)
 
 
-def turn1_v28_has_self_access_context(t: str) -> bool:
-    t = turn1_v28_norm_text(t)
+def turn1_goal_access_filter_has_self_access_context(t: str) -> bool:
+    t = turn1_goal_access_filter_norm_text(t)
 
     # Strong self-access phrases.
     if any(p in t for p in [
@@ -921,7 +921,7 @@ def turn1_v28_has_self_access_context(t: str) -> bool:
     return False
 
 
-def turn1_v28_access_filters_from_text(text: str) -> set:
+def turn1_goal_access_filters_from_text(text: str) -> set:
     """
     Extract strong target-class restrictions from an effect/card text.
 
@@ -929,9 +929,9 @@ def turn1_v28_access_filters_from_text(text: str) -> set:
     access if at least one missing goal card belongs to that same class.
     Unknown/unrestricted draw effects return an empty set and are allowed.
     """
-    t = turn1_v28_norm_text(text)
+    t = turn1_goal_access_filter_norm_text(text)
 
-    if not turn1_v28_has_self_access_context(t):
+    if not turn1_goal_access_filter_has_self_access_context(t):
         return set()
 
     filters = set()
@@ -972,7 +972,7 @@ def turn1_v28_access_filters_from_text(text: str) -> set:
     return filters
 
 
-def turn1_v28_goal_cards_for_req(st: tf.SimState, req: GoalRequirement) -> List[Dict[str, Any]]:
+def turn1_goal_access_filter_goal_cards_for_req(st: tf.SimState, req: GoalRequirement) -> List[Dict[str, Any]]:
     pools: List[Dict[str, Any]] = []
 
     for attr in ["hand", "deck", "discard", "bench", "prizes"]:
@@ -1004,17 +1004,17 @@ def turn1_v28_goal_cards_for_req(st: tf.SimState, req: GoalRequirement) -> List[
     return out
 
 
-def turn1_v28_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> bool:
-    sup = turn1_v28_card_supertype(card)
-    subs = turn1_v28_card_subtypes(card)
-    types = turn1_v28_card_types(card)
-    name = turn1_v28_card_name(card).lower()
-    text = turn1_v28_norm_text(turn1_v28_flatten_text(card))
+def turn1_goal_access_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> bool:
+    sup = turn1_goal_access_filter_card_supertype(card)
+    subs = turn1_goal_access_filter_card_subtypes(card)
+    types = turn1_goal_access_filter_card_types(card)
+    name = turn1_goal_access_filter_card_name(card).lower()
+    text = turn1_goal_access_filter_norm_text(turn1_goal_access_filter_flatten_text(card))
 
     if filter_name == "pokemon":
         return sup in {"pokémon", "pokemon"}
     if filter_name == "basic_pokemon":
-        return sup in {"pokémon", "pokemon"} and turn1_v28_is_basic_pokemon(card)
+        return sup in {"pokémon", "pokemon"} and turn1_goal_access_filter_is_basic_pokemon(card)
     if filter_name.endswith("_pokemon"):
         typ = filter_name.removesuffix("_pokemon")
         return sup in {"pokémon", "pokemon"} and typ in types
@@ -1027,7 +1027,7 @@ def turn1_v28_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> boo
         base = filter_name.removesuffix("_energy")
         if base.startswith("basic_"):
             typ = base.removeprefix("basic_")
-            return turn1_v28_filter_matches_card("basic_energy", card) and (typ in types or typ in name or f" {typ} " in f" {text} ")
+            return turn1_goal_access_filter_matches_card("basic_energy", card) and (typ in types or typ in name or f" {typ} " in f" {text} ")
         typ = base
         return (sup == "energy" or " energy" in name) and (typ in types or typ in name or f" {typ} " in f" {text} ")
 
@@ -1043,12 +1043,12 @@ def turn1_v28_filter_matches_card(filter_name: str, card: Dict[str, Any]) -> boo
     return False
 
 
-def turn1_v28_filters_compatible_with_missing(st: tf.SimState, filters: set, missing: Sequence[GoalRequirement]) -> bool:
+def turn1_goal_access_filters_compatible_with_missing(st: tf.SimState, filters: set, missing: Sequence[GoalRequirement]) -> bool:
     if not filters:
         return True
 
     for req in missing:
-        goal_cards = turn1_v28_goal_cards_for_req(st, req)
+        goal_cards = turn1_goal_access_filter_goal_cards_for_req(st, req)
 
         # If we cannot identify the goal card type, do not block. This keeps the
         # guard conservative and avoids false negatives on unresolved cards.
@@ -1056,19 +1056,19 @@ def turn1_v28_filters_compatible_with_missing(st: tf.SimState, filters: set, mis
             return True
 
         for c in goal_cards:
-            if any(turn1_v28_filter_matches_card(f, c) for f in filters):
+            if any(turn1_goal_access_filter_matches_card(f, c) for f in filters):
                 return True
 
     return False
 
 
-def turn1_v28_action_allowed_for_missing(action: Any, st: tf.SimState, missing: Sequence[GoalRequirement], going: str) -> bool:
-    text = turn1_v28_action_text(action)
+def turn1_action_allowed_for_missing_goal_access(action: Any, st: tf.SimState, missing: Sequence[GoalRequirement], going: str) -> bool:
+    text = turn1_goal_access_filter_action_text(action)
 
-    if not turn1_v28_active_requirement_ok(action, st):
+    if not turn1_goal_access_filter_active_requirement_ok(action, st):
         try:
             st.log.append({
-                "event": "blocked_illegal_active_only_ability_v28",
+                "event": "blocked_illegal_active_only_ability",
                 "action": action_label(action),
                 "reason": "Ability text requires the source Pokémon to be in the Active Spot.",
             })
@@ -1076,12 +1076,12 @@ def turn1_v28_action_allowed_for_missing(action: Any, st: tf.SimState, missing: 
             pass
         return False
 
-    filters = turn1_v28_access_filters_from_text(text)
+    filters = turn1_goal_access_filters_from_text(text)
 
-    if filters and not turn1_v28_filters_compatible_with_missing(st, filters, missing):
+    if filters and not turn1_goal_access_filters_compatible_with_missing(st, filters, missing):
         try:
             st.log.append({
-                "event": "blocked_incompatible_access_filter_v28",
+                "event": "blocked_incompatible_access_filter",
                 "action": action_label(action),
                 "filters": sorted(filters),
                 "missing_requirements": [getattr(r, "label", str(r)) for r in missing],
@@ -1103,7 +1103,7 @@ def score_candidate_for_missing_targets(
     # TURN1_ACTION_BUDGET_GUARD
     if _turn1_action_budget_exhausted(st):
         return []
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V28(st, missing, going, enable_chain_search)
+    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_ACCESS_FILTER(st, missing, going, enable_chain_search)
 
     if not scored:
         return scored
@@ -1111,7 +1111,7 @@ def score_candidate_for_missing_targets(
     filtered: List[Tuple[float, Any, str]] = []
 
     for score, action, target_norm in scored:
-        if turn1_v28_action_allowed_for_missing(action, st, missing, going):
+        if turn1_action_allowed_for_missing_goal_access(action, st, missing, going):
             filtered.append((score, action, target_norm))
 
     return filtered
