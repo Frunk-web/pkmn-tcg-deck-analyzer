@@ -1745,14 +1745,14 @@ def turn1_v26_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Se
 #   Buddy-Buddy Poffin -> Basic Pokemon access
 
 
-def turn1_v32_action_labels(line):
+def turn1_effect_label_actions_from_line(line):
     raw = str(line or "").strip()
     if not raw or raw == "none":
         return []
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
-def turn1_v32_effect_label_incompatible_reason(action_label, deck, reqs):
+def turn1_effect_label_incompatibility_reason(action_label, deck, reqs):
     ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
     if ok:
         return None
@@ -1765,10 +1765,10 @@ def turn1_v32_effect_label_incompatible_reason(action_label, deck, reqs):
 
 
 # TURN1_V35_PATCHED_V32_COMPAT
-def turn1_v32_incompatible_effect_labels_in_line(line, deck, reqs):
+def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
     blocked = []
-    for action in turn1_v32_action_labels(line):
-        reason = turn1_v32_effect_label_incompatible_reason(action, deck, reqs)
+    for action in turn1_effect_label_actions_from_line(line):
+        reason = turn1_effect_label_incompatibility_reason(action, deck, reqs)
         if reason:
             blocked.append({"action": action, "reason": reason})
     return blocked
@@ -2291,10 +2291,10 @@ def simulate_one_goal_trial(
     prize_status = trial_goal_prize_status(deck, prizes, reqs)
     line = " -> ".join(st.line) if st.line else "none"
     # TURN1_APPLY_PRERETURN_INCOMPATIBLE_EFFECT_GUARD_V32
-    turn1_v32_blocked_effect_labels = []
+    turn1_blocked_effect_labels = []
     if success_stage is not None and line != "none":
-        turn1_v32_blocked_effect_labels = turn1_v32_incompatible_effect_labels_in_line(line, deck, reqs)
-        if turn1_v32_blocked_effect_labels:
+        turn1_blocked_effect_labels = turn1_incompatible_effect_labels_in_line(line, deck, reqs)
+        if turn1_blocked_effect_labels:
             success_stage = None
 
     return {
@@ -2308,8 +2308,8 @@ def simulate_one_goal_trial(
         "active": tf.card_name(active) if active else None,
         "final_hand_size": len(st.hand),
         "final_deck_size": len(st.deck),
-        "missing_requirements": (["Blocked incompatible effect label: " + ", ".join(b.get("action", "?") for b in turn1_v32_blocked_effect_labels)] if locals().get("turn1_v32_blocked_effect_labels") else [r.label for r in final_missing]),
-        "missing_count": (1 if locals().get("turn1_v32_blocked_effect_labels") else len(final_missing)),
+        "missing_requirements": (["Blocked incompatible effect label: " + ", ".join(b.get("action", "?") for b in turn1_blocked_effect_labels)] if locals().get("turn1_blocked_effect_labels") else [r.label for r in final_missing]),
+        "missing_count": (1 if locals().get("turn1_blocked_effect_labels") else len(final_missing)),
         "goal_pieces_prized": prize_status,
         "accessed_goal_piece_names": sorted(set(
             tf.card_name(c)
