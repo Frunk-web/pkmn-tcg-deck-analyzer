@@ -1776,7 +1776,7 @@ def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_ACTIVE_COMPILED_SEARCH_RUNTIME_V41
+# TURN1_ACTIVE_COMPILED_SEARCH_RUNTIME
 # ---------------------------------------------------------------------
 # Root fix for active-only compiled search abilities.
 #
@@ -1795,7 +1795,7 @@ def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
 # runtime does not use an Active-only ability.
 
 
-def _turn1_v41_norm(value):
+def _turn1_active_compiled_search_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -1807,7 +1807,7 @@ def _turn1_v41_norm(value):
     return _re.sub(r"\s+", " ", s).strip()
 
 
-def _turn1_v41_flatten_strings(obj, max_items=5000):
+def _turn1_active_compiled_search_flatten_strings(obj, max_items=5000):
     out = []
     seen = set()
 
@@ -1840,7 +1840,7 @@ def _turn1_v41_flatten_strings(obj, max_items=5000):
     return " ".join(out)
 
 
-def _turn1_v41_card_name(card):
+def _turn1_active_compiled_search_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -1859,7 +1859,7 @@ def _turn1_v41_card_name(card):
     return ""
 
 
-def _turn1_v41_ability_name(effect):
+def _turn1_active_compiled_search_ability_name(effect):
     try:
         return tf.ability_name_from_effect(effect)
     except Exception:
@@ -1878,7 +1878,7 @@ def _turn1_v41_ability_name(effect):
     return "Ability"
 
 
-def _turn1_v41_effect_blob(effect):
+def _turn1_active_compiled_search_effect_blob(effect):
     parts = []
 
     for fn in [
@@ -1893,18 +1893,18 @@ def _turn1_v41_effect_blob(effect):
             except Exception:
                 pass
 
-    parts.append(_turn1_v41_flatten_strings(effect))
+    parts.append(_turn1_active_compiled_search_flatten_strings(effect))
     return " ".join(parts)
 
 
-def _turn1_v41_filter_blob(filt):
+def _turn1_active_compiled_search_filter_blob(filt):
     try:
         return tf.filter_text_blob(filt)
     except Exception:
-        return _turn1_v41_flatten_strings(filt)
+        return _turn1_active_compiled_search_flatten_strings(filt)
 
 
-def _turn1_v41_iter_steps(effect):
+def _turn1_active_compiled_search_iter_steps(effect):
     try:
         return list(tf.iter_steps(effect))
     except Exception:
@@ -1914,7 +1914,7 @@ def _turn1_v41_iter_steps(effect):
         return []
 
 
-def _turn1_v41_extract_filter(step):
+def _turn1_active_compiled_search_extract_filter(step):
     try:
         return tf.extract_filter(step)
     except Exception:
@@ -1923,7 +1923,7 @@ def _turn1_v41_extract_filter(step):
         return {}
 
 
-def _turn1_v41_search_amount(step):
+def _turn1_active_compiled_search_amount(step):
     try:
         return int(tf.search_amount(step))
     except Exception:
@@ -1945,8 +1945,8 @@ def _turn1_v41_search_amount(step):
     return 1
 
 
-def _turn1_v41_effect_requires_active(effect):
-    blob = _turn1_v41_norm(_turn1_v41_effect_blob(effect))
+def _turn1_active_compiled_search_effect_requires_active(effect):
+    blob = _turn1_active_compiled_search_norm(_turn1_active_compiled_search_effect_blob(effect))
     return (
         "active spot" in blob
         or "active pokemon" in blob
@@ -1956,60 +1956,60 @@ def _turn1_v41_effect_requires_active(effect):
     )
 
 
-def _turn1_v41_effect_has_search_deck(effect):
-    return any(isinstance(step, dict) and step.get("op") == "search_deck" for step in _turn1_v41_iter_steps(effect))
+def _turn1_active_compiled_search_effect_has_search_deck(effect):
+    return any(isinstance(step, dict) and step.get("op") == "search_deck" for step in _turn1_active_compiled_search_iter_steps(effect))
 
 
-def _turn1_v41_filter_allows_card(filt, card):
+def _turn1_active_compiled_search_filter_allows_card(filt, card):
     try:
         return bool(tf.filter_allows_card(filt, card))
     except Exception:
         return False
 
 
-def _turn1_v41_card_matches_req(card, req):
+def _turn1_active_compiled_search_card_matches_req(card, req):
     try:
         return any(card_matches_option(card, opt) for opt in req.options)
     except Exception:
         return False
 
 
-def _turn1_v41_req_current_count(req, st, tracker):
+def _turn1_active_compiled_search_req_current_count(req, st, tracker):
     try:
         pool = zone_cards(st, tracker, req.zone)
-        return sum(1 for c in pool if _turn1_v41_card_matches_req(c, req))
+        return sum(1 for c in pool if _turn1_active_compiled_search_card_matches_req(c, req))
     except Exception:
         return 0
 
 
-def _turn1_v41_req_needed_count(req):
+def _turn1_active_compiled_search_req_needed_count(req):
     try:
         return max(1, int(getattr(req, "min_count", 1) or 1))
     except Exception:
         return 1
 
 
-def _turn1_v41_missing_reqs_from_state(reqs, mode, st, tracker):
+def _turn1_active_compiled_search_missing_reqs_from_state(reqs, mode, st, tracker):
     missing = []
     for req in reqs:
-        if _turn1_v41_req_current_count(req, st, tracker) < _turn1_v41_req_needed_count(req):
+        if _turn1_active_compiled_search_req_current_count(req, st, tracker) < _turn1_active_compiled_search_req_needed_count(req):
             missing.append(req)
     if mode == "any" and len(missing) < len(reqs):
         return []
     return missing
 
 
-def _turn1_v41_effect_can_search_target_norm(effect, target_norm):
-    if not target_norm or not _turn1_v41_effect_has_search_deck(effect):
+def _turn1_active_compiled_search_effect_can_search_target_norm(effect, target_norm):
+    if not target_norm or not _turn1_active_compiled_search_effect_has_search_deck(effect):
         return False
 
     # First use the compiled filter, if present.
-    for step in _turn1_v41_iter_steps(effect):
+    for step in _turn1_active_compiled_search_iter_steps(effect):
         if not isinstance(step, dict) or step.get("op") != "search_deck":
             continue
-        filt = _turn1_v41_extract_filter(step)
-        blob = _turn1_v41_norm(_turn1_v41_filter_blob(filt) + " " + _turn1_v41_effect_blob(effect))
-        target = _turn1_v41_norm(target_norm)
+        filt = _turn1_active_compiled_search_extract_filter(step)
+        blob = _turn1_active_compiled_search_norm(_turn1_active_compiled_search_filter_blob(filt) + " " + _turn1_active_compiled_search_effect_blob(effect))
+        target = _turn1_active_compiled_search_norm(target_norm)
 
         if target and target in blob:
             return True
@@ -2032,10 +2032,10 @@ def _turn1_v41_effect_can_search_target_norm(effect, target_norm):
     return False
 
 
-_ORIG_TURN1_V41_CHOOSE_OPTIMAL_ACTIVE = tf.choose_optimal_active
+_ORIG_CHOOSE_OPTIMAL_ACTIVE_BEFORE_ACTIVE_COMPILED_SEARCH = tf.choose_optimal_active
 
 
-def _turn1_v41_choose_optimal_active(opening, target_norm):
+def _turn1_active_compiled_search_choose_optimal_active(opening, target_norm):
     """Choose a legal opener Active. Prefer a Basic whose Active-only compiled
     search ability can satisfy the current target class.
     """
@@ -2051,28 +2051,28 @@ def _turn1_v41_choose_optimal_active(opening, target_norm):
             effects = []
 
         for eff in effects:
-            if not _turn1_v41_effect_requires_active(eff):
+            if not _turn1_active_compiled_search_effect_requires_active(eff):
                 continue
-            if _turn1_v41_effect_can_search_target_norm(eff, target_norm):
+            if _turn1_active_compiled_search_effect_can_search_target_norm(eff, target_norm):
                 return card
 
-    return _ORIG_TURN1_V41_CHOOSE_OPTIMAL_ACTIVE(opening, target_norm)
+    return _ORIG_CHOOSE_OPTIMAL_ACTIVE_BEFORE_ACTIVE_COMPILED_SEARCH(opening, target_norm)
 
 
-tf.choose_optimal_active = _turn1_v41_choose_optimal_active
+tf.choose_optimal_active = _turn1_active_compiled_search_choose_optimal_active
 
 
-def _turn1_v41_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt, amount):
+def _turn1_active_compiled_search_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt, amount):
     selected = []
     seen_ids = set()
 
-    missing = _turn1_v41_missing_reqs_from_state(reqs, mode, st, tracker)
+    missing = _turn1_active_compiled_search_missing_reqs_from_state(reqs, mode, st, tracker)
     if not missing:
         return selected
 
     for req in missing:
-        current = _turn1_v41_req_current_count(req, st, tracker)
-        needed = _turn1_v41_req_needed_count(req)
+        current = _turn1_active_compiled_search_req_current_count(req, st, tracker)
+        needed = _turn1_active_compiled_search_req_needed_count(req)
         deficit = max(0, needed - current)
 
         while deficit > 0 and len(selected) < amount:
@@ -2081,9 +2081,9 @@ def _turn1_v41_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt
                 cid = id(c)
                 if cid in seen_ids:
                     continue
-                if not _turn1_v41_card_matches_req(c, req):
+                if not _turn1_active_compiled_search_card_matches_req(c, req):
                     continue
-                if not _turn1_v41_filter_allows_card(filt, c):
+                if not _turn1_active_compiled_search_filter_allows_card(filt, c):
                     continue
                 chosen_idx = i
                 break
@@ -2099,7 +2099,7 @@ def _turn1_v41_select_missing_goal_cards_from_deck(st, reqs, mode, tracker, filt
     return selected
 
 
-def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
+def turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
     source = getattr(st, "active", None)
     if source is None:
         return False
@@ -2113,9 +2113,9 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
         return False
 
     for eff in effects:
-        if not _turn1_v41_effect_requires_active(eff):
+        if not _turn1_active_compiled_search_effect_requires_active(eff):
             continue
-        if not _turn1_v41_effect_has_search_deck(eff):
+        if not _turn1_active_compiled_search_effect_has_search_deck(eff):
             continue
 
         try:
@@ -2123,20 +2123,20 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
             if key in st.abilities_used:
                 continue
         except Exception:
-            key = f"v41:{_turn1_v41_card_name(source)}:{_turn1_v41_ability_name(eff)}"
+            key = f"active_compiled_search:{_turn1_active_compiled_search_card_name(source)}:{_turn1_active_compiled_search_ability_name(eff)}"
             if key in getattr(st, "abilities_used", set()):
                 continue
 
         # Active-only requirement is already satisfied by source == st.active.
         total_selected = []
 
-        for step in _turn1_v41_iter_steps(eff):
+        for step in _turn1_active_compiled_search_iter_steps(eff):
             if not isinstance(step, dict) or step.get("op") != "search_deck":
                 continue
 
-            filt = _turn1_v41_extract_filter(step)
-            amount = max(1, _turn1_v41_search_amount(step))
-            selected = _turn1_v41_select_missing_goal_cards_from_deck(
+            filt = _turn1_active_compiled_search_extract_filter(step)
+            amount = max(1, _turn1_active_compiled_search_amount(step))
+            selected = _turn1_active_compiled_search_select_missing_goal_cards_from_deck(
                 st,
                 reqs,
                 mode,
@@ -2149,7 +2149,7 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
         if not total_selected:
             continue
 
-        ability_name = _turn1_v41_ability_name(eff)
+        ability_name = _turn1_active_compiled_search_ability_name(eff)
         st.hand.extend(total_selected)
         try:
             st.abilities_used.add(key)
@@ -2163,10 +2163,10 @@ def turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, 
             pass
         try:
             st.log.append({
-                "event": "active_compiled_search_selected_v41",
-                "source": _turn1_v41_card_name(source),
+                "event": "active_compiled_search_selected",
+                "source": _turn1_active_compiled_search_card_name(source),
                 "ability": ability_name,
-                "selected": [_turn1_v41_card_name(c) for c in total_selected],
+                "selected": [_turn1_active_compiled_search_card_name(c) for c in total_selected],
                 "reason": "Active-only compiled search ability legally matched missing goal requirements.",
             })
         except Exception:
@@ -2254,10 +2254,10 @@ def simulate_one_goal_trial(
         if not missing:
             success_stage = "after_actions"
             break
-        # TURN1_APPLY_ACTIVE_COMPILED_SEARCH_RUNTIME_V41
+        # TURN1_APPLY_ACTIVE_COMPILED_SEARCH_RUNTIME
         # Before falling back to hand-played search cards, try a legal Active-only
         # compiled search ability against the whole missing goal package.
-        if turn1_v41_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
+        if turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
             snapshot_accessed(tracker, st)
             if goal_satisfied(reqs, mode, st, tracker):
                 success_stage = "after_actions"
@@ -4576,7 +4576,7 @@ def _turn1_apply_opponent_dependent_filter(results, deck):
 # ---------------------------------------------------------------------
 # Lightweight fix.
 #
-# v41 correctly found Active compiled search routes, e.g.:
+# The active compiled-search runtime correctly found Active compiled search routes, e.g.:
 #   active = Chien-Pao ex
 #   ability = Shivery Chill
 #
@@ -4750,7 +4750,7 @@ def _turn1_normalize_trial_result(result, deck):
         if not isinstance(ev, dict):
             continue
 
-        if ev.get("event") != "active_compiled_search_selected_v41":
+        if ev.get("event") != "active_compiled_search_selected":
             continue
 
         source = ev.get("source") or result.get("active") or ""
@@ -8066,12 +8066,12 @@ def main() -> None:
 
 
 # ---------------------------------------------------------------------
-# TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE_V41_1
+# TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE
 # ---------------------------------------------------------------------
-# v0.41 added generic compiled-effect checks. Correct direction, but expensive:
+# active-compiled-search added generic compiled-effect checks. Correct direction, but expensive:
 # it can repeatedly flatten/scan the same card/effect text for every trial.
 #
-# This patch adds conservative memoization around known v41 helpers if they
+# This patch adds conservative memoization around known active compiled-search helpers if they
 # exist. It does not change simulator semantics.
 
 try:
@@ -8178,16 +8178,6 @@ _turn1_runtime_cache_wrapper_wrapped_helpers = []
 
 for _turn1_runtime_cache_wrapper_name in [
     # likely compiled-effect helpers
-    "turn1_v41_flatten_strings",
-    "turn1_v41_norm",
-    "turn1_v41_effect_can_help_goal",
-    "turn1_v41_search_effect_can_help_goal",
-    "turn1_v41_card_has_active_compiled_search",
-    "turn1_v41_active_compiled_search_candidates",
-    "turn1_v41_compiled_search_filter_allows_goal",
-    "turn1_v41_goal_classes",
-    "turn1_v41_access_classes_from_effect",
-    "turn1_v41_best_active_for_goal",
     # result-goal and later helper families, if present
     "turn1_result_goal_filter_goal_classes",
     "turn1_result_goal_filter_classes_from_text",
@@ -8201,7 +8191,7 @@ for _turn1_runtime_cache_wrapper_name in [
         pass
 
 try:
-    TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE_V41_1 = {
+    TURN1_ACTIVE_COMPILED_SEARCH_PERF_CACHE = {
         "installed": True,
         "wrapped_helpers": list(_turn1_runtime_cache_wrapper_wrapped_helpers),
     }
@@ -8407,11 +8397,6 @@ for _turn1_hotpath_cache_name in [
     "goal_satisfied",
     "zone_cards",
     "turn1_result_goal_filter_single_result",
-    "turn1_v41_card_has_active_compiled_search",
-    "turn1_v41_search_effect_can_help_goal",
-    "turn1_v41_compiled_search_filter_allows_goal",
-    "turn1_v41_goal_classes",
-    "turn1_v41_access_classes_from_effect",
 ]:
     try:
         if _turn1_wrap_hotpath_cached(globals(), _turn1_hotpath_cache_name):
