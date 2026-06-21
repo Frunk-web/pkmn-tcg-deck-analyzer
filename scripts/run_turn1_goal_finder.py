@@ -5896,7 +5896,7 @@ _ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V23 = _turn1_score_playable_card_for_g
 _ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23 = _turn1_execute_goal_search_card
 
 
-def _turn1_v23_norm_text(value: Any) -> str:
+def _turn1_goal_search_filter_norm_text(value: Any) -> str:
     try:
         if isinstance(value, dict):
             parts = []
@@ -5909,7 +5909,7 @@ def _turn1_v23_norm_text(value: Any) -> str:
         return str(value or "").lower()
 
 
-def _turn1_v23_card_is_item(card: Dict[str, Any]) -> bool:
+def _turn1_goal_search_filter_card_is_item(card: Dict[str, Any]) -> bool:
     try:
         name_blob = tf.norm(tf.card_name(card))
         subtype_blob = tf.norm(str(card.get("subtypes") or card.get("subtype") or ""))
@@ -5918,7 +5918,7 @@ def _turn1_v23_card_is_item(card: Dict[str, Any]) -> bool:
         return False
 
 
-def _turn1_v23_card_is_stadium(card: Dict[str, Any]) -> bool:
+def _turn1_goal_search_filter_card_is_stadium(card: Dict[str, Any]) -> bool:
     try:
         blob = tf.norm(str(card.get("subtypes") or card.get("subtype") or "") + " " + tf.card_name(card))
         return bool(tf.is_trainer(card) and "stadium" in blob)
@@ -5941,7 +5941,7 @@ def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str,
     it satisfies ANY printed/compiled search branch.
     """
     action_n = tf.norm(action_name)
-    raw = _turn1_v23_norm_text(filt)
+    raw = _turn1_goal_search_filter_norm_text(filt)
 
     def _n(value: Any) -> str:
         try:
@@ -6107,9 +6107,9 @@ def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str,
     if "supporter" in raw:
         tests.append(lambda c: bool(tf.is_supporter(c)))
     if "stadium" in raw:
-        tests.append(lambda c: _turn1_v23_card_is_stadium(c))
+        tests.append(lambda c: _turn1_goal_search_filter_card_is_stadium(c))
     if "item" in raw and "pokemon tool" not in raw and "pokémon tool" not in raw:
-        tests.append(lambda c: _turn1_v23_card_is_item(c))
+        tests.append(lambda c: _turn1_goal_search_filter_card_is_item(c))
     if "pokemon tool" in raw or "pokémon tool" in raw or "tool" in raw:
         tests.append(lambda c: _trainer_kind(c, "tool") or _trainer_kind(c, "pokemon tool") or _trainer_kind(c, "pokémon tool"))
     if "trainer" in raw and not any(w in raw for w in trainer_words):
@@ -6122,7 +6122,7 @@ def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str,
     return _ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23(filt, card, action_name)
 
 
-def _turn1_v23_old_single_target_score(
+def _turn1_original_single_target_score_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -6152,7 +6152,7 @@ def _turn1_score_playable_card_for_goal(
     # its legal Supporter chain and correctly blocks it going first.
     try:
         if tf.is_meowth_ex(card):
-            return _turn1_v23_old_single_target_score(card, st, reqs, going, enable_chain_search)
+            return _turn1_original_single_target_score_for_goal(card, st, reqs, going, enable_chain_search)
     except Exception:
         pass
 
@@ -6200,7 +6200,7 @@ def _turn1_execute_goal_search_card(
 
 
 # ---------------------------------------------------------------------
-# TURN1_SELF_ONLY_SEARCH_GUARD_V25
+# TURN1_SELF_ONLY_SEARCH_GUARD
 # ---------------------------------------------------------------------
 # General fix for opponent-disruption cards being treated as self-search.
 #
@@ -6218,20 +6218,20 @@ def _turn1_execute_goal_search_card(
 # It is only blocked from being chosen as a played action because of opponent-only
 # compiled search/draw artifacts.
 
-_TURN1_ORIG_SEARCH_STEPS_FOR_CARD_BEFORE_V25 = _turn1_search_steps_for_card
-_TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V25 = _turn1_score_playable_card_for_goal
-_TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_V25 = score_candidate_for_missing_targets
-_TURN1_ORIG_TF_CARD_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = tf.card_directly_searches_target
-_TURN1_ORIG_TF_CARD_HAS_SEARCH_BEFORE_V25 = tf.card_has_search
-_TURN1_ORIG_TF_CARD_DRAW_POWER_BEFORE_V25 = tf.card_draw_power
+_TURN1_ORIG_SEARCH_STEPS_FOR_CARD_BEFORE_SELF_ONLY_GUARD = _turn1_search_steps_for_card
+_TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_SELF_ONLY_GUARD = _turn1_score_playable_card_for_goal
+_TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SELF_ONLY_GUARD = score_candidate_for_missing_targets
+_TURN1_ORIG_TF_CARD_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD = tf.card_directly_searches_target
+_TURN1_ORIG_TF_CARD_HAS_SEARCH_BEFORE_SELF_ONLY_GUARD = tf.card_has_search
+_TURN1_ORIG_TF_CARD_DRAW_POWER_BEFORE_SELF_ONLY_GUARD = tf.card_draw_power
 
 try:
-    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = tf.ability_directly_searches_target
+    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD = tf.ability_directly_searches_target
 except Exception:
-    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = None
+    _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD = None
 
 
-def _turn1_v25_add_text_parts(value: Any, parts: List[str], depth: int = 0) -> None:
+def _turn1_self_only_search_add_text_parts(value: Any, parts: List[str], depth: int = 0) -> None:
     if value is None or depth > 5:
         return
     if isinstance(value, str):
@@ -6244,17 +6244,17 @@ def _turn1_v25_add_text_parts(value: Any, parts: List[str], depth: int = 0) -> N
             # opponent, target, recipient, destination, etc.
             if isinstance(k, str):
                 parts.append(k)
-            _turn1_v25_add_text_parts(v, parts, depth + 1)
+            _turn1_self_only_search_add_text_parts(v, parts, depth + 1)
         return
     if isinstance(value, (list, tuple, set)):
         for item in value:
-            _turn1_v25_add_text_parts(item, parts, depth + 1)
+            _turn1_self_only_search_add_text_parts(item, parts, depth + 1)
         return
 
 
-def _turn1_v25_norm_text(value: Any) -> str:
+def _turn1_self_only_search_norm_text(value: Any) -> str:
     parts: List[str] = []
-    _turn1_v25_add_text_parts(value, parts)
+    _turn1_self_only_search_add_text_parts(value, parts)
     raw = " ".join(parts)
     try:
         return tf.norm(raw)
@@ -6262,7 +6262,7 @@ def _turn1_v25_norm_text(value: Any) -> str:
         return str(raw or "").lower()
 
 
-def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> str:
+def _turn1_self_only_search_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> str:
     parts: List[str] = []
 
     if isinstance(step, dict):
@@ -6282,8 +6282,8 @@ def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = 
             "player",
         ):
             if key in step:
-                _turn1_v25_add_text_parts(step.get(key), parts)
-        _turn1_v25_add_text_parts(step, parts)
+                _turn1_self_only_search_add_text_parts(step.get(key), parts)
+        _turn1_self_only_search_add_text_parts(step, parts)
 
     if isinstance(card, dict):
         for key in (
@@ -6298,12 +6298,12 @@ def _turn1_v25_step_text(step: Dict[str, Any], card: Optional[Dict[str, Any]] = 
             "gameplay",
         ):
             if key in card:
-                _turn1_v25_add_text_parts(card.get(key), parts)
+                _turn1_self_only_search_add_text_parts(card.get(key), parts)
 
-    return _turn1_v25_norm_text(" ".join(parts))
+    return _turn1_self_only_search_norm_text(" ".join(parts))
 
 
-def _turn1_v25_has_opponent_zone_text(text: str) -> bool:
+def _turn1_text_mentions_opponent_zone(text: str) -> bool:
     t = str(text or "")
     opponent_hints = (
         "your opponent",
@@ -6321,7 +6321,7 @@ def _turn1_v25_has_opponent_zone_text(text: str) -> bool:
     return any(h in t for h in opponent_hints)
 
 
-def _turn1_v25_has_self_search_text(text: str) -> bool:
+def _turn1_text_mentions_self_search(text: str) -> bool:
     t = str(text or "")
     self_search_hints = (
         "search your deck",
@@ -6341,7 +6341,7 @@ def _turn1_v25_has_self_search_text(text: str) -> bool:
     return any(h in t for h in self_search_hints)
 
 
-def _turn1_v25_has_self_draw_text(text: str) -> bool:
+def _turn1_text_mentions_self_draw(text: str) -> bool:
     t = str(text or "")
     if "each player" in t and "draw" in t:
         return True
@@ -6364,9 +6364,9 @@ def _turn1_v25_has_self_draw_text(text: str) -> bool:
     return any(h in t for h in self_draw_hints)
 
 
-def _turn1_v25_has_opponent_only_draw_or_search_text(text: str) -> bool:
+def _turn1_text_is_opponent_only_draw_or_search(text: str) -> bool:
     t = str(text or "")
-    if not _turn1_v25_has_opponent_zone_text(t):
+    if not _turn1_text_mentions_opponent_zone(t):
         return False
 
     opponent_action_hints = (
@@ -6393,53 +6393,53 @@ def _turn1_v25_has_opponent_only_draw_or_search_text(text: str) -> bool:
 
     # If the same printed effect also clearly benefits us, do not call it
     # opponent-only. Example: each player draw effects.
-    if _turn1_v25_has_self_search_text(t) or _turn1_v25_has_self_draw_text(t):
+    if _turn1_text_mentions_self_search(t) or _turn1_text_mentions_self_draw(t):
         return False
 
     return True
 
 
-def _turn1_v25_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
+def _turn1_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
     if not isinstance(step, dict):
         return False
     if step.get("op") not in {"search_deck", "choose_cards", "put_card_into_hand"}:
         return False
 
-    text = _turn1_v25_step_text(step, card)
+    text = _turn1_self_only_search_step_text(step, card)
 
-    if _turn1_v25_has_opponent_only_draw_or_search_text(text):
+    if _turn1_text_is_opponent_only_draw_or_search(text):
         return False
 
-    if _turn1_v25_has_opponent_zone_text(text) and not _turn1_v25_has_self_search_text(text):
+    if _turn1_text_mentions_opponent_zone(text) and not _turn1_text_mentions_self_search(text):
         return False
 
-    if _turn1_v25_has_self_search_text(text):
+    if _turn1_text_mentions_self_search(text):
         return True
 
     # If the compiler gave a structured search_deck op with no opponent text,
     # allow it. This preserves normal compiled self-search effects that have
     # sparse metadata.
-    return not _turn1_v25_has_opponent_zone_text(text)
+    return not _turn1_text_mentions_opponent_zone(text)
 
 
-def _turn1_v25_is_self_draw_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
+def _turn1_is_self_draw_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
     if not isinstance(step, dict):
         return False
     if step.get("op") not in {"draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches"}:
         return False
 
-    text = _turn1_v25_step_text(step, card)
+    text = _turn1_self_only_search_step_text(step, card)
 
-    if _turn1_v25_has_opponent_only_draw_or_search_text(text):
+    if _turn1_text_is_opponent_only_draw_or_search(text):
         return False
 
-    if _turn1_v25_has_opponent_zone_text(text) and not _turn1_v25_has_self_draw_text(text):
+    if _turn1_text_mentions_opponent_zone(text) and not _turn1_text_mentions_self_draw(text):
         return False
 
     return True
 
 
-def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _turn1_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     if not isinstance(card, dict):
         return out
@@ -6449,7 +6449,7 @@ def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str
             continue
         for step in tf.flatten_steps(eff):
             if isinstance(step, dict) and step.get("op") == "search_deck":
-                if _turn1_v25_is_self_search_step(step, card):
+                if _turn1_is_self_search_step(step, card):
                     out.append(step)
                 else:
                     try:
@@ -6462,11 +6462,11 @@ def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str
 
 
 def _turn1_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Override goal-search executor: only self-search steps can feed the multi-goal executor."""
-    return _turn1_v25_self_search_steps_for_card(card)
+    """Only self-search steps can feed the multi-goal executor."""
+    return _turn1_self_search_steps_for_card(card)
 
 
-def _turn1_v25_card_directly_searches_target(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+def _turn1_card_directly_searches_target_self_only(card: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
     target_cards = [c for c in deck if tf.target_matches(c, target_norm)]
     if not target_cards:
         return False
@@ -6483,7 +6483,7 @@ def _turn1_v25_card_directly_searches_target(card: Dict[str, Any], target_norm: 
         if not isinstance(step, dict):
             continue
         if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
-            if not _turn1_v25_is_self_search_step(step, card):
+            if not _turn1_is_self_search_step(step, card):
                 continue
             filt = tf.extract_filter(step)
             if any(tf.filter_allows_card(filt, tc) for tc in target_cards):
@@ -6492,11 +6492,11 @@ def _turn1_v25_card_directly_searches_target(card: Dict[str, Any], target_norm: 
     return False
 
 
-def _turn1_v25_card_has_search(card: Dict[str, Any]) -> bool:
-    return bool(_turn1_v25_self_search_steps_for_card(card))
+def _turn1_card_has_self_search(card: Dict[str, Any]) -> bool:
+    return bool(_turn1_self_search_steps_for_card(card))
 
 
-def _turn1_v25_card_draw_power(card: Dict[str, Any]) -> int:
+def _turn1_card_self_draw_power(card: Dict[str, Any]) -> int:
     total = 0
     if not isinstance(card, dict):
         return 0
@@ -6506,19 +6506,19 @@ def _turn1_v25_card_draw_power(card: Dict[str, Any]) -> int:
             continue
         op = step.get("op")
         if op in {"draw_cards", "draw_cards_per_coin_heads"}:
-            if _turn1_v25_is_self_draw_step(step, card):
+            if _turn1_is_self_draw_step(step, card):
                 total += tf.draw_amount_from_step(step, coin_heads=1)
         elif op == "draw_until_hand_size":
-            if _turn1_v25_is_self_draw_step(step, card):
+            if _turn1_is_self_draw_step(step, card):
                 total += tf.amount_value(step.get("target_hand_size"), default=0)
         elif op == "draw_until_hand_size_matches":
-            if _turn1_v25_is_self_draw_step(step, card):
+            if _turn1_is_self_draw_step(step, card):
                 total += 3
 
     return total
 
 
-def _turn1_v25_ability_directly_searches_target(effect: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
+def _turn1_ability_directly_searches_target_self_only(effect: Dict[str, Any], target_norm: str, deck: Sequence[Dict[str, Any]]) -> bool:
     target_cards = [c for c in deck if tf.target_matches(c, target_norm)]
     if not target_cards:
         return False
@@ -6527,7 +6527,7 @@ def _turn1_v25_ability_directly_searches_target(effect: Dict[str, Any], target_n
         if not isinstance(step, dict):
             continue
         if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
-            if not _turn1_v25_is_self_search_step(step, None):
+            if not _turn1_is_self_search_step(step, None):
                 continue
             filt = tf.extract_filter(step)
             if any(tf.filter_allows_card(filt, tc) for tc in target_cards):
@@ -6538,14 +6538,14 @@ def _turn1_v25_ability_directly_searches_target(effect: Dict[str, Any], target_n
 
 # Patch the imported single-target module too, because goal_finder falls back
 # to tf.score_playable_card for draw/special/chain lines.
-tf.card_directly_searches_target = _turn1_v25_card_directly_searches_target
-tf.card_has_search = _turn1_v25_card_has_search
-tf.card_draw_power = _turn1_v25_card_draw_power
-if _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 is not None:
-    tf.ability_directly_searches_target = _turn1_v25_ability_directly_searches_target
+tf.card_directly_searches_target = _turn1_card_directly_searches_target_self_only
+tf.card_has_search = _turn1_card_has_self_search
+tf.card_draw_power = _turn1_card_self_draw_power
+if _TURN1_ORIG_TF_ABILITY_DIRECTLY_SEARCHES_TARGET_BEFORE_SELF_ONLY_GUARD is not None:
+    tf.ability_directly_searches_target = _turn1_ability_directly_searches_target_self_only
 
 
-def _turn1_v25_action_source_card(action: Any) -> Optional[Dict[str, Any]]:
+def _turn1_action_source_card_for_self_only_guard(action: Any) -> Optional[Dict[str, Any]]:
     if isinstance(action, dict) and action.get("_virtual_action"):
         for key in ("card", "source", "search_card"):
             c = action.get(key)
@@ -6557,8 +6557,8 @@ def _turn1_v25_action_source_card(action: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _turn1_v25_is_opponent_only_consistency_action(action: Any) -> bool:
-    card = _turn1_v25_action_source_card(action)
+def _turn1_is_opponent_only_consistency_action(action: Any) -> bool:
+    card = _turn1_action_source_card_for_self_only_guard(action)
     if not isinstance(card, dict):
         return False
 
@@ -6575,13 +6575,13 @@ def _turn1_v25_is_opponent_only_consistency_action(action: Any) -> bool:
             op = step.get("op")
             if op in {"search_deck", "choose_cards", "put_card_into_hand"}:
                 any_access_like = True
-                if _turn1_v25_is_self_search_step(step, card):
+                if _turn1_is_self_search_step(step, card):
                     any_self_access = True
                 else:
                     any_opponent_only = True
             elif op in {"draw_cards", "draw_cards_per_coin_heads", "draw_until_hand_size", "draw_until_hand_size_matches"}:
                 any_access_like = True
-                if _turn1_v25_is_self_draw_step(step, card):
+                if _turn1_is_self_draw_step(step, card):
                     any_self_access = True
                 else:
                     any_opponent_only = True
@@ -6601,9 +6601,9 @@ def _turn1_score_playable_card_for_goal(
     going: str,
     enable_chain_search: bool,
 ) -> float:
-    if _turn1_v25_is_opponent_only_consistency_action(card):
+    if _turn1_is_opponent_only_consistency_action(card):
         return -1.0
-    return _TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V25(
+    return _TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_SELF_ONLY_GUARD(
         card,
         st,
         reqs,
@@ -6623,7 +6623,7 @@ def score_candidate_for_missing_targets(
     # TURN1_ACTION_BUDGET_GUARD
     if _turn1_action_budget_exhausted(st):
         return []
-    scored = _TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_V25(
+    scored = _TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_SELF_ONLY_GUARD(
         st,
         missing,
         going,
@@ -6632,7 +6632,7 @@ def score_candidate_for_missing_targets(
 
     filtered: List[Tuple[float, Any, str]] = []
     for score, action, target_norm in scored:
-        if _turn1_v25_is_opponent_only_consistency_action(action):
+        if _turn1_is_opponent_only_consistency_action(action):
             try:
                 st.log.append({
                     "event": "blocked_opponent_only_consistency_action",
