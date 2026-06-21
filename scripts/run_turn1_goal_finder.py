@@ -594,8 +594,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     scored: List[Tuple[float, Any, str]] = []
     target_norms = [n for req in missing for n in [choose_primary_target_norm(req, st)] if n]
@@ -649,7 +649,7 @@ def score_candidate_for_missing_targets(
 
 def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.Random, going: str, enable_chain_search: bool) -> None:
     # TURN1_V57_BASE_EXECUTE_BUDGET_GUARD
-    if not _turn1_v56_action_allowed(st):
+    if not _turn1_action_budget_allows_next_action(st):
         return None
     if isinstance(action, dict) and action.get("_virtual_action") == "Run Errand":
         tf.use_run_errand(st, target_norm, "after_use_Run_Errand")
@@ -1100,8 +1100,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V28(st, missing, going, enable_chain_search)
 
@@ -3171,8 +3171,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V31(
         st,
@@ -3796,8 +3796,8 @@ def _turn1_v34_action_can_help_target(action, target_norm, st):
 _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V34 = score_candidate_for_missing_targets
 
 def score_candidate_for_missing_targets(st, missing, going, enable_chain_search):
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     rows = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V34(st, missing, going, enable_chain_search)
     filtered = []
@@ -4868,77 +4868,77 @@ def _turn1_v433_normalize_results(results, deck):
 # and scoring functions a shared per-state budget. Once a SimState has executed
 # max_actions actions, further execution/scoring on that same state stops.
 
-_TURN1_V56_CURRENT_MAX_ACTIONS = None
-_TURN1_V56_ACTION_COUNTS_BY_STATE = {}
+_TURN1_ACTION_BUDGET_MAX_ACTIONS = None
+_TURN1_ACTION_BUDGET_COUNTS_BY_STATE = {}
 
 
-def _turn1_v56_set_action_budget_from_args(args):
-    global _TURN1_V56_CURRENT_MAX_ACTIONS, _TURN1_V56_ACTION_COUNTS_BY_STATE
+def _turn1_set_action_budget_from_args(args):
+    global _TURN1_ACTION_BUDGET_MAX_ACTIONS, _TURN1_ACTION_BUDGET_COUNTS_BY_STATE
 
     try:
         value = int(getattr(args, "max_actions", 0) or 0)
     except Exception:
         value = 0
 
-    _TURN1_V56_CURRENT_MAX_ACTIONS = value if value > 0 else None
-    _TURN1_V56_ACTION_COUNTS_BY_STATE = {}
+    _TURN1_ACTION_BUDGET_MAX_ACTIONS = value if value > 0 else None
+    _TURN1_ACTION_BUDGET_COUNTS_BY_STATE = {}
 
 
-def _turn1_v56_state_key(st):
+def _turn1_action_budget_state_key(st):
     return id(st)
 
 
-def _turn1_v56_mark_budget_exhausted(st):
+def _turn1_mark_action_budget_exhausted(st):
     try:
-        setattr(st, "_turn1_v56_action_budget_exhausted", True)
+        setattr(st, "_turn1_action_budget_exhausted_flag", True)
     except Exception:
         pass
 
 
-def _turn1_v56_budget_exhausted(st):
+def _turn1_action_budget_exhausted(st):
     try:
-        if bool(getattr(st, "_turn1_v56_action_budget_exhausted", False)):
+        if bool(getattr(st, "_turn1_action_budget_exhausted_flag", False)):
             return True
     except Exception:
         pass
 
-    limit = _TURN1_V56_CURRENT_MAX_ACTIONS
+    limit = _TURN1_ACTION_BUDGET_MAX_ACTIONS
     if not limit or limit <= 0:
         return False
 
     try:
-        count = int(getattr(st, "_turn1_v56_action_count", 0) or 0)
+        count = int(getattr(st, "_turn1_action_budget_count", 0) or 0)
     except Exception:
         try:
-            count = int(_TURN1_V56_ACTION_COUNTS_BY_STATE.get(_turn1_v56_state_key(st), 0) or 0)
+            count = int(_TURN1_ACTION_BUDGET_COUNTS_BY_STATE.get(_turn1_action_budget_state_key(st), 0) or 0)
         except Exception:
             count = 0
 
     if count >= limit:
-        _turn1_v56_mark_budget_exhausted(st)
+        _turn1_mark_action_budget_exhausted(st)
         return True
 
     return False
-def _turn1_v56_action_allowed(st):
-    limit = _TURN1_V56_CURRENT_MAX_ACTIONS
+def _turn1_action_budget_allows_next_action(st):
+    limit = _TURN1_ACTION_BUDGET_MAX_ACTIONS
     if not limit or limit <= 0:
         return True
 
-    if _turn1_v56_budget_exhausted(st):
+    if _turn1_action_budget_exhausted(st):
         return False
 
     try:
-        count = int(getattr(st, "_turn1_v56_action_count", 0) or 0)
-        setattr(st, "_turn1_v56_action_count", count + 1)
+        count = int(getattr(st, "_turn1_action_budget_count", 0) or 0)
+        setattr(st, "_turn1_action_budget_count", count + 1)
     except Exception:
-        key = _turn1_v56_state_key(st)
-        count = int(_TURN1_V56_ACTION_COUNTS_BY_STATE.get(key, 0) or 0)
-        _TURN1_V56_ACTION_COUNTS_BY_STATE[key] = count + 1
+        key = _turn1_action_budget_state_key(st)
+        count = int(_TURN1_ACTION_BUDGET_COUNTS_BY_STATE.get(key, 0) or 0)
+        _TURN1_ACTION_BUDGET_COUNTS_BY_STATE[key] = count + 1
 
     return True
 def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs: Sequence[GoalRequirement], mode: str, going: str) -> Dict[str, Any]:
-    # TURN1_V56_INIT_SCENARIO_BUDGET
-    _turn1_v56_set_action_budget_from_args(args)
+    # TURN1_INIT_SCENARIO_ACTION_BUDGET
+    _turn1_set_action_budget_from_args(args)
     rng = random.Random(args.seed + (0 if going == "first" else 1000003))
     results = [
         simulate_one_goal_trial(
@@ -5698,8 +5698,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     """Goal-aware action scoring.
 
@@ -6620,8 +6620,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     scored = _TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_V25(
         st,
@@ -7305,8 +7305,8 @@ def score_candidate_for_missing_targets(
     going: str,
     enable_chain_search: bool,
 ) -> List[Tuple[float, Any, str]]:
-    # TURN1_V56_SCORE_BUDGET_GUARD
-    if _turn1_v56_budget_exhausted(st):
+    # TURN1_ACTION_BUDGET_GUARD
+    if _turn1_action_budget_exhausted(st):
         return []
     scored = _turn1_v53_cached_score_candidates(st, missing, going, enable_chain_search)
     filtered: List[Tuple[float, Any, str]] = []
