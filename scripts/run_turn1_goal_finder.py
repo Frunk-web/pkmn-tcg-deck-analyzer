@@ -5129,7 +5129,7 @@ def parse_goal_file(path: str, default_zone: str = "accessed") -> Tuple[str, str
 
 
 # ---------------------------------------------------------------------
-# TURN1_MULTI_GOAL_SEARCH_EXECUTOR_V22
+# TURN1_MULTI_GOAL_SEARCH_EXECUTOR
 # ---------------------------------------------------------------------
 # Fixes multi-card / multi-copy goals that were still using the old
 # single-target search executor.
@@ -5146,17 +5146,17 @@ def parse_goal_file(path: str, default_zone: str = "accessed") -> Tuple[str, str
 # - stop naturally because the normal loop re-checks goal_satisfied after
 #   each action
 
-_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V22 = score_candidate_for_missing_targets
-_ORIG_EXECUTE_ACTION_V22 = execute_action
+_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_SEARCH = score_candidate_for_missing_targets
+_ORIG_EXECUTE_ACTION_BEFORE_GOAL_SEARCH = execute_action
 
 
-def _turn1_v22_card_instance_key(c: Dict[str, Any]) -> Any:
+def _turn1_goal_card_instance_key(c: Dict[str, Any]) -> Any:
     if not isinstance(c, dict):
         return id(c)
     return c.get("_instance_id") or id(c)
 
 
-def _turn1_v22_req_current_count(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
+def _turn1_goal_requirement_current_count(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
     pool = zone_cards(st, tracker, req.zone)
     seen = set()
     n = 0
@@ -5165,7 +5165,7 @@ def _turn1_v22_req_current_count(req: GoalRequirement, st: tf.SimState, tracker:
             continue
         if not any(card_matches_option(c, opt) for opt in req.options):
             continue
-        key = _turn1_v22_card_instance_key(c)
+        key = _turn1_goal_card_instance_key(c)
         if key in seen:
             continue
         seen.add(key)
@@ -5173,14 +5173,14 @@ def _turn1_v22_req_current_count(req: GoalRequirement, st: tf.SimState, tracker:
     return n
 
 
-def _turn1_v22_req_deficit(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
-    return max(0, int(getattr(req, "min_count", 1) or 1) - _turn1_v22_req_current_count(req, st, tracker))
+def _turn1_goal_requirement_deficit(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> int:
+    return max(0, int(getattr(req, "min_count", 1) or 1) - _turn1_goal_requirement_current_count(req, st, tracker))
 
 
-def _turn1_v22_missing_with_deficits(reqs: Sequence[GoalRequirement], mode: str, st: tf.SimState, tracker: GoalTracker) -> List[Tuple[GoalRequirement, int]]:
+def _turn1_missing_goal_requirements_with_deficits(reqs: Sequence[GoalRequirement], mode: str, st: tf.SimState, tracker: GoalTracker) -> List[Tuple[GoalRequirement, int]]:
     rows: List[Tuple[GoalRequirement, int]] = []
     for req in reqs:
-        d = _turn1_v22_req_deficit(req, st, tracker)
+        d = _turn1_goal_requirement_deficit(req, st, tracker)
         if d > 0:
             rows.append((req, d))
 
@@ -5191,7 +5191,7 @@ def _turn1_v22_missing_with_deficits(reqs: Sequence[GoalRequirement], mode: str,
     return rows
 
 
-def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
+def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
     # Ultra Ball's compiled filters vary. The target finder already special-cases
     # it as any Pokémon; keep that behavior here.
     if tf.norm(action_name) == "ultra ball":
@@ -5199,7 +5199,7 @@ def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, An
     return tf.filter_allows_card(filt, card)
 
 
-def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _turn1_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for eff in tf.iter_effects(card):
         if tf.effect_is_trivial_rule(eff):
@@ -5429,7 +5429,7 @@ def _turn1_source_text_allows_card(
 # Direct source edit, not a same-name wrapper stack.
 #
 # Fixes two confirmed runtime problems from the 100-trial Chien-Pao profile:
-#   1. _turn1_v22_card_goal_search_capacity used copy.deepcopy(st) thousands
+#   1. _turn1_card_goal_search_capacity used copy.deepcopy(st) thousands
 #      of times. The capacity check only needs independent zone lists, not deep
 #      copies of every card dictionary.
 #   2. chain-search repeatedly asks for the same candidate scoring result for
@@ -5602,7 +5602,7 @@ def _turn1_cached_score_candidates(st, missing, going, enable_chain_search):
 
     return scored
 
-def _turn1_v22_card_goal_search_capacity(
+def _turn1_card_goal_search_capacity(
     st: tf.SimState,
     card: Dict[str, Any],
     reqs: Sequence[GoalRequirement],
@@ -5622,11 +5622,11 @@ def _turn1_v22_card_goal_search_capacity(
     fake_tracker = GoalTracker()
     fake_tracker.mark(tracker.accessed)
 
-    for step in _turn1_v22_search_steps_for_card(card):
+    for step in _turn1_search_steps_for_card(card):
         filt = tf.extract_filter(step)
         amt = max(1, tf.search_amount(step))
         max_amt = max(max_amt, amt)
-        selected = _turn1_v22_goal_select_from_deck(
+        selected = _turn1_goal_select_from_deck(
             fake_st,
             reqs=reqs,
             mode=mode,
@@ -5645,7 +5645,7 @@ def _turn1_v22_card_goal_search_capacity(
     return total_possible, max_amt
 
 
-def _turn1_v22_score_playable_card_for_goal(
+def _turn1_score_playable_card_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -5668,7 +5668,7 @@ def _turn1_v22_score_playable_card_for_goal(
     if not tf.has_enough_discard_fodder(st.hand, card, primary):
         return -1.0
 
-    selected_possible, max_amt = _turn1_v22_card_goal_search_capacity(st, card, reqs, mode, tracker)
+    selected_possible, max_amt = _turn1_card_goal_search_capacity(st, card, reqs, mode, tracker)
     if selected_possible <= 0:
         # Fall back to old single-target scoring for pure draw / ability / special lines.
         best = -1.0
@@ -5716,14 +5716,14 @@ def score_candidate_for_missing_targets(
 
     playable = [c for c in list(st.hand) if tf.card_can_be_played_from_hand(c, going, st.supporter_used)]
     for c in playable:
-        s = _turn1_v22_score_playable_card_for_goal(c, st, missing, "all", tracker, going, enable_chain_search)
+        s = _turn1_score_playable_card_for_goal(c, st, missing, "all", tracker, going, enable_chain_search)
         if s > 0:
             scored.append((s, c, target_norms[0]))
 
     # Keep the old non-hand / ability candidates. They are still single-target,
     # but the main bug was hand-played multi-search cards.
     try:
-        old_scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_V22(st, missing, going, enable_chain_search)
+        old_scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_GOAL_SEARCH(st, missing, going, enable_chain_search)
         scored.extend(old_scored)
     except Exception:
         pass
@@ -5731,7 +5731,7 @@ def score_candidate_for_missing_targets(
     return scored
 
 
-def _turn1_v22_execute_goal_search_card(
+def _turn1_execute_goal_search_card(
     st: tf.SimState,
     card: Dict[str, Any],
     rng: random.Random,
@@ -5744,13 +5744,13 @@ def _turn1_v22_execute_goal_search_card(
     if not isinstance(card, dict) or card not in st.hand:
         return False
 
-    search_steps = _turn1_v22_search_steps_for_card(card)
+    search_steps = _turn1_search_steps_for_card(card)
     if not search_steps:
         return False
 
     action_name = tf.card_name(card)
 
-    selected_possible, _max_amt = _turn1_v22_card_goal_search_capacity(st, card, reqs, mode, tracker)
+    selected_possible, _max_amt = _turn1_card_goal_search_capacity(st, card, reqs, mode, tracker)
     if selected_possible <= 0:
         return False
 
@@ -5823,7 +5823,7 @@ def _turn1_v22_execute_goal_search_card(
             if op == "search_deck":
                 filt = tf.extract_filter(step)
                 amt = max(1, tf.search_amount(step))
-                selected = _turn1_v22_goal_select_from_deck(
+                selected = _turn1_goal_select_from_deck(
                     st,
                     reqs=reqs,
                     mode=mode,
@@ -5865,10 +5865,10 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
     tracker = getattr(st, "_turn1_goal_tracker", None)
 
     if reqs and tracker is not None and isinstance(action, dict) and not action.get("_virtual_action"):
-        if _turn1_v22_execute_goal_search_card(st, action, rng, reqs, mode, tracker, going, enable_chain_search):
+        if _turn1_execute_goal_search_card(st, action, rng, reqs, mode, tracker, going, enable_chain_search):
             return
 
-    return _ORIG_EXECUTE_ACTION_V22(st, action, target_norm, rng, going, enable_chain_search)
+    return _ORIG_EXECUTE_ACTION_BEFORE_GOAL_SEARCH(st, action, target_norm, rng, going, enable_chain_search)
 
 
 
@@ -5876,10 +5876,10 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 # ---------------------------------------------------------------------
 # TURN1_MEOWTH_FILTER_FIX_V23
 # ---------------------------------------------------------------------
-# Fixes a bug introduced by the v0.22 multi-goal search executor.
+# Fixes a bug introduced by the multi-goal search executor.
 #
 # Problem:
-#   Meowth ex / Last-Ditch Catch searches for a Supporter, but v0.22 treated
+#   Meowth ex / Last-Ditch Catch searches for a Supporter, but the old goal-search executor treated
 #   any compiled search_deck step as a goal-aware direct search if the older
 #   compiled filter was too permissive. That allowed Meowth ex to appear in
 #   lines for goals like 4x N's Zorua + Budew, even though Meowth only gets a
@@ -5888,12 +5888,12 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 # Fix:
 #   1. Never execute Meowth ex through the direct goal-aware search override.
 #      Let the original target-finder Meowth handler run instead.
-#   2. Make v0.22's search filter gate stricter for Supporter/Trainer/Item/
+#   2. Make the goal-search executor's search filter gate stricter for Supporter/Trainer/Item/
 #      Pokémon/Energy text so cards cannot search outside their printed filter.
 
-_ORIG_V22_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23 = _turn1_v22_filter_allows_for_action
-_ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V23 = _turn1_v22_score_playable_card_for_goal
-_ORIG_V22_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23 = _turn1_v22_execute_goal_search_card
+_ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23 = _turn1_search_filter_allows_for_action
+_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V23 = _turn1_score_playable_card_for_goal
+_ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23 = _turn1_execute_goal_search_card
 
 
 def _turn1_v23_norm_text(value: Any) -> str:
@@ -5926,8 +5926,8 @@ def _turn1_v23_card_is_stadium(card: Dict[str, Any]) -> bool:
         return False
 
 
-def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
-    """Goal-aware search filter used by the v0.22 executor.
+def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
+    """Goal-aware search filter used by the goal-search executor.
 
     TURN1_V66_GOAL_SEARCH_OR_FILTERS
 
@@ -6118,8 +6118,8 @@ def _turn1_v22_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, An
     if tests:
         return any(test(card) for test in tests)
 
-    # Fallback to the original v0.22 / target-finder compiled filter behavior.
-    return _ORIG_V22_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23(filt, card, action_name)
+    # Fallback to the original goal-search / target-finder compiled filter behavior.
+    return _ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23(filt, card, action_name)
 
 
 def _turn1_v23_old_single_target_score(
@@ -6138,7 +6138,7 @@ def _turn1_v23_old_single_target_score(
     return best
 
 
-def _turn1_v22_score_playable_card_for_goal(
+def _turn1_score_playable_card_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -6156,7 +6156,7 @@ def _turn1_v22_score_playable_card_for_goal(
     except Exception:
         pass
 
-    return _ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V23(
+    return _ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V23(
         card,
         st,
         reqs,
@@ -6167,7 +6167,7 @@ def _turn1_v22_score_playable_card_for_goal(
     )
 
 
-def _turn1_v22_execute_goal_search_card(
+def _turn1_execute_goal_search_card(
     st: tf.SimState,
     card: Dict[str, Any],
     rng: random.Random,
@@ -6177,7 +6177,7 @@ def _turn1_v22_execute_goal_search_card(
     going: str,
     enable_chain_search: bool,
 ) -> bool:
-    # Critical: do not let v0.22 directly turn Meowth's Supporter search into
+    # Critical: do not let the goal-search executor directly turn Meowth's Supporter search into
     # missing goal Pokémon. Delegate to the original executor instead.
     try:
         if tf.is_meowth_ex(card):
@@ -6185,7 +6185,7 @@ def _turn1_v22_execute_goal_search_card(
     except Exception:
         pass
 
-    return _ORIG_V22_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23(
+    return _ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23(
         st,
         card,
         rng,
@@ -6218,8 +6218,8 @@ def _turn1_v22_execute_goal_search_card(
 # It is only blocked from being chosen as a played action because of opponent-only
 # compiled search/draw artifacts.
 
-_TURN1_ORIG_V22_SEARCH_STEPS_FOR_CARD_BEFORE_V25 = _turn1_v22_search_steps_for_card
-_TURN1_ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V25 = _turn1_v22_score_playable_card_for_goal
+_TURN1_ORIG_SEARCH_STEPS_FOR_CARD_BEFORE_V25 = _turn1_search_steps_for_card
+_TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V25 = _turn1_score_playable_card_for_goal
 _TURN1_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_V25 = score_candidate_for_missing_targets
 _TURN1_ORIG_TF_CARD_DIRECTLY_SEARCHES_TARGET_BEFORE_V25 = tf.card_directly_searches_target
 _TURN1_ORIG_TF_CARD_HAS_SEARCH_BEFORE_V25 = tf.card_has_search
@@ -6461,8 +6461,8 @@ def _turn1_v25_self_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str
     return out
 
 
-def _turn1_v22_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Override v0.22: only self-search steps can feed the multi-goal executor."""
+def _turn1_search_steps_for_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Override goal-search executor: only self-search steps can feed the multi-goal executor."""
     return _turn1_v25_self_search_steps_for_card(card)
 
 
@@ -6592,7 +6592,7 @@ def _turn1_v25_is_opponent_only_consistency_action(action: Any) -> bool:
     return bool(any_access_like and any_opponent_only and not any_self_access)
 
 
-def _turn1_v22_score_playable_card_for_goal(
+def _turn1_score_playable_card_for_goal(
     card: Dict[str, Any],
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
@@ -6603,7 +6603,7 @@ def _turn1_v22_score_playable_card_for_goal(
 ) -> float:
     if _turn1_v25_is_opponent_only_consistency_action(card):
         return -1.0
-    return _TURN1_ORIG_V22_SCORE_PLAYABLE_FOR_GOAL_BEFORE_V25(
+    return _TURN1_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V25(
         card,
         st,
         reqs,
@@ -6930,7 +6930,7 @@ def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
 #   1. Resolve target_norm to actual card(s) in the current state/deck pools.
 #   2. Extract the action's real search steps/filters.
 #   3. Use the same filter function used by execution:
-#        _turn1_v22_filter_allows_for_action(...)
+#        _turn1_search_filter_allows_for_action(...)
 #   4. Fall back to explicit text/category matching only when structured
 #      filters are unavailable.
 
@@ -7098,7 +7098,7 @@ def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
         if isinstance(obj, dict):
             # The existing simulator function knows how compiled search steps are stored.
             try:
-                for s in _turn1_v22_search_steps_for_card(obj):
+                for s in _turn1_search_steps_for_card(obj):
                     add_step(s)
             except Exception:
                 pass
@@ -7234,7 +7234,7 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
                 except Exception:
                     filt = {}
                 try:
-                    if _turn1_v22_filter_allows_for_action(filt or {}, target_card, action_name):
+                    if _turn1_search_filter_allows_for_action(filt or {}, target_card, action_name):
                         return True
                 except Exception:
                     pass
@@ -8223,7 +8223,7 @@ except Exception:
 #
 # Hotspots found:
 # - gf.score_candidate_for_missing_targets
-# - gf._turn1_v22_card_goal_search_capacity
+# - gf._turn1_card_goal_search_capacity
 # - tf.score_playable_card
 # - tf.card_directly_searches_target
 # - gf.turn1_v26_flatten_text
@@ -8405,7 +8405,7 @@ _TURN1_V42_CACHED_HELPERS = []
 
 # Goal-finder pure-ish classification hotpaths.
 for _turn1_v42_name in [
-    "_turn1_v22_card_goal_search_capacity",
+    "_turn1_card_goal_search_capacity",
     "turn1_v26_flatten_text",
     "card_matches_option",
     "requirement_satisfied",
@@ -8645,7 +8645,7 @@ def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, actio
 
     # First apply the structured compiled filter.
     try:
-        if not _turn1_v22_filter_allows_for_action(filt or {}, candidate, action_name):
+        if not _turn1_search_filter_allows_for_action(filt or {}, candidate, action_name):
             return False
     except Exception:
         return False
@@ -8680,7 +8680,7 @@ def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, actio
         return False
 
 
-def _turn1_v22_goal_select_from_deck(
+def _turn1_goal_select_from_deck(
     st: tf.SimState,
     reqs: Sequence[GoalRequirement],
     mode: str,
@@ -8701,7 +8701,7 @@ def _turn1_v22_goal_select_from_deck(
     virtual_tracker.mark(selected)
 
     while len(selected) < amount:
-        deficits = _turn1_v22_missing_with_deficits(reqs, mode, st, virtual_tracker)
+        deficits = _turn1_missing_goal_requirements_with_deficits(reqs, mode, st, virtual_tracker)
         if not deficits:
             break
 
@@ -8745,7 +8745,7 @@ def _turn1_v22_goal_select_from_deck(
         virtual_tracker.mark([chosen])
 
         if mode == "any" and chosen_req is not None:
-            if _turn1_v22_req_deficit(chosen_req, st, virtual_tracker) <= 0:
+            if _turn1_goal_requirement_deficit(chosen_req, st, virtual_tracker) <= 0:
                 break
 
     return selected
