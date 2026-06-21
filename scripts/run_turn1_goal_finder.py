@@ -9582,9 +9582,6 @@ def _turn1_v22_goal_select_from_deck(
     return selected
 
 
-if __name__ == "__main__":
-    main()
-
 # TURN1_APPLY_V30_BEFORE_SUMMARY
 
 # TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_START
@@ -10003,7 +10000,6 @@ def _turn1_v22_goal_select_from_deck(
     return selected
 # TURN1_V76_FINAL_STRICT_GOAL_SELECTOR_END
 
-
 # TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
 # Canonical source-bound goal selector.
 #
@@ -10302,3 +10298,5 @@ def _turn1_v22_goal_select_from_deck(
 
     return selected
 
+if __name__ == "__main__":
+    main()
