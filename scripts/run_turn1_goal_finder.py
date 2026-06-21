@@ -1,15 +1,15 @@
 # TURN1_DEWRAP_DIRECT_GOAL_FILTER
 # TURN1_PRECISE_SEARCH_FILTER_COMPAT
-# TURN1_V57_ACTION_BUDGET_SINGLE_COUNT
-# TURN1_DIRECT_ACTION_BUDGET_V56
-# TURN1_DIRECT_CARD_MATCH_CACHE_V54
-# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE_V53
+# TURN1_ACTION_BUDGET_SINGLE_COUNT
+# TURN1_DIRECT_ACTION_BUDGET
+# TURN1_DIRECT_CARD_MATCH_CACHE
+# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE
 from __future__ import annotations
 
 """
 Turn 1 goal finder for Pokémon TCG deck consistency diagnostics.
 
-Version: v0.2
+Version: natural-baseline integration
 
 This builds on scripts/run_turn1_target_finder.py. Instead of asking only
 "can I find target card X?", it estimates whether a multi-card goal is met by
@@ -24,7 +24,7 @@ The policy is intentionally conservative and transparent. It reuses the
 single-target solver's card/effect execution layer, but scores actions against
 all currently missing goal pieces.
 
-Version v0.2 adds exact natural baseline integration from src/probability.py.
+This version adds exact natural baseline integration from src/probability.py.
 The exact layer computes legal-opening-hand and draw-for-turn goal probabilities;
 the simulator estimates only the action increment after the goal was not already
 satisfied naturally.
@@ -179,7 +179,7 @@ def instantiate_deck(deck: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------
-# TURN1_DIRECT_CARD_MATCH_CACHE_V54
+# TURN1_DIRECT_CARD_MATCH_CACHE
 # ---------------------------------------------------------------------
 # Direct hot-path fix, not a wrapper.
 #
@@ -282,7 +282,7 @@ def zone_cards(st: tf.SimState, tracker: GoalTracker, zone: str) -> List[Dict[st
 
 
 def requirement_satisfied(req: GoalRequirement, st: tf.SimState, tracker: GoalTracker) -> bool:
-    # TURN1_HARDEN_MIN_COUNT_REQUIREMENT_V19
+    # TURN1_HARDEN_MIN_COUNT_REQUIREMENT
     # Count distinct physical card instances, not merely "does this card exist".
     pool = zone_cards(st, tracker, req.zone)
     needed = max(1, int(getattr(req, "min_count", 1) or 1))
@@ -648,7 +648,7 @@ def score_candidate_for_missing_targets(
 
 
 def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.Random, going: str, enable_chain_search: bool) -> None:
-    # TURN1_V57_BASE_EXECUTE_BUDGET_GUARD
+    # TURN1_BASE_EXECUTE_BUDGET_GUARD
     if not _turn1_action_budget_allows_next_action(st):
         return None
     if isinstance(action, dict) and action.get("_virtual_action") == "Run Errand":
@@ -1135,7 +1135,7 @@ def trial_goal_prize_status(deck: List[Dict[str, Any]], prizes: Sequence[Dict[st
 
 
 # ---------------------------------------------------------------------
-# TURN1_ACTUAL_START_CONTEXT_V13
+# TURN1_ACTUAL_START_CONTEXT
 # ---------------------------------------------------------------------
 
 def turn1_unique_names_in_order(cards: Sequence[Dict[str, Any]]) -> List[str]:
@@ -1177,7 +1177,7 @@ def turn1_line_action_names(line: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------
-# TURN1_FORMAT_CARD_LIST_WITH_COUNTS_V21
+# TURN1_FORMAT_CARD_LIST_WITH_COUNTS
 # ---------------------------------------------------------------------
 
 def turn1_format_card_list_with_counts(names: Sequence[str]) -> str:
@@ -1289,7 +1289,7 @@ def turn1_played_label(line: str) -> str:
 
 
 # ---------------------------------------------------------------------
-# TURN1_EXCLUDE_PLAYED_PATHS_V15
+# TURN1_EXCLUDE_PLAYED_PATHS
 # ---------------------------------------------------------------------
 
 def turn1_parse_exclude_played(raw: str) -> List[str]:
@@ -1727,7 +1727,7 @@ def turn1_apply_opponent_only_filter(results: List[Dict[str, Any]], deck: Sequen
 
 
 # ---------------------------------------------------------------------
-# TURN1_PRERETURN_INCOMPATIBLE_EFFECT_GUARD_V32
+# TURN1_PRERETURN_INCOMPATIBLE_EFFECT_GUARD
 # ---------------------------------------------------------------------
 # Hard guard for ability/effect labels that are not card names.
 #
@@ -2239,7 +2239,7 @@ def simulate_one_goal_trial(
     if st.active is not None:
         natural_start_draw_cards.append(st.active)
 
-    # TURN1_ENSURE_NATURAL_START_DRAW_CARDS_V14
+    # TURN1_ENSURE_NATURAL_START_DRAW_CARDS
     # Actual cards naturally available before any action line starts.
     # This includes the chosen Active Pokémon, cards remaining in hand after setup,
     # and the natural draw if one happened.
@@ -2290,7 +2290,7 @@ def simulate_one_goal_trial(
     final_missing = missing_requirements(reqs, mode, st, tracker)
     prize_status = trial_goal_prize_status(deck, prizes, reqs)
     line = " -> ".join(st.line) if st.line else "none"
-    # TURN1_APPLY_PRERETURN_INCOMPATIBLE_EFFECT_GUARD_V32
+    # TURN1_APPLY_PRERETURN_INCOMPATIBLE_EFFECT_GUARD
     turn1_blocked_effect_labels = []
     if success_stage is not None and line != "none":
         turn1_blocked_effect_labels = turn1_incompatible_effect_labels_in_line(line, deck, reqs)
@@ -2400,7 +2400,7 @@ def summarize_goal_trials(results: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------
-# TURN1_EFFECT_NAME_COMPATIBILITY_GUARD_V29
+# TURN1_EFFECT_NAME_COMPATIBILITY_GUARD
 # ---------------------------------------------------------------------
 # Previous guards checked played card names. However the line can also contain
 # ability/effect names, for example:
@@ -2742,7 +2742,7 @@ def turn1_apply_effect_name_compatibility_filter(results, deck, reqs):
 
         r["success"] = False
         r["success_stage"] = "incompatible_effect_name_access"
-        r["blocked_incompatible_effect_actions_v29"] = blocked
+        r["blocked_incompatible_effect_actions"] = blocked
         r["missing_requirements"] = [
             "Incompatible effect access: " + ", ".join(actions)
         ]
@@ -2759,7 +2759,7 @@ def turn1_apply_effect_name_compatibility_filter(results, deck, reqs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_PRE_SUMMARY_EFFECT_LABEL_GUARD_V30
+# TURN1_PRE_SUMMARY_EFFECT_LABEL_GUARD
 # ---------------------------------------------------------------------
 # Conservative pre-summary guard for ability/effect labels.
 #
@@ -2822,8 +2822,8 @@ def turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs
         actions = [b["action"] for b in blocked]
 
         r["success"] = False
-        r["success_stage"] = "blocked_incompatible_effect_label_v30"
-        r["blocked_incompatible_effect_labels_v30"] = blocked
+        r["success_stage"] = "blocked_incompatible_effect_label"
+        r["blocked_incompatible_effect_labels"] = blocked
         r["missing_requirements"] = [
             "Blocked incompatible effect label: " + ", ".join(actions)
         ]
@@ -4367,7 +4367,6 @@ def _turn1_neutralize_old_posthoc_effect_filters():
         "turn1_apply_opponent_only_filter",
         "turn1_apply_effect_name_compatibility_filter",
         "turn1_apply_pre_summary_effect_label_compatibility_guard",
-        "turn1_v32_apply_prereturn_incompatible_effect_guard",
     ]
     for name in names_to_noop:
         if name in globals():
@@ -4591,7 +4590,7 @@ def _turn1_apply_opponent_dependent_filter(results, deck):
 #   collapsed to one line label when repeat_count <= compiled/source amount.
 # - if repeat_count exceeds the allowed amount, the trial is marked failed.
 #
-# It avoids the expensive v43 runtime wrapper, keeping hotpath-cache performance.
+# It avoids the expensive runtime wrapper, keeping hotpath-cache performance.
 
 def _turn1_result_normalizer_norm(value):
     import re as _re
@@ -4854,11 +4853,11 @@ def _turn1_normalize_results(results, deck):
 
 
 # ---------------------------------------------------------------------
-# TURN1_DIRECT_ACTION_BUDGET_V56
+# TURN1_DIRECT_ACTION_BUDGET
 # ---------------------------------------------------------------------
 # Direct planner/execution fix, not a wrapper.
 #
-# The 100-trial Chien-Pao profile after v55 showed the real bug:
+# The 100-trial Chien-Pao profile after profiling showed the real bug:
 #   128 simulate_one_goal_trial calls
 #   689,321 execute_action calls
 #
@@ -4959,13 +4958,13 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
     # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD
     opponent_only_filter_summary = turn1_apply_opponent_only_filter(results, deck)
 
-    # TURN1_APPLY_EXCLUDE_PLAYED_PATHS_V15
+    # TURN1_APPLY_EXCLUDE_PLAYED_PATHS
     exclusion_summary = turn1_apply_excluded_played_paths(
         results,
         getattr(args, "exclude_played", ""),
     )
 
-    # TURN1_APPLY_EFFECT_NAME_COMPATIBILITY_GUARD_V29
+    # TURN1_APPLY_EFFECT_NAME_COMPATIBILITY_GUARD
     effect_name_compatibility_summary = turn1_apply_effect_name_compatibility_filter(
         results,
         deck,
@@ -5099,12 +5098,12 @@ def print_compact(result: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------
-# TURN1_PARSE_GOAL_FILE_MIN_COUNT_WRAPPER_V19
+# TURN1_PARSE_GOAL_FILE_MIN_COUNT_WRAPPER
 # ---------------------------------------------------------------------
-_ORIG_PARSE_GOAL_FILE_V19 = parse_goal_file
+_ORIG_PARSE_GOAL_FILE_BEFORE_MIN_COUNT_WRAPPER = parse_goal_file
 
 def parse_goal_file(path: str, default_zone: str = "accessed") -> Tuple[str, str, List[GoalRequirement]]:
-    name, mode, reqs = _ORIG_PARSE_GOAL_FILE_V19(path, default_zone=default_zone)
+    name, mode, reqs = _ORIG_PARSE_GOAL_FILE_BEFORE_MIN_COUNT_WRAPPER(path, default_zone=default_zone)
 
     try:
         data = json.load(open(path, encoding="utf-8-sig"))
@@ -5423,7 +5422,7 @@ def _turn1_source_text_allows_card(
 
 
 # ---------------------------------------------------------------------
-# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE_V53
+# TURN1_DIRECT_CAPACITY_AND_SCORE_CACHE
 # ---------------------------------------------------------------------
 # Direct source edit, not a same-name wrapper stack.
 #
@@ -5873,7 +5872,7 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 
 
 # ---------------------------------------------------------------------
-# TURN1_MEOWTH_FILTER_FIX_V23
+# TURN1_MEOWTH_FILTER_FIX
 # ---------------------------------------------------------------------
 # Fixes a bug introduced by the multi-goal search executor.
 #
@@ -5890,9 +5889,9 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
 #   2. Make the goal-search executor's search filter gate stricter for Supporter/Trainer/Item/
 #      Pokémon/Energy text so cards cannot search outside their printed filter.
 
-_ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23 = _turn1_search_filter_allows_for_action
-_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V23 = _turn1_score_playable_card_for_goal
-_ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23 = _turn1_execute_goal_search_card
+_ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_MEOWTH_FILTER_FIX = _turn1_search_filter_allows_for_action
+_ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_MEOWTH_FILTER_FIX = _turn1_score_playable_card_for_goal
+_ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_MEOWTH_FILTER_FIX = _turn1_execute_goal_search_card
 
 
 def _turn1_goal_search_filter_norm_text(value: Any) -> str:
@@ -5928,7 +5927,7 @@ def _turn1_goal_search_filter_card_is_stadium(card: Dict[str, Any]) -> bool:
 def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str, Any], action_name: str) -> bool:
     """Goal-aware search filter used by the goal-search executor.
 
-    TURN1_V66_GOAL_SEARCH_OR_FILTERS
+    TURN1_GOAL_SEARCH_OR_FILTERS
 
     Direct replacement for the old sequential raw-text gate. The old version
     returned as soon as it saw phrases like "basic energy", which broke OR
@@ -6118,7 +6117,7 @@ def _turn1_search_filter_allows_for_action(filt: Dict[str, Any], card: Dict[str,
         return any(test(card) for test in tests)
 
     # Fallback to the original goal-search / target-finder compiled filter behavior.
-    return _ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_V23(filt, card, action_name)
+    return _ORIG_SEARCH_FILTER_ALLOWS_FOR_ACTION_BEFORE_MEOWTH_FILTER_FIX(filt, card, action_name)
 
 
 def _turn1_original_single_target_score_for_goal(
@@ -6155,7 +6154,7 @@ def _turn1_score_playable_card_for_goal(
     except Exception:
         pass
 
-    return _ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_V23(
+    return _ORIG_SCORE_PLAYABLE_CARD_FOR_GOAL_BEFORE_MEOWTH_FILTER_FIX(
         card,
         st,
         reqs,
@@ -6184,7 +6183,7 @@ def _turn1_execute_goal_search_card(
     except Exception:
         pass
 
-    return _ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_V23(
+    return _ORIG_EXECUTE_GOAL_SEARCH_CARD_BEFORE_MEOWTH_FILTER_FIX(
         st,
         card,
         rng,
@@ -7922,7 +7921,7 @@ def turn1_result_goal_filter_results(results, deck, reqs):
 # Wrap the trial simulator last. Prefer a pre-unvalidated-effect-guard base if present so the earlier
 # "block all non-card labels" wrapper does not incorrectly kill valid Shivery Chill
 # lines for Basic Water Energy goals.
-_TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD") or globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_V32") or simulate_one_goal_trial
+_TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER = globals().get("_ORIG_SIMULATE_ONE_GOAL_TRIAL_BEFORE_UNVALIDATED_EFFECT_GUARD") or simulate_one_goal_trial
 
 def simulate_one_goal_trial(*args, **kwargs):
     result = _TURN1_BASE_SIMULATE_BEFORE_RESULT_GOAL_FILTER(*args, **kwargs)
@@ -8181,8 +8180,6 @@ for _turn1_runtime_cache_wrapper_name in [
     # result-goal and later helper families, if present
     "turn1_result_goal_filter_goal_classes",
     "turn1_result_goal_filter_classes_from_text",
-    "turn1_v38_goal_classes",
-    "turn1_v38_access_classes_from_text",
 ]:
     try:
         if _turn1_install_runtime_cache_wrapper(_turn1_runtime_cache_wrapper_name):
@@ -8432,7 +8429,7 @@ TURN1_HOTPATH_CLASSIFICATION_CACHE = {
 
 # ---------------------------------------------------------------------
 
-# TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
+# TURN1_CLEAN_CANONICAL_GOAL_SELECTOR
 # Canonical source-bound goal selector.
 #
 # This replaces the patch-stack selector path with one readable rule:
@@ -8635,7 +8632,7 @@ def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, actio
     if specific is not None:
         return bool(specific)
 
-    # Then use the existing v67 printed/source-text guard.
+    # Then use the existing printed/source-text guard.
     try:
         if "_turn1_source_text_allows_card" in globals():
             if not _turn1_source_text_allows_card(
@@ -8671,7 +8668,7 @@ def _turn1_goal_select_from_deck(
     action_card=None,
     source_step=None,
 ) -> List[Dict[str, Any]]:
-    # TURN1_CLEAN_CANONICAL_GOAL_SELECTOR_V1
+    # TURN1_CLEAN_CANONICAL_GOAL_SELECTOR
     selected: List[Dict[str, Any]] = []
     if amount <= 0:
         return selected
