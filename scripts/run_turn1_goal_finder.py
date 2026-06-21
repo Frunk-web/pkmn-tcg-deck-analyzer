@@ -1753,18 +1753,18 @@ def turn1_effect_label_actions_from_line(line):
 
 
 def turn1_effect_label_incompatibility_reason(action_label, deck, reqs):
-    ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
+    ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs)
     if ok:
         return None
 
-    # If v35 says this was not an effect label, do not block it here.
+    # If the effect-goal compatibility layer says this was not an effect label, do not block it here.
     if reason == "not_effect_label":
         return None
 
     return reason
 
 
-# TURN1_V35_PATCHED_V32_COMPAT
+# TURN1_EFFECT_GOAL_COMPAT_PATCHED_EFFECT_LABEL_COMPAT
 def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
     blocked = []
     for action in turn1_effect_label_actions_from_line(line):
@@ -2779,11 +2779,11 @@ def turn1_apply_effect_name_compatibility_filter(results, deck, reqs):
 # because Shivery Chill searches Basic Water Energy, not Pokémon.
 
 def turn1_pre_summary_effect_label_is_compatible(action_label, deck, reqs):
-    ok, reason = _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs)
+    ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs)
     return ok, reason
 
 
-# TURN1_V35_PATCHED_V30_COMPAT
+# TURN1_EFFECT_GOAL_COMPAT_PATCHED_PRE_SUMMARY_EFFECT_LABEL_COMPAT
 def turn1_pre_summary_effect_label_actions_from_line(line):
     raw = str(line or "").strip()
 
@@ -3309,7 +3309,7 @@ def _turn1_unvalidated_effect_guard_actions(line, deck, reqs=None):
         if action_norm in card_names:
             continue
 
-        ok, reason = _turn1_v35_effect_label_compatible_with_goal(action, deck, reqs or [])
+        ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action, deck, reqs or [])
         if ok:
             continue
 
@@ -3336,7 +3336,7 @@ def simulate_one_goal_trial(*args, **kwargs):
             return result
 
         deck = _turn1_unvalidated_effect_guard_find_deck_from_call(args, kwargs)
-        reqs = _turn1_v35_find_reqs_from_call(args, kwargs)
+        reqs = _turn1_effect_goal_compat_find_reqs_from_call(args, kwargs)
         blocked = _turn1_unvalidated_effect_guard_actions(line, deck, reqs)
 
         if not blocked:
@@ -3932,7 +3932,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------
-# TURN1_VALIDATED_EFFECT_LABELS_V35
+# TURN1_VALIDATED_EFFECT_LABELS
 # ---------------------------------------------------------------------
 # Root fix for ability/effect labels in Turn-1 access lines.
 #
@@ -3959,7 +3959,7 @@ def simulate_one_goal_trial(*args, **kwargs):
 #   - Opponent-only disruption is blocked.
 
 
-def _turn1_v35_norm(value):
+def _turn1_effect_goal_compat_norm(value):
     import re as _re
     import unicodedata as _unicodedata
 
@@ -3972,7 +3972,7 @@ def _turn1_v35_norm(value):
     return s.strip()
 
 
-def _turn1_v35_flatten_strings(obj, max_items=7000):
+def _turn1_effect_goal_compat_flatten_strings(obj, max_items=7000):
     out = []
     seen = set()
 
@@ -4006,7 +4006,7 @@ def _turn1_v35_flatten_strings(obj, max_items=7000):
     return " ".join(out)
 
 
-def _turn1_v35_card_name(card):
+def _turn1_effect_goal_compat_card_name(card):
     try:
         return tf.card_name(card)
     except Exception:
@@ -4025,7 +4025,7 @@ def _turn1_v35_card_name(card):
     return ""
 
 
-def _turn1_v35_card_identity_blob(card):
+def _turn1_effect_goal_compat_card_identity_blob(card):
     if not isinstance(card, dict):
         return str(card or "")
 
@@ -4045,16 +4045,16 @@ def _turn1_v35_card_identity_blob(card):
             elif val is not None:
                 parts.append(str(val))
 
-    name = _turn1_v35_card_name(card)
+    name = _turn1_effect_goal_compat_card_name(card)
     if name:
         parts.append(name)
 
     return " ".join(parts)
 
 
-def _turn1_v35_classes_for_card_or_text(value):
-    blob = _turn1_v35_norm(
-        _turn1_v35_card_identity_blob(value) if isinstance(value, dict) else str(value or "")
+def _turn1_effect_goal_compat_classes_for_card_or_text(value):
+    blob = _turn1_effect_goal_compat_norm(
+        _turn1_effect_goal_compat_card_identity_blob(value) if isinstance(value, dict) else str(value or "")
     )
 
     classes = set()
@@ -4111,7 +4111,7 @@ def _turn1_v35_classes_for_card_or_text(value):
     return classes
 
 
-def _turn1_v35_find_reqs_from_call(args, kwargs):
+def _turn1_effect_goal_compat_find_reqs_from_call(args, kwargs):
     # Preferred explicit names first.
     for key in ["reqs", "requirements", "goal_reqs"]:
         val = kwargs.get(key)
@@ -4130,7 +4130,7 @@ def _turn1_v35_find_reqs_from_call(args, kwargs):
     return []
 
 
-def _turn1_v35_goal_classes(reqs, deck):
+def _turn1_effect_goal_compat_goal_classes(reqs, deck):
     classes = set()
 
     for req in reqs or []:
@@ -4144,44 +4144,44 @@ def _turn1_v35_goal_classes(reqs, deck):
             for opt in opts:
                 try:
                     if card_matches_option(card, opt):
-                        classes.update(_turn1_v35_classes_for_card_or_text(card))
+                        classes.update(_turn1_effect_goal_compat_classes_for_card_or_text(card))
                         matched_any = True
                 except Exception:
                     pass
 
         # Fallback when the matching card cannot be found in the loaded deck.
         if label:
-            classes.update(_turn1_v35_classes_for_card_or_text(label))
+            classes.update(_turn1_effect_goal_compat_classes_for_card_or_text(label))
         for opt in opts:
-            classes.update(_turn1_v35_classes_for_card_or_text(str(opt)))
+            classes.update(_turn1_effect_goal_compat_classes_for_card_or_text(str(opt)))
 
     return classes
 
 
-def _turn1_v35_deck_card_names(deck):
+def _turn1_effect_goal_compat_deck_card_names(deck):
     names = set()
     for card in deck or []:
-        name = _turn1_v35_card_name(card)
+        name = _turn1_effect_goal_compat_card_name(card)
         if name:
-            names.add(_turn1_v35_norm(name))
+            names.add(_turn1_effect_goal_compat_norm(name))
     return names
 
 
-def _turn1_v35_effect_texts_for_label(action_label, deck):
-    action_norm = _turn1_v35_norm(action_label)
+def _turn1_effect_goal_compat_effect_texts_for_label(action_label, deck):
+    action_norm = _turn1_effect_goal_compat_norm(action_label)
     if not action_norm:
         return []
 
     # Physical card names are not effect labels.
-    if action_norm in _turn1_v35_deck_card_names(deck):
+    if action_norm in _turn1_effect_goal_compat_deck_card_names(deck):
         return []
 
     texts = []
 
     def walk(obj):
         if isinstance(obj, dict):
-            local_blob = _turn1_v35_flatten_strings(obj)
-            if action_norm in _turn1_v35_norm(local_blob):
+            local_blob = _turn1_effect_goal_compat_flatten_strings(obj)
+            if action_norm in _turn1_effect_goal_compat_norm(local_blob):
                 texts.append(local_blob)
                 return
             for v in obj.values():
@@ -4193,8 +4193,8 @@ def _turn1_v35_effect_texts_for_label(action_label, deck):
     for card in deck or []:
         if not isinstance(card, dict):
             continue
-        card_blob = _turn1_v35_flatten_strings(card)
-        if action_norm not in _turn1_v35_norm(card_blob):
+        card_blob = _turn1_effect_goal_compat_flatten_strings(card)
+        if action_norm not in _turn1_effect_goal_compat_norm(card_blob):
             continue
 
         before = len(texts)
@@ -4206,17 +4206,17 @@ def _turn1_v35_effect_texts_for_label(action_label, deck):
     out = []
     seen = set()
     for t in texts:
-        n = _turn1_v35_norm(t)
+        n = _turn1_effect_goal_compat_norm(t)
         if n and n not in seen:
             seen.add(n)
             out.append(t)
     return out
 
 
-def _turn1_v35_access_classes_from_effect_text(text):
+def _turn1_effect_goal_compat_access_classes_from_effect_text(text):
     import re as _re
 
-    t = _turn1_v35_norm(text)
+    t = _turn1_effect_goal_compat_norm(text)
     classes = set()
 
     if not t:
@@ -4286,7 +4286,7 @@ def _turn1_v35_access_classes_from_effect_text(text):
     return classes
 
 
-def _turn1_v35_classes_compatible(access_classes, goal_classes):
+def _turn1_effect_goal_compat_classes_compatible(access_classes, goal_classes):
     if not access_classes:
         return False
 
@@ -4327,22 +4327,22 @@ def _turn1_v35_classes_compatible(access_classes, goal_classes):
     return False
 
 
-def _turn1_v35_effect_label_compatible_with_goal(action_label, deck, reqs):
-    texts = _turn1_v35_effect_texts_for_label(action_label, deck)
+def _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs):
+    texts = _turn1_effect_goal_compat_effect_texts_for_label(action_label, deck)
 
     # Not an effect label. Card names are handled elsewhere.
     if not texts:
         return True, "not_effect_label"
 
-    goal_classes = _turn1_v35_goal_classes(reqs, deck)
+    goal_classes = _turn1_effect_goal_compat_goal_classes(reqs, deck)
     if not goal_classes:
         return False, "effect_label_but_goal_unclassified"
 
     access_classes = set()
     for t in texts:
-        access_classes.update(_turn1_v35_access_classes_from_effect_text(t))
+        access_classes.update(_turn1_effect_goal_compat_access_classes_from_effect_text(t))
 
-    if _turn1_v35_classes_compatible(access_classes, goal_classes):
+    if _turn1_effect_goal_compat_classes_compatible(access_classes, goal_classes):
         return True, f"validated_effect_access:{sorted(access_classes)}"
 
     return False, f"incompatible_effect_access:access={sorted(access_classes)}:goal={sorted(goal_classes)}"
@@ -4380,9 +4380,9 @@ def _turn1_neutralize_old_posthoc_effect_filters():
     if "_turn1_unvalidated_effect_guard_actions" in globals():
         globals()["_turn1_unvalidated_effect_guard_actions"] = lambda line, deck: []
 
-    # v0.35 had a validated-effect pass, but it was still not the source of truth.
-    if "_turn1_v35_unvalidated_effect_actions" in globals():
-        globals()["_turn1_v35_unvalidated_effect_actions"] = lambda line, deck, reqs=None: []
+    # effect-goal-compat had a validated-effect pass, but it was still not the source of truth.
+    if "_turn1_effect_goal_compat_unvalidated_effect_actions" in globals():
+        globals()["_turn1_effect_goal_compat_unvalidated_effect_actions"] = lambda line, deck, reqs=None: []
 
 
 _turn1_neutralize_old_posthoc_effect_filters()
