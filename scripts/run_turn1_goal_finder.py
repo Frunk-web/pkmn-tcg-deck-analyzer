@@ -1,5 +1,5 @@
 # TURN1_DEWRAP_DIRECT_GOAL_FILTER
-# TURN1_V62_PRECISE_SEARCH_FILTER_COMPAT
+# TURN1_PRECISE_SEARCH_FILTER_COMPAT
 # TURN1_V57_ACTION_BUDGET_SINGLE_COUNT
 # TURN1_DIRECT_ACTION_BUDGET_V56
 # TURN1_DIRECT_CARD_MATCH_CACHE_V54
@@ -6913,7 +6913,7 @@ def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
 
 
 # ---------------------------------------------------------------------
-# TURN1_V62_PRECISE_SEARCH_FILTER_COMPAT
+# TURN1_PRECISE_SEARCH_FILTER_COMPAT
 # ---------------------------------------------------------------------
 # Direct fix, not a wrapper:
 # Replace the old coarse category-only compatibility check with a precise
@@ -6934,14 +6934,14 @@ def turn1_v27_categories_compatible(search_cats: set, card_cats: set) -> bool:
 #      filters are unavailable.
 
 
-def _turn1_v62_norm(value: Any) -> str:
+def _turn1_search_text_target_filter_norm(value: Any) -> str:
     try:
         return turn1_v27_norm_blob(str(value or ""))
     except Exception:
         return str(value or "").lower().strip()
 
 
-def _turn1_v62_flatten_strings(obj: Any, max_items: int = 4000) -> str:
+def _turn1_search_text_target_filter_flatten_strings(obj: Any, max_items: int = 4000) -> str:
     out: List[str] = []
     seen = set()
 
@@ -6970,7 +6970,7 @@ def _turn1_v62_flatten_strings(obj: Any, max_items: int = 4000) -> str:
     return " ".join(out)
 
 
-def _turn1_v62_card_name(card: Any) -> str:
+def _turn1_search_text_target_filter_card_name(card: Any) -> str:
     try:
         return tf.card_name(card)
     except Exception:
@@ -6981,18 +6981,18 @@ def _turn1_v62_card_name(card: Any) -> str:
     return str(card or "")
 
 
-def _turn1_v62_card_supertype(card: Any) -> str:
+def _turn1_search_text_target_filter_card_supertype(card: Any) -> str:
     try:
-        return _turn1_v62_norm(tf.card_supertype(card))
+        return _turn1_search_text_target_filter_norm(tf.card_supertype(card))
     except Exception:
         pass
     if isinstance(card, dict):
         ident = card.get("identity") or {}
-        return _turn1_v62_norm(card.get("supertype") or ident.get("supertype") or "")
+        return _turn1_search_text_target_filter_norm(card.get("supertype") or ident.get("supertype") or "")
     return ""
 
 
-def _turn1_v62_card_subtypes(card: Any) -> set:
+def _turn1_search_text_target_filter_card_subtypes(card: Any) -> set:
     vals = []
     if isinstance(card, dict):
         ident = card.get("identity") or {}
@@ -7002,10 +7002,10 @@ def _turn1_v62_card_subtypes(card: Any) -> set:
                 vals.append(v)
             elif isinstance(v, (list, tuple, set)):
                 vals.extend(v)
-    return {_turn1_v62_norm(v) for v in vals if str(v or "").strip()}
+    return {_turn1_search_text_target_filter_norm(v) for v in vals if str(v or "").strip()}
 
 
-def _turn1_v62_card_types(card: Any) -> set:
+def _turn1_search_text_target_filter_card_types(card: Any) -> set:
     vals = []
     if isinstance(card, dict):
         ident = card.get("identity") or {}
@@ -7015,10 +7015,10 @@ def _turn1_v62_card_types(card: Any) -> set:
                 vals.append(v)
             elif isinstance(v, (list, tuple, set)):
                 vals.extend(v)
-    return {_turn1_v62_norm(v) for v in vals if str(v or "").strip()}
+    return {_turn1_search_text_target_filter_norm(v) for v in vals if str(v or "").strip()}
 
 
-def _turn1_v62_card_hp(card: Any) -> int:
+def _turn1_search_text_target_filter_card_hp(card: Any) -> int:
     if isinstance(card, dict):
         ident = card.get("identity") or {}
         for key in ["hp", "HP"]:
@@ -7030,9 +7030,9 @@ def _turn1_v62_card_hp(card: Any) -> int:
     return 0
 
 
-def _turn1_v62_card_has_rule_box(card: Any) -> bool:
-    blob = _turn1_v62_norm(_turn1_v62_flatten_strings(card))
-    name = _turn1_v62_norm(_turn1_v62_card_name(card))
+def _turn1_search_text_target_filter_card_has_rule_box(card: Any) -> bool:
+    blob = _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_flatten_strings(card))
+    name = _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_card_name(card))
     # Conservative: cards with explicit Rule Box text or common rule-box suffixes.
     return (
         "rule box" in blob
@@ -7045,7 +7045,7 @@ def _turn1_v62_card_has_rule_box(card: Any) -> bool:
     )
 
 
-def _turn1_v62_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str, Any]]:
+def _turn1_search_text_target_filter_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str, Any]]:
     pools: List[Any] = []
     for zone in ["deck", "hand", "discard", "bench", "prizes"]:
         try:
@@ -7066,7 +7066,7 @@ def _turn1_v62_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str
         try:
             ok = tf.target_matches(c, target_norm)
         except Exception:
-            ok = _turn1_v62_norm(_turn1_v62_card_name(c)) == _turn1_v62_norm(target_norm)
+            ok = _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_card_name(c)) == _turn1_search_text_target_filter_norm(target_norm)
         if ok:
             key = id(c)
             if key not in seen:
@@ -7075,7 +7075,7 @@ def _turn1_v62_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str
     return out
 
 
-def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
+def _turn1_search_text_target_filter_action_search_steps(action: Any) -> List[Any]:
     steps: List[Any] = []
     seen = set()
 
@@ -7120,29 +7120,29 @@ def _turn1_v62_action_search_steps(action: Any) -> List[Any]:
     return steps
 
 
-def _turn1_v62_action_blob(action: Any) -> str:
+def _turn1_search_text_target_filter_action_blob(action: Any) -> str:
     try:
         source, effect, _va = turn1_v27_action_source_and_effect(action)
     except Exception:
         source, effect = action, None
-    return _turn1_v62_norm(_turn1_v62_flatten_strings(effect) + " " + _turn1_v62_flatten_strings(source) + " " + _turn1_v62_flatten_strings(action))
+    return _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_flatten_strings(effect) + " " + _turn1_search_text_target_filter_flatten_strings(source) + " " + _turn1_search_text_target_filter_flatten_strings(action))
 
 
-def _turn1_v62_text_allows_target(action_blob: str, target_card: Dict[str, Any]) -> bool:
+def _turn1_search_text_target_filter_text_allows_target(action_blob: str, target_card: Dict[str, Any]) -> bool:
     """Fallback for text not represented by structured filters."""
-    s = _turn1_v62_norm(action_blob)
+    s = _turn1_search_text_target_filter_norm(action_blob)
     if not s:
         return False
 
-    stype = _turn1_v62_card_supertype(target_card)
-    subtypes = _turn1_v62_card_subtypes(target_card)
-    types = _turn1_v62_card_types(target_card)
-    hp = _turn1_v62_card_hp(target_card)
+    stype = _turn1_search_text_target_filter_card_supertype(target_card)
+    subtypes = _turn1_search_text_target_filter_card_subtypes(target_card)
+    types = _turn1_search_text_target_filter_card_types(target_card)
+    hp = _turn1_search_text_target_filter_card_hp(target_card)
     is_pokemon = stype == "pokemon"
     is_energy = stype == "energy"
     is_trainer = stype == "trainer"
     is_basic = "basic" in subtypes
-    no_rule_box = not _turn1_v62_card_has_rule_box(target_card)
+    no_rule_box = not _turn1_search_text_target_filter_card_has_rule_box(target_card)
 
     # Explicit negative/positional categories.
     if "opponent" in s and "your opponent" in s and not any(x in s for x in ["your deck", "your hand"]):
@@ -7220,9 +7220,9 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
         return False
 
     # Resolve the proposed target to actual card(s) and use the same search
-    # filter machinery that execution uses. This is the important v62 change.
-    matching_cards = _turn1_v62_target_cards_for_norm(st, target_norm)
-    steps = _turn1_v62_action_search_steps(action)
+    # filter machinery that execution uses. This is the important precise-search-filter change.
+    matching_cards = _turn1_search_text_target_filter_target_cards_for_norm(st, target_norm)
+    steps = _turn1_search_text_target_filter_action_search_steps(action)
     action_name = action_label(action)
 
     if matching_cards and steps:
@@ -7239,16 +7239,16 @@ def turn1_v27_target_compatible_with_action_filter(st: Any, target_norm: str, ac
                     pass
                 # Some compiled filters are incomplete; use printed/compiled text fallback.
                 try:
-                    if _turn1_v62_text_allows_target(_turn1_v62_action_blob(action), target_card):
+                    if _turn1_search_text_target_filter_text_allows_target(_turn1_search_text_target_filter_action_blob(action), target_card):
                         return True
                 except Exception:
                     pass
         return False
 
     if matching_cards:
-        action_blob = _turn1_v62_action_blob(action)
+        action_blob = _turn1_search_text_target_filter_action_blob(action)
         for target_card in matching_cards:
-            if _turn1_v62_text_allows_target(action_blob, target_card):
+            if _turn1_search_text_target_filter_text_allows_target(action_blob, target_card):
                 return True
         if search_cats:
             return any(turn1_v27_categories_compatible(search_cats, turn1_v27_card_categories(c)) for c in matching_cards)
