@@ -43,6 +43,7 @@ import requests
 import streamlit as st
 
 from src.deck_parser import DeckCard
+from src.card_index import get_card_index
 
 
 POKEMON_TCG_API_BASE = "https://api.pokemontcg.io/v2"
@@ -338,11 +339,30 @@ def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
 
 
 def attach_metadata(deck):
-    cache = load_cache()
-    updated = []
+    """Attach card metadata using the preloaded local card index first.
 
+    If a card is not present in the local index, fall back to the existing
+    API/cache path. This keeps current behavior but removes API/cache work for
+    cards already present in data/all_cards.csv.
+    """
+    cache = load_cache()
+    try:
+        card_index = get_card_index()
+    except Exception:
+        card_index = None
+
+    updated = []
     for card in deck:
-        updated.append(fetch_card_metadata(card, cache))
+        indexed_card = None
+        if card_index is not None:
+            try:
+                indexed_card = card_index.attach_metadata(card)
+            except Exception:
+                indexed_card = None
+        if indexed_card is not None:
+            updated.append(indexed_card)
+        else:
+            updated.append(fetch_card_metadata(card, cache))
 
     save_cache(cache)
     return updated
