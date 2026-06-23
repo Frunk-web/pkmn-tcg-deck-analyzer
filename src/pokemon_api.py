@@ -303,7 +303,36 @@ def find_best_api_match(card: DeckCard) -> Optional[dict]:
     return api_card
 
 
+def try_attach_local_card_index_metadata(card: DeckCard) -> Optional[DeckCard]:
+    """Attach metadata from the prebuilt local index before using the API.
+
+    The web deployment should hit this path for normal deck analysis. If the
+    index is missing or a card cannot be found locally, callers fall back to the
+    existing API/cache behavior.
+    """
+
+    if get_card_index is None:
+        return None
+
+    try:
+        matched = get_card_index().attach_metadata(card)
+    except Exception:
+        return None
+
+    if matched is None:
+        return None
+
+    if is_basic_energy_card(matched) and not (matched.image_url or matched.image_large_url):
+        matched = apply_basic_energy_fallback_metadata(matched)
+
+    return matched
+
+
 def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
+    local_card = try_attach_local_card_index_metadata(card)
+    if local_card is not None:
+        return local_card
+
     key = make_cache_key(card.name, card.set_code, card.collector_number)
 
     if key in cache:
