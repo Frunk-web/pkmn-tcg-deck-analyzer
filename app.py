@@ -17,6 +17,16 @@ from typing import Iterable
 
 import pandas as pd
 import streamlit as st
+
+# PRELOAD_CARD_INDEX_ON_APP_STARTUP
+# Warm the local card index as the Streamlit app starts. The index itself is
+# cached in src.card_index, so later Analyze Deck clicks reuse the same object.
+try:
+    from src.card_index import get_card_index as _get_preloaded_card_index
+    _get_preloaded_card_index()
+except Exception:
+    pass
+
 from src.turn1_access_page import render_turn1_access_tab
 
 from src.analysis import analyze_deck_opening_hand, format_probability_table
