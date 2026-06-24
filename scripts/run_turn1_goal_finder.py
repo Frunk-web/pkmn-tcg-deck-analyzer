@@ -37,6 +37,7 @@ import copy
 import os
 import re
 import random
+from concurrent.futures import ProcessPoolExecutor
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -4993,6 +4994,171 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
     }
 
 
+
+# ---------------------------------------------------------------------
+# TURN1_PARALLEL_GOAL_TRIALS
+# ---------------------------------------------------------------------
+def _turn1_trial_worker_count(args: argparse.Namespace, trials: int) -> int:
+    try:
+        requested = int(getattr(args, "workers", 1) or 1)
+    except Exception:
+        requested = 1
+    if requested <= 1 or trials <= 1:
+        return 1
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(requested, cpu_count, int(trials)))
+
+
+def _turn1_serial_goal_trials(
+    args: argparse.Namespace,
+    deck: List[Dict[str, Any]],
+    reqs: Sequence[GoalRequirement],
+    mode: str,
+    going: str,
+) -> List[Dict[str, Any]]:
+    _turn1_set_action_budget_from_args(args)
+    rng = random.Random(args.seed + (0 if going == "first" else 1000003))
+    return [
+        simulate_one_goal_trial(
+            deck=deck,
+            rng=rng,
+            reqs=reqs,
+            mode=mode,
+            going=going,
+            hand_size=args.hand_size,
+            prize_count=args.prizes,
+            use_mulligans=not args.no_mulligans,
+            draw_for_turn=not args.no_draw_for_turn,
+            max_actions=args.max_actions,
+            enable_chain_search=args.chain_search,
+            goal_zone=args.goal_zone,
+        )
+        for _ in range(args.trials)
+    ]
+
+
+def _turn1_install_parallel_worker_patches(args: argparse.Namespace) -> None:
+    # When launched through run_turn1_goal_finder_strict.py, the parent process
+    # has extra strict-runtime monkey patches installed. Spawned worker processes
+    # start fresh, so reinstall those patches inside each worker before trials.
+    if bool(getattr(args, "_strict_runtime_wrapper", False)):
+        try:
+            import run_turn1_goal_finder_strict as _strict_wrapper  # type: ignore
+            if hasattr(_strict_wrapper, "install"):
+                _strict_wrapper.install()
+        except Exception:
+            # Keep the worker usable even if the strict wrapper is unavailable.
+            pass
+    try:
+        install_goal_safety_patches()
+    except Exception:
+        pass
+    _turn1_set_action_budget_from_args(args)
+
+
+def _turn1_goal_trial_batch_worker(payload: Tuple[Any, ...]) -> List[Dict[str, Any]]:
+    args, deck, reqs, mode, going, start_index, count = payload
+    _turn1_install_parallel_worker_patches(args)
+    base_seed = int(getattr(args, "seed", 123) or 123) + (0 if going == "first" else 1000003)
+    out: List[Dict[str, Any]] = []
+    for offset in range(int(count)):
+        # Per-trial seeding keeps parallel output deterministic for a fixed seed
+        # regardless of how the work is chunked.
+        rng = random.Random(base_seed + int(start_index) + offset)
+        out.append(
+            simulate_one_goal_trial(
+                deck=deck,
+                rng=rng,
+                reqs=reqs,
+                mode=mode,
+                going=going,
+                hand_size=args.hand_size,
+                prize_count=args.prizes,
+                use_mulligans=not args.no_mulligans,
+                draw_for_turn=not args.no_draw_for_turn,
+                max_actions=args.max_actions,
+                enable_chain_search=args.chain_search,
+                goal_zone=args.goal_zone,
+            )
+        )
+    return out
+
+
+def _turn1_parallel_goal_trials(
+    args: argparse.Namespace,
+    deck: List[Dict[str, Any]],
+    reqs: Sequence[GoalRequirement],
+    mode: str,
+    going: str,
+) -> List[Dict[str, Any]]:
+    trials = max(0, int(getattr(args, "trials", 0) or 0))
+    workers = _turn1_trial_worker_count(args, trials)
+    # Process startup/pickling overhead is not worth it for tiny runs.
+    if workers <= 1 or trials < 100:
+        return _turn1_serial_goal_trials(args, deck, reqs, mode, going)
+
+    base = trials // workers
+    rem = trials % workers
+    payloads = []
+    start = 0
+    for i in range(workers):
+        count = base + (1 if i < rem else 0)
+        if count <= 0:
+            continue
+        payloads.append((args, deck, reqs, mode, going, start, count))
+        start += count
+
+    results: List[Dict[str, Any]] = []
+    with ProcessPoolExecutor(max_workers=len(payloads)) as pool:
+        for batch in pool.map(_turn1_goal_trial_batch_worker, payloads):
+            results.extend(batch)
+    return results
+
+
+# Override the earlier serial scenario runner with an opt-in parallel version.
+def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs: Sequence[GoalRequirement], mode: str, going: str) -> Dict[str, Any]:
+    results = _turn1_parallel_goal_trials(args, deck, reqs, mode, going)
+
+    # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD
+    opponent_only_filter_summary = turn1_apply_opponent_only_filter(results, deck)
+
+    # TURN1_APPLY_EXCLUDE_PLAYED_PATHS
+    exclusion_summary = turn1_apply_excluded_played_paths(
+        results,
+        getattr(args, "exclude_played", ""),
+    )
+
+    # TURN1_APPLY_EFFECT_NAME_COMPATIBILITY_GUARD
+    effect_name_compatibility_summary = turn1_apply_effect_name_compatibility_filter(
+        results,
+        deck,
+        reqs,
+    )
+
+    # TURN1_APPLY_SEARCH_TARGET_TYPE_SYSTEM
+    results = turn1_result_goal_filter_results(results, deck, reqs)
+
+    # TURN1_APPLY_OPPONENT_DEPENDENT_FILTER
+    opponent_dependent_filter_summary = _turn1_apply_opponent_dependent_filter(results, deck)
+
+    # TURN1_APPLY_ACTIVE_REPEAT_NORMALIZATION
+    active_repeat_normalization_summary = _turn1_normalize_results(results, deck)
+
+    examples = [r for r in results if r["success"] and r["line"] != "none"][: args.example_lines]
+    failures = [r for r in results if not r["success"]][: args.example_lines]
+
+    return {
+        "going": going,
+        "summary": (turn1_apply_pre_summary_effect_label_compatibility_guard(results, deck, reqs), summarize_goal_trials(results))[1],
+        "effect_name_compatibility_summary": effect_name_compatibility_summary,
+        "played_exclusion_summary": exclusion_summary,
+        "opponent_only_filter_summary": opponent_only_filter_summary,
+        "active_repeat_normalization_summary": active_repeat_normalization_summary,
+        "parallel_workers": _turn1_trial_worker_count(args, int(getattr(args, "trials", 0) or 0)),
+        "example_successes": examples,
+        "example_failures": failures,
+    }
+
 def write_json(path: str, result: Dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -7954,6 +8120,7 @@ def main() -> None:
     ap.add_argument("--going", choices=["first", "second", "both"], default="both")
     ap.add_argument("--trials", type=int, default=20000)
     ap.add_argument("--seed", type=int, default=123)
+    ap.add_argument("--workers", type=int, default=1, help="Parallel worker processes for Monte Carlo trials. Use 1 to disable parallelism.")
     ap.add_argument("--hand-size", type=int, default=7)
     ap.add_argument("--prizes", type=int, default=6)
     ap.add_argument("--max-actions", type=int, default=30)
@@ -7967,6 +8134,11 @@ def main() -> None:
     ap.add_argument("--csv-out", default=default_report_file("turn1_goal_finder_summary.csv"))
     ap.add_argument("--lines-csv", default=default_report_file("turn1_goal_finder_lines.csv"))
     args = ap.parse_args()
+    try:
+        _main_file = os.path.basename(str(getattr(sys.modules.get("__main__"), "__file__", "")))
+        setattr(args, "_strict_runtime_wrapper", _main_file == "run_turn1_goal_finder_strict.py")
+    except Exception:
+        setattr(args, "_strict_runtime_wrapper", False)
 
     install_goal_safety_patches()
 

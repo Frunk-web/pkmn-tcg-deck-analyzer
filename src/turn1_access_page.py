@@ -75,12 +75,16 @@ def _turn1_v45_capped_goal_finder_cmd(cmd):
 
     max_trials = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_TRIALS", 100)
     max_actions = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_ACTIONS", 6)
+    max_workers = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_WORKERS", 2)
 
     cmd, change = _turn1_v45_cap_flag(cmd, "--trials", max_trials)
     if change:
         changes.append(change)
 
     cmd, change = _turn1_v45_cap_flag(cmd, "--max-actions", max_actions)
+    if change:
+        changes.append(change)
+    cmd, change = _turn1_v45_cap_flag(cmd, "--workers", max_workers)
     if change:
         changes.append(change)
 
@@ -153,6 +157,7 @@ def _turn1_v45_subprocess_run_with_timeout(*args, **kwargs):
 subprocess.run = _turn1_v45_subprocess_run_with_timeout
 
 
+import os
 import sys
 import time
 from datetime import datetime
@@ -800,6 +805,7 @@ def _run_goal_finder(
     seed: int,
     max_actions: int,
     example_lines: int,
+    workers: int,
     complete_only: bool,
     chain_search: bool,
     goal_quantities: dict[str, int] | None = None,
@@ -1258,6 +1264,7 @@ def _run_goal_finder(
     seed: int,
     max_actions: int,
     example_lines: int,
+    workers: int,
     complete_only: bool,
     chain_search: bool,
     goal_quantities: dict[str, int] | None = None,
@@ -1574,6 +1581,17 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
 
         with r3:
             max_actions = st.number_input("Max actions", min_value=1, max_value=30, value=6, step=1, key="turn1_max_actions_v09")
+            worker_max = max(1, min(8, os.cpu_count() or 1))
+            worker_default = max(1, min(worker_max, int(os.environ.get("TURN1_STREAMLIT_GOAL_WORKERS", "2"))))
+            workers = st.number_input(
+                "Workers",
+                min_value=1,
+                max_value=worker_max,
+                value=worker_default,
+                step=1,
+                key="turn1_workers_v01",
+                help="Parallel worker processes for Monte Carlo trials. Use 1 if deployment CPU is limited.",
+            )
             complete_only = st.toggle("Complete-only", value=True, key="turn1_complete_only_v09")
             chain_search = st.toggle("Chain-search", value=True, key="turn1_chain_search_v09")
 
@@ -1644,6 +1662,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 seed=int(seed),
                 max_actions=int(max_actions),
                 example_lines=int(example_lines),
+                workers=int(workers),
                 complete_only=bool(complete_only),
                 chain_search=bool(chain_search),
                 goal_quantities={
