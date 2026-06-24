@@ -77,14 +77,14 @@ def _turn1_v45_capped_goal_finder_cmd(cmd):
     max_actions = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_ACTIONS", 6)
     max_workers = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_WORKERS", 2)
 
-    cmd, change = _turn1_v45_cap_flag(cmd, "--trials", max_trials)
+    "--trials", str(int(trials)),
     if change:
         changes.append(change)
 
     cmd, change = _turn1_v45_cap_flag(cmd, "--max-actions", max_actions)
     if change:
         changes.append(change)
-    cmd, change = _turn1_v45_cap_flag(cmd, "--workers", max_workers)
+    "--workers", str(int(workers)),
     if change:
         changes.append(change)
 
@@ -847,8 +847,8 @@ def _run_goal_finder(
         goal_zone,
         "--going",
         going,
-        "--trials",
-        str(int(trials)),
+        "--trials", str(int(trials)),
+        "--workers", str(int(workers)),
         "--seed",
         str(int(seed)),
         "--max-actions",
@@ -1308,8 +1308,8 @@ def _run_goal_finder(
         goal_zone,
         "--going",
         going,
-        "--trials",
-        str(int(trials)),
+        "--trials", str(int(trials)),
+        "--workers", str(int(workers)),
         "--seed",
         str(int(seed)),
         "--max-actions",
@@ -1672,8 +1672,17 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 excluded_labels=excluded_labels,
             )
 
+
     result = st.session_state.get(result_key)
     if result:
+        if isinstance(result, dict):
+            st.caption(
+                "Backend trial audit: "
+                f"requested={result.get('requested_trials')}, "
+                f"actual={result.get('actual_trials')}, "
+                f"ok={result.get('trial_count_ok')}, "
+                f"workers={result.get('parallel_workers')}"
+            )
         _render_runtime_result(result, selected_labels, goal_mode)
 
     with st.expander("What this tab is doing", expanded=False):
@@ -1695,3 +1704,14 @@ def render_turn1_access_lab(summary=None, card_odds_df=None, deck=None) -> None:
 
 def render_turn1_access_page(summary=None, card_odds_df=None, deck=None) -> None:
     return render_turn1_access_tab(summary, card_odds_df, deck)
+
+# ---------------------------------------------------------------------
+# TURN1_DISABLE_GOAL_FINDER_COMMAND_CAPPER
+# ---------------------------------------------------------------------
+# The old v45 subprocess wrapper capped goal-finder commands to small defaults
+# such as 100 trials / 1 worker. That made the UI display one value while the
+# backend received another. Keep the timeout wrapper, but stop mutating the
+# command arguments.
+def _turn1_v45_capped_goal_finder_cmd(cmd):
+    return cmd, {}
+

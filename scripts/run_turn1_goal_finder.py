@@ -5119,6 +5119,14 @@ def _turn1_parallel_goal_trials(
 def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs: Sequence[GoalRequirement], mode: str, going: str) -> Dict[str, Any]:
     results = _turn1_parallel_goal_trials(args, deck, reqs, mode, going)
 
+    requested_trials = int(getattr(args, "trials", 0) or 0)
+    actual_trials = len(results)
+    if actual_trials != requested_trials:
+        raise RuntimeError(
+            f"Turn-1 trial count mismatch for going={going!r}: "
+            f"requested {requested_trials}, produced {actual_trials}"
+        )
+
     # TURN1_APPLY_OPPONENT_ONLY_TEXT_GUARD
     opponent_only_filter_summary = turn1_apply_opponent_only_filter(results, deck)
 
@@ -5155,6 +5163,9 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
         "opponent_only_filter_summary": opponent_only_filter_summary,
         "active_repeat_normalization_summary": active_repeat_normalization_summary,
         "parallel_workers": _turn1_trial_worker_count(args, int(getattr(args, "trials", 0) or 0)),
+        "requested_trials": requested_trials,
+        "actual_trials": actual_trials,
+        "trial_count_ok": actual_trials == requested_trials,
         "example_successes": examples,
         "example_failures": failures,
     }
