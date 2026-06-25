@@ -2393,6 +2393,72 @@ def _turn1_active_compiled_search_select_missing_goal_cards_from_deck(st, reqs, 
     return selected
 
 
+
+# TURN1_ACTIVE_ABILITY_SHARED_USAGE_KEY_V1
+def _turn1_active_compiled_search_usage_keys(source, eff):
+    """Return all usage keys that should block duplicate use of one active ability.
+
+    Root issue:
+    Some cards have both a canonical compiled ability effect and a synthetic
+    source_ability effect for the same printed ability. Their effect_id values
+    differ, so tf.ability_usage_key alone allows the same printed once-per-turn
+    ability to execute twice.
+
+    This adds a shared key by physical source object + printed ability name.
+    """
+    keys = []
+
+    try:
+        key = tf.ability_usage_key(source, eff)
+        keys.append(key)
+    except Exception:
+        pass
+
+    try:
+        ability_name = _turn1_active_compiled_search_ability_name(eff)
+    except Exception:
+        ability_name = ""
+
+    try:
+        source_name = _turn1_active_compiled_search_card_name(source)
+    except Exception:
+        source_name = ""
+
+    try:
+        shared = (
+            "active_compiled_search_shared_ability",
+            id(source),
+            tf.norm(source_name),
+            tf.norm(ability_name),
+        )
+    except Exception:
+        shared = (
+            "active_compiled_search_shared_ability",
+            id(source),
+            str(source_name or "").lower().strip(),
+            str(ability_name or "").lower().strip(),
+        )
+
+    keys.append(shared)
+
+    # Preserve a simple string fallback too, in case older code stored that.
+    keys.append(f"active_compiled_search:{source_name}:{ability_name}")
+
+    out = []
+    seen = set()
+    for key in keys:
+        try:
+            hash(key)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+
+    return out
+
+
 def turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng, going):
     source = getattr(st, "active", None)
     if source is None:
@@ -2412,14 +2478,11 @@ def turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng,
         if not _turn1_active_compiled_search_effect_has_search_deck(eff):
             continue
 
-        try:
-            key = tf.ability_usage_key(source, eff)
-            if key in st.abilities_used:
-                continue
-        except Exception:
-            key = f"active_compiled_search:{_turn1_active_compiled_search_card_name(source)}:{_turn1_active_compiled_search_ability_name(eff)}"
-            if key in getattr(st, "abilities_used", set()):
-                continue
+        usage_keys = _turn1_active_compiled_search_usage_keys(source, eff)
+        used_ability_keys = getattr(st, "abilities_used", set())
+        if any(key in used_ability_keys for key in usage_keys):
+            continue
+        key = usage_keys[0] if usage_keys else f"active_compiled_search:{_turn1_active_compiled_search_card_name(source)}:{_turn1_active_compiled_search_ability_name(eff)}"
 
         # Active-only requirement is already satisfied by source == st.active.
         total_selected = []
@@ -2446,9 +2509,13 @@ def turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng,
         ability_name = _turn1_active_compiled_search_ability_name(eff)
         st.hand.extend(total_selected)
         try:
-            st.abilities_used.add(key)
+            for usage_key in usage_keys:
+                st.abilities_used.add(usage_key)
         except Exception:
-            pass
+            try:
+                st.abilities_used.add(key)
+            except Exception:
+                pass
         st.actions_used += 1
         st.line.append(ability_name)
         try:
@@ -9238,12 +9305,141 @@ def _turn1_clean_text_specific_allows(action_card, candidate, filt, action_name,
     return None
 
 
+
+# TURN1_UNRESOLVED_EVOLUTION_SEARCH_GUARD_V1
+def _turn1_unresolved_evolution_search_text_v1(filt, action_card=None, source_step=None):
+    parts = []
+
+    def add_obj(obj):
+        if isinstance(obj, dict):
+            for key in ("source_text", "raw_text", "text", "printed", "name"):
+                val = obj.get(key)
+                if val:
+                    parts.append(str(val))
+            # Keep this shallow on purpose; source_step/source text is the
+            # authoritative text for the search operation.
+        elif obj is not None:
+            parts.append(str(obj))
+
+    add_obj(filt)
+    add_obj(source_step)
+
+    # If compiler only left {"from_text": true}, the source_step is required.
+    # As a fallback, look at the action card's flattened text if available.
+    if action_card is not None:
+        try:
+            parts.append(_turn1_clean_flatten_strings(action_card))
+        except Exception:
+            try:
+                parts.append(tf.card_text(action_card))
+            except Exception:
+                pass
+
+    try:
+        return tf.norm(" ".join(parts))
+    except Exception:
+        return " ".join(parts).lower().replace("pokémon", "pokemon")
+
+
+def _turn1_is_unresolved_evolution_search_v1(filt, action_card=None, source_step=None):
+    txt = _turn1_unresolved_evolution_search_text_v1(
+        filt,
+        action_card=action_card,
+        source_step=source_step,
+    )
+
+    if "search your deck" not in txt and "search deck" not in txt:
+        return False
+
+    evolution_phrases = (
+        "card that evolves from",
+        "cards that evolve from",
+        "pokemon that evolves from",
+        "pokémon that evolves from",
+        "evolves from that pokemon",
+        "evolves from that pokémon",
+        "to evolve it",
+        "to evolve them",
+    )
+
+    return any(p in txt for p in evolution_phrases)
+
+
+def _turn1_card_is_explicit_evolution_target_v1(candidate, filt=None, source_step=None):
+    """Return True only when the candidate itself is an evolution card.
+
+    This does not guess the chosen Benched Pokémon. If the compiler does not
+    provide an explicit evolves-from constraint, this guard blocks Energy,
+    Trainer, and Basic Pokémon from being selected by unresolved evolution
+    searches. That is conservative and prevents from_text evolution effects from
+    becoming generic deck searches.
+    """
+    try:
+        if tf.card_supertype(candidate) != "Pokémon":
+            return False
+    except Exception:
+        return False
+
+    try:
+        subtypes = {tf.norm(x) for x in (tf.card_subtypes(candidate) or [])}
+    except Exception:
+        subtypes = set()
+
+    if "basic" in subtypes:
+        return False
+
+    if subtypes.intersection({"stage 1", "stage 2", "stage1", "stage2", "vmax", "vstar", "mega"}):
+        return True
+
+    # Metadata fallback: if the candidate says what it evolves from, it is an
+    # evolution card. This avoids relying only on subtypes.
+    if isinstance(candidate, dict):
+        for obj in (
+            candidate,
+            candidate.get("identity"),
+            candidate.get("gameplay"),
+            candidate.get("raw_card"),
+        ):
+            if not isinstance(obj, dict):
+                continue
+            for key in ("evolvesFrom", "evolves_from", "evolves_from_name"):
+                if obj.get(key):
+                    return True
+
+    return False
+
+
+def _turn1_unresolved_evolution_search_allows_candidate_v1(action_card, candidate, filt, action_name, source_step=None):
+    if not _turn1_is_unresolved_evolution_search_v1(
+        filt or {},
+        action_card=action_card,
+        source_step=source_step,
+    ):
+        return None
+
+    return _turn1_card_is_explicit_evolution_target_v1(
+        candidate,
+        filt=filt,
+        source_step=source_step,
+    )
+
+
 def _turn1_clean_source_can_select_candidate(action_card, candidate, filt, action_name, source_step=None):
     if not isinstance(candidate, dict):
         return False
 
     if action_card is None:
         return False
+
+    evolution_specific = _turn1_unresolved_evolution_search_allows_candidate_v1(
+        action_card,
+        candidate,
+        filt or {},
+        action_name,
+        source_step=source_step,
+    )
+    if evolution_specific is not None:
+        return bool(evolution_specific)
 
     # First apply the structured compiled filter.
     try:
