@@ -249,12 +249,305 @@ def _turn1_card_goal_match_store(key, value):
         _TURN1_CARD_MATCH_CACHE[key] = result
     return result
 
+
+# TURN1_BASIC_ENERGY_DECK_RESOLUTION
+def _turn1_basic_energy_type_from_deck_name(value: Any) -> Optional[str]:
+    raw = str(value or "").lower()
+    try:
+        norm = tf.norm(value)
+    except Exception:
+        norm = raw
+
+    # Avoid false positives like Energy Switch.
+    if "energy" not in norm and not any(sym in raw for sym in ["{g}", "{r}", "{w}", "{l}", "{p}", "{f}", "{d}", "{m}"]):
+        return None
+
+    # Do not proxy named Special Energy cards here.
+    if "special energy" in norm:
+        return None
+
+    type_aliases = {
+        "Grass": ("grass", "{g}", "[g]"),
+        "Fire": ("fire", "{r}", "[r]"),
+        "Water": ("water", "{w}", "[w]"),
+        "Lightning": ("lightning", "electric", "{l}", "[l]"),
+        "Psychic": ("psychic", "{p}", "[p]"),
+        "Fighting": ("fighting", "{f}", "[f]"),
+        "Darkness": ("darkness", "dark", "{d}", "[d]"),
+        "Metal": ("metal", "{m}", "[m]"),
+    }
+
+    for energy_type, aliases in type_aliases.items():
+        if any(alias in norm or alias in raw for alias in aliases):
+            return energy_type
+
+    return None
+
+
+def _turn1_basic_energy_proxy(energy_type: str, requested_name: str) -> Dict[str, Any]:
+    display = f"Basic {energy_type} Energy"
+    card_id = f"turn1-basic-energy-{energy_type.lower()}"
+
+    raw_card = {
+        "id": card_id,
+        "name": display,
+        "supertype": "Energy",
+        "subtypes": ["Basic"],
+        "types": [energy_type],
+    }
+
+    return {
+        "schema_version": "turn1-basic-energy-proxy/v1",
+        "name": display,
+        "canonical_name": display,
+        "card_id": card_id,
+        "representative_card_id": card_id,
+        "identity": {
+            "name": display,
+            "canonical_name": display,
+            "supertype": "Energy",
+            "subtypes": ["Basic"],
+            "types": [energy_type],
+            "tags": ["basic_energy", f"{energy_type.lower()}_energy", f"basic_{energy_type.lower()}_energy"],
+        },
+        "printed": {
+            "set": {"id": "energy-proxy", "name": "Basic Energy Proxy"},
+            "number": None,
+            "rarity": None,
+            "regulation_mark": None,
+            "legalities": {},
+            "images": {},
+        },
+        "gameplay": {
+            "hp": None,
+            "stage": None,
+            "evolves_from": None,
+            "weaknesses": [],
+            "resistances": [],
+            "retreat_cost": [],
+            "converted_retreat_cost": None,
+            "special_rule_tags": [],
+        },
+        "sources": {
+            "rules": [],
+            "abilities": None,
+            "attacks": None,
+            "combined_text": "",
+            "raw_card": raw_card,
+        },
+        "raw_card": raw_card,
+        "supertype": "Energy",
+        "subtypes": ["Basic"],
+        "types": [energy_type],
+        "energyType": "Basic",
+        "_turn1_basic_energy_proxy": True,
+        "_requested_deck_name": requested_name,
+    }
+
+
+def resolve_decklist_with_basic_energy(raw_decklist: Sequence[Any], cards: Sequence[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Resolve decklist rows, but handle typed Basic Energy before fuzzy card matching.
+
+    The compiled card index may not contain every basic-energy printing, and fuzzy
+    matching can accidentally resolve strings like "Grass Energy MEE 1" to a
+    Grass Pokémon from ME1. Basic Energy cards should remain inert physical cards
+    that can be drawn/prized/searched, not executable card definitions.
+    """
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[Dict[str, Any]] = []
+
+    for row in raw_decklist:
+        try:
+            count, requested = row
+        except Exception:
+            unresolved.append({"requested": row, "reason": "malformed_decklist_row"})
+            continue
+
+        energy_type = _turn1_basic_energy_type_from_deck_name(requested)
+        if energy_type:
+            for _ in range(max(0, int(count))):
+                resolved.append(_turn1_basic_energy_proxy(energy_type, str(requested)))
+            continue
+
+        try:
+            part_deck, part_unresolved = tf.resolve_decklist([(count, requested)], cards)
+            resolved.extend(part_deck)
+            unresolved.extend(part_unresolved)
+        except Exception as e:
+            unresolved.append({"requested": requested, "count": count, "reason": repr(e)})
+
+    return resolved, unresolved
+
+
+
+
+# TURN1_DIRECT_ENERGY_GOAL_MATCH
+def _turn1_energy_match_norm(value: Any) -> str:
+    import re
+
+    s = str(value or "").lower().replace("pokémon", "pokemon")
+    for old, new in {
+        "[w]": "{w}",
+        "[r]": "{r}",
+        "[g]": "{g}",
+        "[l]": "{l}",
+        "[p]": "{p}",
+        "[f]": "{f}",
+        "[d]": "{d}",
+        "[m]": "{m}",
+    }.items():
+        s = s.replace(old, new)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _turn1_energy_classes_from_text(value: Any) -> set:
+    t = _turn1_energy_match_norm(value)
+
+    if "energy" not in t and not any(x in t for x in ["{w}", "{r}", "{g}", "{l}", "{p}", "{f}", "{d}", "{m}"]):
+        return set()
+
+    classes = {"energy"}
+
+    if "basic" in t:
+        classes.add("basic_energy")
+
+    markers = {
+        "water": ("water", "{w}"),
+        "fire": ("fire", "{r}"),
+        "grass": ("grass", "{g}"),
+        "lightning": ("lightning", "electric", "{l}"),
+        "psychic": ("psychic", "{p}"),
+        "fighting": ("fighting", "{f}"),
+        "darkness": ("darkness", "dark", "{d}"),
+        "metal": ("metal", "{m}"),
+    }
+
+    for typ, aliases in markers.items():
+        if any(a in t for a in aliases):
+            classes.add(f"{typ}_energy")
+            if "basic" in t:
+                classes.add(f"basic_{typ}_energy")
+
+    return classes
+
+
+def _turn1_energy_classes_for_goal_option(option: GoalOption) -> set:
+    values = [
+        getattr(option, "raw", ""),
+        getattr(option, "norm", ""),
+        str(option),
+    ]
+
+    classes = set()
+    for value in values:
+        classes.update(_turn1_energy_classes_from_text(value))
+    return classes
+
+
+def _turn1_energy_classes_for_card(card: Dict[str, Any]) -> set:
+    parts = []
+
+    try:
+        parts.append(tf.card_name(card))
+    except Exception:
+        pass
+
+    try:
+        parts.append(tf.card_supertype(card))
+    except Exception:
+        pass
+
+    if isinstance(card, dict):
+        for key in ["name", "canonical_name", "supertype", "subtype", "energyType"]:
+            parts.append(card.get(key))
+        for key in ["subtypes", "types"]:
+            value = card.get(key)
+            if isinstance(value, list):
+                parts.extend(value)
+            else:
+                parts.append(value)
+
+    blob = _turn1_energy_match_norm(" ".join(str(p) for p in parts if p))
+
+    try:
+        is_energy = bool(tf.is_energy(card))
+    except Exception:
+        is_energy = False
+
+    if not is_energy:
+        is_energy = "energy" in blob
+
+    if not is_energy:
+        return set()
+
+    classes = {"energy"}
+
+    if "basic" in blob:
+        classes.add("basic_energy")
+
+    markers = {
+        "water": ("water", "{w}"),
+        "fire": ("fire", "{r}"),
+        "grass": ("grass", "{g}"),
+        "lightning": ("lightning", "electric", "{l}"),
+        "psychic": ("psychic", "{p}"),
+        "fighting": ("fighting", "{f}"),
+        "darkness": ("darkness", "dark", "{d}"),
+        "metal": ("metal", "{m}"),
+    }
+
+    for typ, aliases in markers.items():
+        if any(a in blob for a in aliases):
+            classes.add(f"{typ}_energy")
+            if "basic" in blob:
+                classes.add(f"basic_{typ}_energy")
+
+    return classes
+
+
+def _turn1_energy_classes_match(card_classes: set, goal_classes: set) -> bool:
+    if not card_classes or not goal_classes:
+        return False
+
+    basic_typed_goals = {
+        c for c in goal_classes
+        if c.startswith("basic_") and c.endswith("_energy") and c != "basic_energy"
+    }
+    if basic_typed_goals:
+        return bool(card_classes.intersection(basic_typed_goals))
+
+    typed_goals = {
+        c for c in goal_classes
+        if c.endswith("_energy") and c not in {"energy", "basic_energy"}
+    }
+    if typed_goals:
+        return bool(card_classes.intersection(typed_goals))
+
+    if "basic_energy" in goal_classes:
+        return "basic_energy" in card_classes
+
+    return "energy" in goal_classes and "energy" in card_classes
+
+
 def card_matches_option(card: Dict[str, Any], option: GoalOption) -> bool:
     _turn1_card_match_cache_key = _turn1_card_goal_match_key(card, option)
     _turn1_card_match_cached = _TURN1_CARD_MATCH_CACHE.get(_turn1_card_match_cache_key)
     if _turn1_card_match_cached is not None:
         return _turn1_card_goal_match_store(_turn1_card_match_cache_key, _turn1_card_match_cached)
-    return _turn1_card_goal_match_store(_turn1_card_match_cache_key, tf.target_matches(card, option.norm))
+
+    try:
+        matched = bool(tf.target_matches(card, option.norm))
+    except Exception:
+        matched = False
+
+    if not matched:
+        goal_energy_classes = _turn1_energy_classes_for_goal_option(option)
+        if goal_energy_classes:
+            card_energy_classes = _turn1_energy_classes_for_card(card)
+            matched = _turn1_energy_classes_match(card_energy_classes, goal_energy_classes)
+
+    return _turn1_card_goal_match_store(_turn1_card_match_cache_key, matched)
+
 
 def zone_cards(st: tf.SimState, tracker: GoalTracker, zone: str) -> List[Dict[str, Any]]:
     z = zone.lower().replace("-", "_")
@@ -494,7 +787,7 @@ def choose_primary_target_norm(req: GoalRequirement, st: tf.SimState) -> Optiona
     lets OR groups work naturally with searches.
     """
     for opt in req.options:
-        if any(tf.target_matches(c, opt.norm) for c in st.deck):
+        if any(card_matches_option(c, opt) for c in st.deck):
             return opt.norm
     return req.options[0].norm if req.options else None
 
@@ -8180,7 +8473,7 @@ def main() -> None:
         cards = tf.filter_complete_cards(cards)
 
     raw_decklist = tf.parse_decklist(args.decklist)
-    deck, unresolved = tf.resolve_decklist(raw_decklist, cards)
+    deck, unresolved = resolve_decklist_with_basic_energy(raw_decklist, cards)
     deck = instantiate_deck(deck)
 
     result: Dict[str, Any] = {
