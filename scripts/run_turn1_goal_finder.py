@@ -7794,6 +7794,141 @@ def score_candidate_for_missing_targets(
     return filtered
 
 
+
+# TURN1_BLOCK_NOOP_TOPN_COMPOSITE_V1
+def _turn1_block_noop_topn_amount(step):
+    try:
+        if hasattr(tf, "_turn1_exact_look_amount"):
+            return int(tf._turn1_exact_look_amount(step))
+    except Exception:
+        pass
+
+    try:
+        return int(tf.amount_value(step.get("amount") or step.get("count") or step.get("number"), default=1))
+    except Exception:
+        pass
+
+    import re as _re
+    txt = str(step.get("source_text") or "")
+    m = _re.search(r"top\s+(\d+)\s+cards?", txt, _re.I)
+    return int(m.group(1)) if m else 1
+
+
+def _turn1_block_noop_topn_filter(step):
+    try:
+        if hasattr(tf, "_turn1_exact_step_filter"):
+            return tf._turn1_exact_step_filter(step)
+    except Exception:
+        pass
+
+    selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
+    for filt in (
+        step.get("selection_filter"),
+        selection.get("filter"),
+        step.get("filter"),
+    ):
+        if isinstance(filt, dict) and filt:
+            return filt
+    return {}
+
+
+def _turn1_block_noop_candidate_can_help(st, step, filt, candidate, target_norm, going, stage):
+    try:
+        if hasattr(tf, "_turn1_exact_candidate_can_help"):
+            return bool(tf._turn1_exact_candidate_can_help(st, step, filt, candidate, target_norm, going, stage))
+    except Exception:
+        pass
+
+    try:
+        if not tf.filter_allows_card(filt, candidate):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if tf.target_matches(candidate, target_norm):
+            return True
+    except Exception:
+        pass
+
+    try:
+        if not tf.card_can_be_played_from_hand(candidate, going, getattr(st, "supporter_used", False)):
+            return False
+    except Exception:
+        return False
+
+    try:
+        deck_with_candidate = [candidate] + list(getattr(st, "deck", []) or [])
+        if tf.card_directly_searches_target(candidate, target_norm, deck_with_candidate):
+            return True
+    except Exception:
+        pass
+
+    try:
+        if int(tf.card_draw_power(candidate) or 0) > 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _turn1_block_noop_topn_action_would_do_nothing(st, action, target_norm, going):
+    """Return True for top-N composite effects that currently have no legal useful pick.
+
+    This catches actions like:
+      Attract Customers while going first when the only visible Supporter is unplayable.
+      Attract Customers when no Supporter is in the top 6.
+      Bug Catching Set when no selectable useful Grass card/Energy is in the top 7.
+    """
+    if not isinstance(action, dict):
+        return False
+
+    effect = action.get("effect") or action.get("ability") or action.get("compiled_effect")
+    if not isinstance(effect, dict):
+        return False
+
+    try:
+        steps = list(tf.flatten_steps([effect]))
+    except Exception:
+        try:
+            steps = list(tf.flatten_steps(effect))
+        except Exception:
+            return False
+
+    look_steps = [s for s in steps if isinstance(s, dict) and s.get("op") in {"look_at_top_cards", "look_at_cards"}]
+    choose_steps = [s for s in steps if isinstance(s, dict) and s.get("op") in {"choose_cards", "put_card_into_hand", "move_card", "move_cards"}]
+
+    if not look_steps or not choose_steps:
+        return False
+
+    # Only block composite top-N pick effects. Do not block pure deck inspection/reorder effects.
+    has_selection_filter = any(bool(_turn1_block_noop_topn_filter(s)) for s in look_steps + choose_steps)
+    has_hand_destination = any("hand" in str(s.get("destination") or "").lower() for s in look_steps + choose_steps)
+    has_cards_ref_move = any(bool(s.get("cards_ref") or s.get("source_ref")) for s in choose_steps)
+
+    if not has_selection_filter and not has_hand_destination and not has_cards_ref_move:
+        return False
+
+    stage = "score_noop_topn"
+    deck = list(getattr(st, "deck", []) or [])
+
+    for look in look_steps:
+        n = max(0, _turn1_block_noop_topn_amount(look))
+        visible = deck[:n]
+
+        # Prefer the choose filter, because Attract Customers puts the Supporter
+        # restriction on the choose/move composite as well as the look step.
+        candidate_steps = choose_steps or [look]
+        for cstep in candidate_steps:
+            filt = _turn1_block_noop_topn_filter(cstep) or _turn1_block_noop_topn_filter(look)
+            for candidate in visible:
+                if _turn1_block_noop_candidate_can_help(st, cstep, filt, candidate, target_norm, going, stage):
+                    return False
+
+    return True
+
+
 _ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT = execute_action
 
 def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.Random, going: str, enable_chain_search: bool) -> None:
@@ -7804,6 +7939,20 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
         # the same blocked action forever, but do not append it to st.line.
         st.actions_used += 1
         return
+
+    if _turn1_block_noop_topn_action_would_do_nothing(st, action, target_norm, going):
+        try:
+            st.log.append({
+                "event": "blocked_noop_topn_composite_action",
+                "action": action_label(action),
+                "target": target_norm,
+                "going": going,
+            })
+        except Exception:
+            pass
+        st.actions_used += 1
+        return
+
     _ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT(st, action, target_norm, rng, going, enable_chain_search)
 
 
