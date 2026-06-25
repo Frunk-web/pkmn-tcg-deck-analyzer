@@ -2834,6 +2834,294 @@ def choose_enabler_from_deck(
     return best
 
 
+
+
+# TURN1_EXACT_COMPILED_RUNTIME_V2
+def _turn1_exact_amount_value(value, default=1):
+    try:
+        return int(amount_value(value, default=default))
+    except Exception:
+        try:
+            return int(value)
+        except Exception:
+            return int(default)
+
+
+def _turn1_exact_look_amount(step):
+    look_at = step.get("look_at") if isinstance(step.get("look_at"), dict) else {}
+    for value in (look_at.get("amount"), step.get("amount"), step.get("count"), step.get("number")):
+        if value is None:
+            continue
+        n = _turn1_exact_amount_value(value, default=-1)
+        if n >= 0:
+            return n
+
+    text = str(step.get("source_text") or step.get("text") or "")
+    m = re.search(r"top\s+(\d+)\s+cards?", text, re.I)
+    if m:
+        return int(m.group(1))
+    return 1
+
+
+def _turn1_exact_choose_amount(step):
+    selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
+    for value in (
+        step.get("amount"),
+        step.get("count"),
+        step.get("number"),
+        selection.get("value"),
+        selection.get("amount"),
+        selection.get("count"),
+    ):
+        if value is None:
+            continue
+        n = _turn1_exact_amount_value(value, default=-1)
+        if n >= 0:
+            return n
+
+    text = str(step.get("source_text") or step.get("text") or "")
+    m = re.search(r"up to\s+(\d+)", text, re.I) or re.search(r"choose\s+(\d+)", text, re.I)
+    if m:
+        return int(m.group(1))
+    return 1
+
+
+def _turn1_exact_step_filter(step):
+    selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
+    look_at = step.get("look_at") if isinstance(step.get("look_at"), dict) else {}
+
+    for filt in (
+        step.get("selection_filter"),
+        selection.get("filter"),
+        step.get("filter"),
+        look_at.get("selection_filter"),
+        look_at.get("filter"),
+    ):
+        if isinstance(filt, dict) and filt:
+            return filt
+    return {}
+
+
+def _turn1_exact_norm(value):
+    try:
+        return norm(value)
+    except Exception:
+        return str(value or "").lower().strip()
+
+
+def _turn1_exact_same_card(a, b):
+    if a is b:
+        return True
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+
+    for key in ("_instance_id", "card_id", "representative_card_id"):
+        av = a.get(key)
+        bv = b.get(key)
+        if av and bv and av == bv:
+            return True
+
+    try:
+        return card_id(a) == card_id(b)
+    except Exception:
+        return False
+
+
+def _turn1_exact_in_play_has_name(st, required_name):
+    req = _turn1_exact_norm(required_name)
+    if not req:
+        return True
+
+    try:
+        pool = list(in_play_pokemon(st))
+    except Exception:
+        pool = []
+        if getattr(st, "active", None) is not None:
+            pool.append(st.active)
+        pool.extend(getattr(st, "bench", []) or [])
+
+    for c in pool:
+        try:
+            if _turn1_exact_norm(card_name(c)) == req:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _turn1_exact_required_discard_available(st, step):
+    if step.get("op") not in {"discard_cards", "discard_card"}:
+        return True
+
+    required = bool(step.get("required_to_play")) or bool(step.get("cost"))
+    if not required:
+        return True
+
+    selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
+    filt = _turn1_exact_step_filter(step)
+    n = _turn1_exact_amount_value(
+        step.get("amount") or selection.get("value") or selection.get("amount") or step.get("count"),
+        default=1,
+    )
+
+    if not filt:
+        return len(getattr(st, "hand", []) or []) >= n
+
+    matches = [c for c in getattr(st, "hand", []) or [] if filter_allows_card(filt, c)]
+    return len(matches) >= n
+
+
+def _turn1_exact_usage_key(step):
+    group = step.get("group") or step.get("ability_name") or step.get("name") or step.get("source_text") or "compiled_effect"
+    return "turn1_usage:" + _turn1_exact_norm(group)
+
+
+def _turn1_exact_steps_preflight(st, steps, stage):
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+
+        op = step.get("op")
+
+        if bool(step.get("requires_active_spot")):
+            if getattr(st, "active", None) is None:
+                st.log.append({"event": "blocked_requires_active_spot", "stage": stage})
+                return False
+
+        if op == "register_usage_limit":
+            key = _turn1_exact_usage_key(step)
+            limit = _turn1_exact_amount_value(step.get("limit") or step.get("max") or 1, default=1)
+            if int(st.counts.get(key, 0) or 0) >= limit:
+                st.log.append({"event": "blocked_usage_limit", "stage": stage, "usage_key": key, "limit": limit})
+                return False
+
+        if op == "play_condition":
+            condition = step.get("condition") if isinstance(step.get("condition"), dict) else {}
+            req = condition.get("requires_pokemon_in_play") if isinstance(condition.get("requires_pokemon_in_play"), dict) else None
+            if req and not _turn1_exact_in_play_has_name(st, req.get("name")):
+                st.log.append({"event": "blocked_play_condition", "stage": stage, "condition": condition})
+                return False
+
+        if op in {"discard_cards", "discard_card"} and not _turn1_exact_required_discard_available(st, step):
+            st.log.append({"event": "blocked_missing_required_discard_cost", "stage": stage, "step": step})
+            return False
+
+    return True
+
+
+def _turn1_exact_candidate_can_help(st, step, filt, candidate, target_norm, going, stage):
+    if not isinstance(candidate, dict):
+        return False
+
+    try:
+        if not filter_allows_card(filt, candidate):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if target_matches(candidate, target_norm):
+            return True
+    except Exception:
+        pass
+
+    # Legal intermediate enabler, e.g. Attract Customers can choose Lillie's,
+    # then Lillie's may later draw into the target.
+    try:
+        if not card_can_be_played_from_hand(candidate, going, getattr(st, "supporter_used", False)):
+            return False
+    except Exception:
+        return False
+
+    try:
+        deck_with_candidate = [candidate] + list(getattr(st, "deck", []) or [])
+        if card_directly_searches_target(candidate, target_norm, deck_with_candidate):
+            return True
+    except Exception:
+        pass
+
+    try:
+        if int(card_draw_power(candidate) or 0) > 0:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _turn1_exact_destination_zone(st, destination):
+    dest = str(destination or "self.hand").lower()
+    if "bench" in dest:
+        return getattr(st, "bench", None)
+    if "discard" in dest:
+        return getattr(st, "discard", None)
+    if "deck" in dest:
+        return getattr(st, "deck", None)
+    return getattr(st, "hand", None)
+
+
+def _turn1_exact_remove_card_from_known_zones(st, card):
+    for zone_name in ("deck", "hand", "discard", "bench", "prizes"):
+        zone = getattr(st, zone_name, None)
+        if not isinstance(zone, list):
+            continue
+        for i, c in enumerate(list(zone)):
+            if _turn1_exact_same_card(c, card):
+                zone.pop(i)
+                return True
+    return False
+
+
+def _turn1_exact_move_cards(st, cards, destination, stage):
+    dest_zone = _turn1_exact_destination_zone(st, destination)
+    if dest_zone is None:
+        return []
+
+    moved = []
+    for c in list(cards or []):
+        _turn1_exact_remove_card_from_known_zones(st, c)
+        dest_zone.append(c)
+        moved.append(c)
+
+    if moved:
+        st.log.append({
+            "event": "move_cards",
+            "stage": stage,
+            "destination": destination or "self.hand",
+            "cards": [card_name(c) for c in moved],
+            "exact_compiled_runtime": True,
+        })
+
+    return moved
+
+
+def _turn1_exact_choose_from_pool(st, step, pool, target_norm, going, stage):
+    filt = _turn1_exact_step_filter(step)
+    amount = max(0, _turn1_exact_choose_amount(step))
+    chosen = []
+
+    for c in list(pool or []):
+        if len(chosen) >= amount:
+            break
+        if _turn1_exact_candidate_can_help(st, step, filt, c, target_norm, going, stage):
+            chosen.append(c)
+
+    target_id = str(step.get("target_id") or step.get("cards_ref") or "chosen_cards")
+    st.memory_cards[target_id] = list(chosen)
+
+    if chosen:
+        st.log.append({
+            "event": "choose_cards",
+            "stage": stage,
+            "target_id": target_id,
+            "source_ref": step.get("source_ref"),
+            "selected": [card_name(c) for c in chosen],
+            "filter": filt,
+            "exact_compiled_runtime": True,
+        })
+
+    return chosen
+
 def execute_steps(
     st: SimState,
     steps: Iterable[Dict[str, Any]],
@@ -2843,6 +3131,9 @@ def execute_steps(
     stage: str,
     enable_chain_search: bool,
 ) -> None:
+    steps = list(steps)
+    if not _turn1_exact_steps_preflight(st, steps, stage):
+        return
     # TURN1_V70_SOURCE_BOUND_SEARCH_EXECUTION
     for step in steps:
         if st.found:
@@ -2855,6 +3146,21 @@ def execute_steps(
         if op == "shuffle_deck":
             rng.shuffle(st.deck)
             st.log.append({"event": "shuffle_deck", "stage": stage})
+            continue
+
+        if op == "register_usage_limit":
+            key = _turn1_exact_usage_key(step)
+            st.counts[key] = int(st.counts.get(key, 0) or 0) + 1
+            st.log.append({
+                "event": "register_usage_limit",
+                "stage": stage,
+                "usage_key": key,
+                "count": st.counts[key],
+                "exact_compiled_runtime": True,
+            })
+            continue
+
+        if op == "play_condition":
             continue
 
         if op in {"draw_cards", "draw_cards_per_coin_heads"}:
@@ -2923,10 +3229,19 @@ def execute_steps(
             continue
 
         if op in {"look_at_top_cards", "look_at_cards"}:
-            n = amount_value(step.get("amount") or step.get("count") or step.get("number"), default=1)
+            n = _turn1_exact_look_amount(step)
             looked = st.deck[: max(0, n)]
+            target_id = str(step.get("target_id") or "looked_cards")
+            st.memory_cards[target_id] = list(looked)
             st.memory_cards["looked"] = list(looked)
-            st.log.append({"event": "look_at_top_cards", "stage": stage, "amount": len(looked), "cards": [card_name(c) for c in looked]})
+            st.log.append({
+                "event": "look_at_top_cards",
+                "stage": stage,
+                "target_id": target_id,
+                "amount": len(looked),
+                "cards": [card_name(c) for c in looked],
+                "exact_compiled_runtime": True,
+            })
             continue
 
         if op == "reorder_cards":
@@ -2940,42 +3255,37 @@ def execute_steps(
             continue
 
         if op in {"choose_cards", "put_card_into_hand", "move_card", "move_cards"}:
-            filt = extract_filter(step)
-            source_text = json.dumps(step).lower()
-            source_card = _turn1_v70_current_source_card(st, stage=stage)
-            if "hand" in source_text:
-                chosen = remove_first_matching(
-                    st.deck,
-                    lambda c: _turn1_v70_source_can_select_target_card(
-                        st,
-                        filt,
-                        c,
-                        target_norm,
-                        step=step,
-                        stage=stage,
-                        source_card=source_card,
-                    ),
-                )
-                if chosen is None:
-                    looked = st.memory_cards.get("looked", [])
-                    for c in list(looked):
-                        if c in st.deck and _turn1_v70_source_can_select_target_card(
-                            st,
-                            filt,
-                            c,
-                            target_norm,
-                            step=step,
-                            stage=stage,
-                            source_card=source_card,
-                        ):
-                            st.deck.remove(c)
-                            chosen = c
-                            break
-                if chosen is not None:
-                    st.hand.append(chosen)
+            if op == "choose_cards":
+                source_ref = str(step.get("source_ref") or "")
+                if source_ref and source_ref in st.memory_cards:
+                    pool = list(st.memory_cards.get(source_ref) or [])
+                elif "looked_cards" in st.memory_cards:
+                    pool = list(st.memory_cards.get("looked_cards") or [])
+                elif "looked" in st.memory_cards:
+                    pool = list(st.memory_cards.get("looked") or [])
+                else:
+                    pool = list(st.deck)
+
+                _turn1_exact_choose_from_pool(st, step, pool, target_norm, going, stage)
+                continue
+
+            cards_ref = str(step.get("cards_ref") or step.get("card_ref") or "")
+            if cards_ref and cards_ref in st.memory_cards:
+                selected = list(st.memory_cards.get(cards_ref) or [])
+                moved = _turn1_exact_move_cards(st, selected, step.get("destination") or "self.hand", stage)
+                if moved and st.has_target_in_hand(target_norm):
                     st.found = True
                     st.found_stage = stage
-                    st.log.append({"event": "move_or_choose_target_to_hand", "stage": stage, "selected": card_name(chosen), "source_bound_v70": True})
+                continue
+
+            filt = _turn1_exact_step_filter(step)
+            destination = step.get("destination") or "self.hand"
+            pool = list(st.deck)
+            chosen = _turn1_exact_choose_from_pool(st, step, pool, target_norm, going, stage)
+            moved = _turn1_exact_move_cards(st, chosen, destination, stage)
+            if moved and st.has_target_in_hand(target_norm):
+                st.found = True
+                st.found_stage = stage
             continue
 
         if op in {"discard_cards", "discard_card"}:
@@ -2983,20 +3293,58 @@ def execute_steps(
                 st.counts["_skip_next_discard_cost"] = int(st.counts.get("_skip_next_discard_cost", 0) or 0) - 1
                 st.log.append({"event": "skip_duplicate_discard_cost_step", "stage": stage})
                 continue
+
             selection = step.get("selection") if isinstance(step.get("selection"), dict) else {}
-            n = amount_value(step.get("amount") or selection.get("value") or step.get("count"), default=1)
+            n = _turn1_exact_amount_value(
+                step.get("amount") or selection.get("value") or selection.get("amount") or step.get("count"),
+                default=1,
+            )
+            filt = _turn1_exact_step_filter(step)
             discarded = []
+
             for _ in range(max(0, n)):
-                candidates = [c for c in st.hand if not target_matches(c, target_norm)]
-                if not candidates:
+                chosen = None
+
+                for i, c in enumerate(list(st.hand)):
+                    if filt and not filter_allows_card(filt, c):
+                        continue
+                    try:
+                        if not filt and target_matches(c, target_norm):
+                            continue
+                    except Exception:
+                        pass
+                    chosen = st.hand.pop(i)
                     break
-                candidates.sort(key=lambda c: (card_has_play_effect(c), card_name(c)))
-                c = candidates[0]
-                st.hand.remove(c)
-                st.discard.append(c)
-                discarded.append(card_name(c))
+
+                if chosen is None:
+                    for i, c in enumerate(list(st.hand)):
+                        if filt and not filter_allows_card(filt, c):
+                            continue
+                        chosen = st.hand.pop(i)
+                        break
+
+                if chosen is None:
+                    if step.get("required_to_play") or step.get("cost"):
+                        st.log.append({
+                            "event": "blocked_discard_cost_unpayable",
+                            "stage": stage,
+                            "filter": filt,
+                            "required": n,
+                        })
+                        return
+                    break
+
+                st.discard.append(chosen)
+                discarded.append(card_name(chosen))
+
             if discarded:
-                st.log.append({"event": "discard_cards", "stage": stage, "discarded": discarded})
+                st.log.append({
+                    "event": "discard_cards",
+                    "stage": stage,
+                    "discarded": discarded,
+                    "filter": filt,
+                    "exact_compiled_runtime": True,
+                })
             continue
 
         if op == "count_cards":
