@@ -5324,7 +5324,193 @@ def _turn1_v73_filter_decision(filt, card):
         return False
     return None
 
+
+
+# TURN1_STRICT_STRUCTURED_FILTER_V1
+def _turn1_strict_filter_norm(value):
+    try:
+        return norm(value)
+    except Exception:
+        import re as _re
+        s = str(value or "").lower().replace("pokémon", "pokemon").replace("’", "'")
+        return _re.sub(r"[^a-z0-9{}'\s_-]+", " ", s).strip()
+
+
+def _turn1_strict_filter_list(value):
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [v for v in value if v is not None]
+    return [value]
+
+
+def _turn1_strict_card_subtypes(card):
+    out = []
+    try:
+        out.extend(card_subtypes(card) or [])
+    except Exception:
+        pass
+
+    if isinstance(card, dict):
+        for obj in (card, card.get("identity"), card.get("gameplay"), card.get("raw_card")):
+            if not isinstance(obj, dict):
+                continue
+            for key in ("subtype", "subtypes"):
+                value = obj.get(key)
+                if isinstance(value, (list, tuple, set)):
+                    out.extend(value)
+                elif value:
+                    out.append(value)
+
+    # Some records are incomplete but the printed name is still enough for ex.
+    try:
+        name = card_name(card)
+    except Exception:
+        name = card.get("name") if isinstance(card, dict) else ""
+    if _turn1_strict_filter_norm(name).endswith(" ex"):
+        out.append("ex")
+
+    return {_turn1_strict_filter_norm(x) for x in out if str(x or "").strip()}
+
+
+def _turn1_strict_card_types(card):
+    out = []
+    if isinstance(card, dict):
+        for obj in (card, card.get("identity"), card.get("gameplay"), card.get("raw_card")):
+            if not isinstance(obj, dict):
+                continue
+            value = obj.get("types") or obj.get("type")
+            if isinstance(value, (list, tuple, set)):
+                out.extend(value)
+            elif value:
+                out.append(value)
+    return {_turn1_strict_filter_norm(x) for x in out if str(x or "").strip()}
+
+
+def _turn1_strict_card_supertype(card):
+    try:
+        return _turn1_strict_filter_norm(card_supertype(card))
+    except Exception:
+        if isinstance(card, dict):
+            for obj in (card, card.get("identity"), card.get("raw_card")):
+                if isinstance(obj, dict) and obj.get("supertype"):
+                    return _turn1_strict_filter_norm(obj.get("supertype"))
+        return ""
+
+
+def _turn1_strict_card_name(card):
+    try:
+        return _turn1_strict_filter_norm(card_name(card))
+    except Exception:
+        return _turn1_strict_filter_norm(card.get("name") if isinstance(card, dict) else "")
+
+
+def _turn1_strict_card_has_rule_box(card):
+    name = _turn1_strict_card_name(card)
+    subtypes = _turn1_strict_card_subtypes(card)
+
+    rule_box_markers = {
+        "ex", "v", "vmax", "vstar", "gx", "ex", "break", "prism star",
+        "radiant", "tera",
+    }
+    if any(x in subtypes for x in rule_box_markers):
+        return True
+
+    if (
+        name.endswith(" ex")
+        or name.endswith(" v")
+        or name.endswith(" vmax")
+        or name.endswith(" vstar")
+        or name.endswith(" gx")
+    ):
+        return True
+
+    if isinstance(card, dict):
+        for obj in (card, card.get("identity"), card.get("gameplay"), card.get("raw_card")):
+            if not isinstance(obj, dict):
+                continue
+            for key in ("rule_box", "has_rule_box", "is_rule_box"):
+                if obj.get(key) is True:
+                    return True
+            rules = str(obj.get("rules") or "")
+            if rules.strip():
+                return True
+
+    return False
+
+
+def _turn1_strict_card_is_pokemon_ex(card):
+    if _turn1_strict_card_supertype(card) != "pokemon":
+        return False
+    if "ex" in _turn1_strict_card_subtypes(card):
+        return True
+    return _turn1_strict_card_name(card).endswith(" ex")
+
+
+def _turn1_strict_structured_filter_rejects(filt, card):
+    """Return True only when an explicit structured filter constraint rejects card.
+
+    This is intentionally a rejection layer, not a full replacement matcher.
+    It prevents later raw-text/fallback logic from widening structured filters.
+    """
+    if not isinstance(filt, dict) or not filt:
+        return False
+
+    # supertype is conjunctive when explicitly present.
+    if filt.get("supertype") is not None:
+        required = _turn1_strict_filter_norm(filt.get("supertype"))
+        actual = _turn1_strict_card_supertype(card)
+        if required and actual != required:
+            return True
+
+    # subtype/subtypes are conjunctive constraints. Example:
+    # {"supertype": "Pokémon", "subtype": "ex"} must reject Basic N's Zorua.
+    required_subtypes = []
+    required_subtypes.extend(_turn1_strict_filter_list(filt.get("subtype")))
+    required_subtypes.extend(_turn1_strict_filter_list(filt.get("subtypes")))
+    required_subtypes.extend(_turn1_strict_filter_list(filt.get("required_subtype")))
+    required_subtypes.extend(_turn1_strict_filter_list(filt.get("required_subtypes")))
+
+    if required_subtypes:
+        actual_subtypes = _turn1_strict_card_subtypes(card)
+        for req in required_subtypes:
+            req_n = _turn1_strict_filter_norm(req)
+            if req_n and req_n not in actual_subtypes:
+                return True
+
+    # types are also explicit constraints.
+    required_types = []
+    required_types.extend(_turn1_strict_filter_list(filt.get("type")))
+    required_types.extend(_turn1_strict_filter_list(filt.get("types")))
+    required_types.extend(_turn1_strict_filter_list(filt.get("energy_type")))
+    required_types.extend(_turn1_strict_filter_list(filt.get("energy_types")))
+
+    if required_types:
+        actual_types = _turn1_strict_card_types(card)
+        for req in required_types:
+            req_n = _turn1_strict_filter_norm(req)
+            if req_n and req_n not in actual_types:
+                return True
+
+    if filt.get("is_pokemon_ex") is True:
+        if not _turn1_strict_card_is_pokemon_ex(card):
+            return True
+
+    for key in ("rule_box", "has_rule_box", "is_rule_box"):
+        if filt.get(key) is True and not _turn1_strict_card_has_rule_box(card):
+            return True
+        if filt.get(key) is False and _turn1_strict_card_has_rule_box(card):
+            return True
+
+    for key in ("exclude_rule_box", "requires_no_rule_box"):
+        if filt.get(key) is True and _turn1_strict_card_has_rule_box(card):
+            return True
+
+    return False
+
 def filter_allows_card(filt, card):
+    if _turn1_strict_structured_filter_rejects(filt, card):
+        return False
     decision = _turn1_v73_filter_decision(filt, card)
     if decision is not None:
         return bool(decision)
