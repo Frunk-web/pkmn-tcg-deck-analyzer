@@ -6867,11 +6867,11 @@ def _turn1_text_is_opponent_only_draw_or_search(text: str) -> bool:
     return True
 
 
+# TURN1_DIRECT_SEARCH_ONLY_SEARCH_DECK_V1
 def _turn1_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
     if not isinstance(step, dict):
         return False
-    if step.get("op") not in {"search_deck", "choose_cards", "put_card_into_hand"}:
-        return False
+    if step.get("op") != "search_deck": return False
 
     text = _turn1_self_only_search_step_text(step, card)
 
@@ -6950,7 +6950,7 @@ def _turn1_card_directly_searches_target_self_only(card: Dict[str, Any], target_
     for step in tf.flatten_steps(list(tf.iter_effects(card))):
         if not isinstance(step, dict):
             continue
-        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
+        if step.get("op") == "search_deck":
             if not _turn1_is_self_search_step(step, card):
                 continue
             filt = tf.extract_filter(step)
@@ -6994,7 +6994,7 @@ def _turn1_ability_directly_searches_target_self_only(effect: Dict[str, Any], ta
     for step in tf.flatten_steps(effect):
         if not isinstance(step, dict):
             continue
-        if step.get("op") in {"search_deck", "choose_cards", "put_card_into_hand"}:
+        if step.get("op") == "search_deck":
             if not _turn1_is_self_search_step(step, None):
                 continue
             filt = tf.extract_filter(step)
