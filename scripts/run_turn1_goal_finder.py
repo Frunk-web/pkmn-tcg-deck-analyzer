@@ -951,6 +951,10 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
         tf.use_teal_dance(st, target_norm, "after_use_Teal_Dance")
     elif isinstance(action, dict) and action.get("_virtual_action") == "BenchAbility":
         tf.bench_basic_for_ability(st, action["card"], rng, target_norm, going, enable_chain_search)
+    elif isinstance(action, dict) and action.get("_virtual_action") == "CompiledDrawSetupBench":
+        turn1_use_compiled_draw_setup_bench(st, action, rng)
+    elif isinstance(action, dict) and action.get("_virtual_action") == "CompiledDrawAbility":
+        turn1_use_compiled_draw_ability(st, action, rng, going)
     elif isinstance(action, dict) and action.get("_virtual_action") == "GenericAbility":
         tf.use_generic_ability(st, action["source"], action["effect"], rng, target_norm, going, enable_chain_search)
     elif isinstance(action, dict) and action.get("_virtual_action") == "AbilityRequirementSearch":
@@ -2535,6 +2539,1284 @@ def turn1_execute_active_compiled_search_if_useful(st, reqs, mode, tracker, rng,
         return True
 
     return False
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_GENERIC_COMPILED_DRAW_ABILITY_RUNTIME_V1
+# ---------------------------------------------------------------------
+# Generic executor for in-play Pokémon Abilities that draw cards.
+# This is intentionally conservative:
+# - source must already be in play
+# - conditions/costs must be structured enough to prove/pay
+# - unresolved from_text costs are rejected
+# - discard/attach costs avoid consuming current missing goal pieces
+# - usage is tracked by physical source, except text that says
+#   "can't use more than 1 ... Ability" is shared globally for the turn.
+
+_TURN1_COMPILED_DRAW_OPS_V1 = {
+    "draw_cards",
+    "draw_cards_per_coin_heads",
+    "draw_until_hand_size",
+    "draw_until_hand_size_matches",
+}
+
+
+def _turn1_compiled_draw_norm_v1(value):
+    try:
+        return tf.norm(value)
+    except Exception:
+        return str(value or "").lower().strip()
+
+
+def _turn1_compiled_draw_asdict_v1(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _turn1_compiled_draw_card_name_v1(card):
+    try:
+        return tf.card_name(card)
+    except Exception:
+        if isinstance(card, dict):
+            return (
+                card.get("name")
+                or card.get("card_name")
+                or _turn1_compiled_draw_asdict_v1(card.get("identity")).get("name")
+                or _turn1_compiled_draw_asdict_v1(card.get("raw_card")).get("name")
+                or ""
+            )
+        return ""
+
+
+def _turn1_compiled_draw_ability_name_v1(effect):
+    try:
+        return _turn1_active_compiled_search_ability_name(effect)
+    except Exception:
+        source = _turn1_compiled_draw_asdict_v1(effect.get("source") if isinstance(effect, dict) else {})
+        return source.get("name") or effect.get("name") or "Compiled Draw Ability"
+
+
+def _turn1_compiled_draw_flatten_strings_v1(obj, max_items=5000):
+    try:
+        return _turn1_active_compiled_search_flatten_strings(obj, max_items=max_items)
+    except Exception:
+        parts = []
+
+        def walk(x):
+            if len(parts) >= max_items:
+                return
+            if isinstance(x, dict):
+                for v in x.values():
+                    walk(v)
+            elif isinstance(x, list):
+                for v in x:
+                    walk(v)
+            elif x is not None:
+                parts.append(str(x))
+
+        walk(obj)
+        return " ".join(parts)
+
+
+def _turn1_compiled_draw_effect_text_v1(effect):
+    if not isinstance(effect, dict):
+        return ""
+    source = _turn1_compiled_draw_asdict_v1(effect.get("source"))
+    pieces = [
+        source.get("name") or "",
+        source.get("text") or "",
+        _turn1_compiled_draw_flatten_strings_v1(effect.get("turn1_runtime")),
+        _turn1_compiled_draw_flatten_strings_v1(effect.get("usage_limit")),
+    ]
+    return " ".join(pieces)
+
+
+def _turn1_compiled_draw_runtime_v1(effect):
+    if not isinstance(effect, dict):
+        return {}
+    return _turn1_compiled_draw_asdict_v1(effect.get("turn1_runtime"))
+
+
+def _turn1_compiled_draw_iter_steps_v1(obj):
+    try:
+        yield from tf.flatten_steps(obj)
+    except Exception:
+        if isinstance(obj, dict):
+            if obj.get("op"):
+                yield obj
+            for v in obj.values():
+                yield from _turn1_compiled_draw_iter_steps_v1(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                yield from _turn1_compiled_draw_iter_steps_v1(v)
+
+
+def _turn1_compiled_draw_preferred_steps_v1(effect):
+    runtime = _turn1_compiled_draw_runtime_v1(effect)
+    runtime_steps = runtime.get("runtime_steps")
+    if isinstance(runtime_steps, list) and runtime_steps:
+        return runtime_steps, "runtime_steps"
+
+    compiled_steps = list(_turn1_compiled_draw_iter_steps_v1(effect.get("steps") or []))
+    has_structured_gate = any(
+        isinstance(step, dict) and step.get("op") in {
+            "play_condition",
+            "discard_cards",
+            "discard_card",
+            "attach_card",
+            "optional_or_required_cost",
+        }
+        for step in compiled_steps
+    )
+    if has_structured_gate:
+        return compiled_steps, "compiled_steps"
+
+    runtime_draw_steps = runtime.get("runtime_draw_steps")
+    if isinstance(runtime_draw_steps, list) and runtime_draw_steps:
+        return runtime_draw_steps, "runtime_draw_steps"
+
+    return compiled_steps, "compiled_steps"
+
+
+def _turn1_compiled_draw_effect_has_draw_v1(effect):
+    steps, _ = _turn1_compiled_draw_preferred_steps_v1(effect)
+    return any(isinstance(step, dict) and step.get("op") in _TURN1_COMPILED_DRAW_OPS_V1 for step in _turn1_compiled_draw_iter_steps_v1(steps))
+
+
+def _turn1_compiled_draw_in_play_sources_v1(st):
+    out = []
+    seen = set()
+
+    active = getattr(st, "active", None)
+    if isinstance(active, dict):
+        out.append(active)
+        seen.add(id(active))
+
+    for card in list(getattr(st, "bench", []) or []):
+        if isinstance(card, dict) and id(card) not in seen:
+            out.append(card)
+            seen.add(id(card))
+
+    return out
+
+
+def _turn1_compiled_draw_in_play_names_v1(st):
+    return {
+        _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_card_name_v1(c))
+        for c in _turn1_compiled_draw_in_play_sources_v1(st)
+    }
+
+
+def _turn1_compiled_draw_effect_requires_source_in_play_v1(effect):
+    runtime = _turn1_compiled_draw_runtime_v1(effect)
+    playability = _turn1_compiled_draw_asdict_v1(runtime.get("playability"))
+    if playability.get("requires_source_zone") == "in_play":
+        return True
+
+    # Most ability_effects are already abilities, but be conservative.
+    try:
+        return effect.get("kind") == "ability_activated"
+    except Exception:
+        return True
+
+
+def _turn1_compiled_draw_usage_keys_v1(source, effect):
+    source_name = _turn1_compiled_draw_card_name_v1(source)
+    ability_name = _turn1_compiled_draw_ability_name_v1(effect)
+    source_norm = _turn1_compiled_draw_norm_v1(source_name)
+    ability_norm = _turn1_compiled_draw_norm_v1(ability_name)
+
+    keys = [
+        ("compiled_draw_ability_source", id(source), source_norm, ability_norm),
+    ]
+
+    text = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_effect_text_v1(effect))
+    if "can't use more than 1" in text or "cannot use more than 1" in text or "can’t use more than 1" in text:
+        keys.append(("compiled_draw_ability_shared", ability_norm))
+
+    out = []
+    seen = set()
+    for key in keys:
+        try:
+            hash(key)
+        except Exception:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+def _turn1_compiled_draw_amount_v1(step, st=None):
+    if not isinstance(step, dict):
+        return 0
+    op = step.get("op")
+
+    if op in {"draw_cards", "draw_cards_per_coin_heads"}:
+        try:
+            return max(0, int(tf.draw_amount_from_step(step, counts=getattr(st, "counts", None), coin_heads=getattr(st, "coin_heads", 1))))
+        except Exception:
+            amt = step.get("amount", 1)
+            if isinstance(amt, dict):
+                return max(0, int(amt.get("value", 1) or 1))
+            return max(0, int(amt or 1))
+
+    if op == "draw_until_hand_size":
+        try:
+            target_size = tf.amount_value(step.get("target_hand_size"), default=len(getattr(st, "hand", []) or []), counts=getattr(st, "counts", None))
+            return max(0, int(target_size) - len(getattr(st, "hand", []) or []))
+        except Exception:
+            return 0
+
+    if op == "draw_until_hand_size_matches":
+        return 3
+
+    return 0
+
+
+def _turn1_compiled_draw_step_amount_v1(step, default=1):
+    if not isinstance(step, dict):
+        return default
+
+    for key in ("selection", "amount"):
+        val = step.get(key)
+        if isinstance(val, dict):
+            if "value" in val:
+                try:
+                    return max(0, int(val.get("value") or default))
+                except Exception:
+                    return default
+            if val.get("mode") == "exact" and "count" in val:
+                try:
+                    return max(0, int(val.get("count") or default))
+                except Exception:
+                    return default
+        elif isinstance(val, int):
+            return max(0, val)
+
+    if "value" in step:
+        try:
+            return max(0, int(step.get("value") or default))
+        except Exception:
+            return default
+
+    return default
+
+
+def _turn1_compiled_draw_filter_v1(step):
+    if not isinstance(step, dict):
+        return {}
+    selection = step.get("selection")
+    if isinstance(selection, dict) and isinstance(selection.get("filter"), dict):
+        return selection.get("filter") or {}
+    if isinstance(step.get("filter"), dict):
+        return step.get("filter") or {}
+    return {}
+
+
+def _turn1_compiled_draw_card_matches_filter_v1(card, filt):
+    if not isinstance(card, dict):
+        return False
+    if not isinstance(filt, dict):
+        filt = {}
+
+    structured_keys = set(filt.keys()) - {"from_text", "raw_text", "text"}
+    if filt.get("from_text") is True and not structured_keys:
+        return False
+
+    try:
+        if filt and tf.filter_allows_card(filt, card):
+            return True
+    except Exception:
+        pass
+
+    try:
+        supertype = tf.card_supertype(card)
+    except Exception:
+        supertype = ""
+
+    try:
+        subtypes = {_turn1_compiled_draw_norm_v1(x) for x in (tf.card_subtypes(card) or [])}
+    except Exception:
+        subtypes = set()
+
+    name_norm = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_card_name_v1(card))
+
+    wanted_super = filt.get("supertype") or filt.get("category")
+    if wanted_super:
+        if _turn1_compiled_draw_norm_v1(wanted_super) != _turn1_compiled_draw_norm_v1(supertype):
+            return False
+
+    wanted_sub = filt.get("subtype")
+    if wanted_sub and _turn1_compiled_draw_norm_v1(wanted_sub) not in subtypes:
+        return False
+
+    wanted_subs = filt.get("subtypes")
+    if isinstance(wanted_subs, list):
+        for sub in wanted_subs:
+            if _turn1_compiled_draw_norm_v1(sub) not in subtypes:
+                return False
+
+    if filt.get("basic") is True:
+        if "basic" not in subtypes and "basic" not in name_norm:
+            return False
+
+    energy_type = filt.get("energy_type")
+    if energy_type:
+        et = _turn1_compiled_draw_norm_v1(energy_type)
+        blob = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_flatten_strings_v1(card))
+        if et not in blob:
+            return False
+
+    types = filt.get("types")
+    if isinstance(types, list) and types:
+        blob = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_flatten_strings_v1(card))
+        if not any(_turn1_compiled_draw_norm_v1(t) in blob for t in types):
+            return False
+
+    return True
+
+
+def _turn1_compiled_draw_matches_any_req_v1(card, reqs):
+    for req in reqs or []:
+        try:
+            if _turn1_active_compiled_search_card_matches_req(card, req):
+                return True
+        except Exception:
+            pass
+        for opt in getattr(req, "options", []) or []:
+            try:
+                if tf.target_matches(card, getattr(opt, "norm", "") or getattr(opt, "raw", "")):
+                    return True
+            except Exception:
+                pass
+    return False
+
+
+def _turn1_compiled_draw_pick_hand_cards_v1(st, filt, amount, reqs):
+    amount = max(0, int(amount or 0))
+    if amount == 0:
+        return []
+
+    valid = [
+        c for c in list(getattr(st, "hand", []) or [])
+        if _turn1_compiled_draw_card_matches_filter_v1(c, filt)
+    ]
+    if len(valid) < amount:
+        return []
+
+    safe = [c for c in valid if not _turn1_compiled_draw_matches_any_req_v1(c, reqs)]
+    if len(safe) < amount:
+        return []
+
+    return safe[:amount]
+
+
+def _turn1_compiled_draw_remove_from_hand_v1(st, cards):
+    for card in list(cards or []):
+        try:
+            st.hand.remove(card)
+        except ValueError:
+            return False
+        except Exception:
+            return False
+    return True
+
+
+def _turn1_compiled_draw_add_to_discard_v1(st, cards):
+    try:
+        if not hasattr(st, "discard") or getattr(st, "discard", None) is None:
+            st.discard = []
+        st.discard.extend(cards)
+    except Exception:
+        pass
+
+
+def _turn1_compiled_draw_condition_ok_v1(st, step):
+    cond = _turn1_compiled_draw_asdict_v1(step.get("condition") if isinstance(step, dict) else {})
+
+    req_pokemon = cond.get("requires_pokemon_in_play")
+    if isinstance(req_pokemon, dict):
+        if _turn1_compiled_draw_norm_v1(req_pokemon.get("player") or "self") not in {"self", ""}:
+            return False
+        needed = _turn1_compiled_draw_norm_v1(req_pokemon.get("name") or "")
+        if needed and needed not in _turn1_compiled_draw_in_play_names_v1(st):
+            return False
+        return True
+
+    if cond.get("from_text") is True:
+        return False
+
+    # Empty condition is okay. Unknown structured conditions are not assumed.
+    return not bool(cond)
+
+
+def _turn1_compiled_draw_effect_is_safely_supported_v1(effect):
+    if not isinstance(effect, dict):
+        return False
+    if effect.get("kind") not in {None, "ability_activated"}:
+        return False
+    if not _turn1_compiled_draw_effect_has_draw_v1(effect):
+        return False
+
+    text = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_effect_text_v1(effect))
+
+    # Conservative skip: these need special hand replacement semantics.
+    if "discard your hand" in text or "shuffle your hand" in text:
+        return False
+
+    # Conservative skip for coin-dependent draw unless the op itself models heads.
+    compiled_steps = list(_turn1_compiled_draw_iter_steps_v1(effect.get("steps") or []))
+    if any(isinstance(s, dict) and s.get("op") == "coin_flip" for s in compiled_steps):
+        if not any(isinstance(s, dict) and s.get("op") == "draw_cards_per_coin_heads" for s in compiled_steps):
+            return False
+
+    return True
+
+
+def _turn1_compiled_draw_execute_steps_v1(st, source, effect, steps, rng, reqs, tracker=None, dry_run=False, stage=None, results=None):
+    if results is None:
+        results = {}
+    if stage is None:
+        stage = "after_use_compiled_draw_ability"
+
+    total_draw = 0
+
+    for step in steps or []:
+        if not isinstance(step, dict):
+            continue
+
+        op = step.get("op")
+
+        if op in {
+            "reference_global_rule",
+            "register_usage_limit",
+            "register_play_condition",
+            "register_continuous_modifier",
+            "register_trigger",
+            "register_replacement_effect",
+            "register_knockout_prize_rule",
+            "register_rule_modifier",
+            "semantic_ir_marker",
+            "optional_or_required_cost",
+        }:
+            continue
+
+        if op == "play_condition":
+            if not _turn1_compiled_draw_condition_ok_v1(st, step):
+                return False, total_draw
+            continue
+
+        if op in {"discard_cards", "discard_card"}:
+            filt = _turn1_compiled_draw_filter_v1(step)
+            amount = _turn1_compiled_draw_step_amount_v1(step, default=1)
+            chosen = _turn1_compiled_draw_pick_hand_cards_v1(st, filt, amount, reqs)
+            if len(chosen) < amount:
+                return False, total_draw
+            if not dry_run:
+                if not _turn1_compiled_draw_remove_from_hand_v1(st, chosen):
+                    return False, total_draw
+                _turn1_compiled_draw_add_to_discard_v1(st, chosen)
+                try:
+                    st.log.append({
+                        "event": "compiled_draw_ability_paid_discard_cost",
+                        "ability": _turn1_compiled_draw_ability_name_v1(effect),
+                        "discarded": [_turn1_compiled_draw_card_name_v1(c) for c in chosen],
+                    })
+                except Exception:
+                    pass
+            continue
+
+        if op == "attach_card":
+            filt = _turn1_compiled_draw_filter_v1(step)
+            amount = _turn1_compiled_draw_step_amount_v1(step, default=1)
+            chosen = _turn1_compiled_draw_pick_hand_cards_v1(st, filt, amount, reqs)
+            ok = len(chosen) >= amount
+            result_id = step.get("result_id")
+            if result_id:
+                results[result_id] = bool(ok)
+            if not ok:
+                if step.get("required_for_followup") or step.get("required_to_play"):
+                    return False, total_draw
+                continue
+            if not dry_run:
+                if not _turn1_compiled_draw_remove_from_hand_v1(st, chosen):
+                    return False, total_draw
+                try:
+                    st.log.append({
+                        "event": "compiled_draw_ability_attached_from_hand",
+                        "ability": _turn1_compiled_draw_ability_name_v1(effect),
+                        "source": _turn1_compiled_draw_card_name_v1(source),
+                        "attached": [_turn1_compiled_draw_card_name_v1(c) for c in chosen],
+                    })
+                except Exception:
+                    pass
+            continue
+
+        if op == "conditional":
+            ref = step.get("condition_ref")
+            if ref and not results.get(ref):
+                continue
+            ok, drew = _turn1_compiled_draw_execute_steps_v1(
+                st,
+                source,
+                effect,
+                step.get("then") or [],
+                rng,
+                reqs,
+                tracker=tracker,
+                dry_run=dry_run,
+                stage=stage,
+                results=results,
+            )
+            if not ok:
+                return False, total_draw
+            total_draw += drew
+            continue
+
+        if op in _TURN1_COMPILED_DRAW_OPS_V1:
+            # For compiled full-text draw steps, preserve existing self/opponent filter.
+            try:
+                if step.get("source_text") and not _turn1_is_self_draw_step(step, source):
+                    return False, total_draw
+            except Exception:
+                pass
+
+            n = _turn1_compiled_draw_amount_v1(step, st=st)
+            if n <= 0:
+                continue
+            total_draw += n
+            if not dry_run:
+                tf.draw_cards(st, n, stage)
+                try:
+                    if tracker is not None:
+                        tracker.mark(st.hand)
+                except Exception:
+                    pass
+            continue
+
+        if op == "shuffle_deck":
+            if not dry_run:
+                try:
+                    rng.shuffle(st.deck)
+                except Exception:
+                    pass
+            continue
+
+        # Unknown required gates/costs are not assumed playable.
+        if step.get("required_to_play") or step.get("cost") or step.get("required_for_followup"):
+            return False, total_draw
+
+    return True, total_draw
+
+
+def _turn1_compiled_draw_can_use_v1(st, source, effect, target_norm, reqs):
+    if not _turn1_compiled_draw_effect_is_safely_supported_v1(effect):
+        return False, 0
+
+    if _turn1_compiled_draw_effect_requires_source_in_play_v1(effect):
+        if source not in _turn1_compiled_draw_in_play_sources_v1(st):
+            return False, 0
+
+    usage_keys = _turn1_compiled_draw_usage_keys_v1(source, effect)
+    used = getattr(st, "abilities_used", set())
+    if any(key in used for key in usage_keys):
+        return False, 0
+
+    if target_norm:
+        try:
+            if not any(tf.target_matches(c, target_norm) for c in getattr(st, "deck", []) or []):
+                return False, 0
+        except Exception:
+            pass
+
+    steps, _kind = _turn1_compiled_draw_preferred_steps_v1(effect)
+    ok, draw_total = _turn1_compiled_draw_execute_steps_v1(
+        st,
+        source,
+        effect,
+        steps,
+        rng=None,
+        reqs=reqs,
+        tracker=None,
+        dry_run=True,
+        stage="dry_run_compiled_draw_ability",
+    )
+    if not ok or draw_total <= 0:
+        return False, 0
+
+    return True, draw_total
+
+
+def turn1_compiled_draw_ability_candidates(st, target_norm, reqs):
+    out = []
+    for source in _turn1_compiled_draw_in_play_sources_v1(st):
+        try:
+            effects = list(tf.ability_effects(source))
+        except Exception:
+            effects = []
+
+        for effect in effects:
+            ok, draw_total = _turn1_compiled_draw_can_use_v1(st, source, effect, target_norm, reqs)
+            if not ok:
+                continue
+
+            ability_name = _turn1_compiled_draw_ability_name_v1(effect)
+            score = 120.0 + 25.0 * float(draw_total)
+            out.append((
+                score,
+                {
+                    "_virtual_action": "CompiledDrawAbility",
+                    "source": source,
+                    "effect": effect,
+                    "draw_total": draw_total,
+                    "ability_name": ability_name,
+                },
+            ))
+
+    return out
+
+
+def turn1_use_compiled_draw_ability(st, action, rng, going):
+    source = action.get("source") if isinstance(action, dict) else None
+    effect = action.get("effect") if isinstance(action, dict) else None
+    if not isinstance(source, dict) or not isinstance(effect, dict):
+        return False
+
+    reqs = list(getattr(st, "_turn1_goal_reqs", []) or [])
+    tracker = getattr(st, "_turn1_goal_tracker", None)
+    stage = f"after_use_{_turn1_compiled_draw_ability_name_v1(effect).replace(' ', '_')}"
+
+    ok, draw_total = _turn1_compiled_draw_can_use_v1(st, source, effect, action.get("target_norm", ""), reqs)
+    if not ok:
+        return False
+
+    steps, kind = _turn1_compiled_draw_preferred_steps_v1(effect)
+    ok, actual_draw = _turn1_compiled_draw_execute_steps_v1(
+        st,
+        source,
+        effect,
+        steps,
+        rng,
+        reqs,
+        tracker=tracker,
+        dry_run=False,
+        stage=stage,
+    )
+    if not ok or actual_draw <= 0:
+        return False
+
+    usage_keys = _turn1_compiled_draw_usage_keys_v1(source, effect)
+    try:
+        for key in usage_keys:
+            st.abilities_used.add(key)
+    except Exception:
+        pass
+
+    ability_name = _turn1_compiled_draw_ability_name_v1(effect)
+    st.actions_used += 1
+    st.line.append(ability_name)
+
+    try:
+        st.log.append({
+            "event": "compiled_draw_ability_used",
+            "source": _turn1_compiled_draw_card_name_v1(source),
+            "ability": ability_name,
+            "drawn": _turn1_compiled_draw_actual_drawn_from_log_v3(st, stage, default=actual_draw),
+            "intended_drawn": actual_draw,
+            "plan_kind": kind,
+            "reason": "Generic compiled in-play draw ability with validated structured conditions/costs.",
+        })
+    except Exception:
+        pass
+
+    return True
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_COMPILED_DRAW_ABILITY_SETUP_AND_PRIORITY_V1
+# ---------------------------------------------------------------------
+# Planner layer for generic compiled draw abilities.
+# The executor can use Lunar Cycle / Teal Dance when legal; this layer makes
+# planner choices sane:
+# - exact compiled draw abilities outrank older broad GenericAbility candidates
+# - play_condition is checked across the whole effect, not only preferred steps
+# - Basic Pokémon in hand can be benched to enable a compiled draw ability
+#   source or a named in-play condition such as Solrock for Lunar Cycle
+
+def _turn1_compiled_draw_all_play_conditions_ok_v1(st, effect):
+    if not isinstance(effect, dict):
+        return False
+
+    for step in _turn1_compiled_draw_iter_steps_v1(effect.get("steps") or []):
+        if not isinstance(step, dict):
+            continue
+        if step.get("op") != "play_condition":
+            continue
+        if not _turn1_compiled_draw_condition_ok_v1(st, step):
+            return False
+
+    return True
+
+
+_TURN1_ORIG_COMPILED_DRAW_CAN_USE_V1 = _turn1_compiled_draw_can_use_v1
+
+
+def _turn1_compiled_draw_can_use_v1(st, source, effect, target_norm, reqs):
+    if not _turn1_compiled_draw_all_play_conditions_ok_v1(st, effect):
+        return False, 0
+    return _TURN1_ORIG_COMPILED_DRAW_CAN_USE_V1(st, source, effect, target_norm, reqs)
+
+
+_TURN1_ORIG_COMPILED_DRAW_CANDIDATES_V1 = turn1_compiled_draw_ability_candidates
+
+
+def turn1_compiled_draw_ability_candidates(st, target_norm, reqs):
+    raw = _TURN1_ORIG_COMPILED_DRAW_CANDIDATES_V1(st, target_norm, reqs)
+
+    out = []
+    seen = set()
+    for score, action in raw:
+        if not isinstance(action, dict):
+            continue
+        source = action.get("source")
+        effect = action.get("effect")
+        ability_name = action.get("ability_name") or _turn1_compiled_draw_ability_name_v1(effect)
+        draw_total = action.get("draw_total") or 0
+
+        key = (
+            id(source),
+            _turn1_compiled_draw_norm_v1(ability_name),
+            effect.get("effect_id") if isinstance(effect, dict) else "",
+        )
+        # Collapse canonical/source duplicate effects by source + ability name.
+        shared_key = (
+            id(source),
+            _turn1_compiled_draw_norm_v1(ability_name),
+        )
+        if shared_key in seen:
+            continue
+        seen.add(shared_key)
+
+        # Old GenericAbility scores at 1000. Exact compiled draw should beat it,
+        # but still not swamp very high deterministic search scores.
+        try:
+            better_score = 1000.5 + 10.0 * float(draw_total)
+        except Exception:
+            better_score = 1000.5
+
+        action["ability_name"] = ability_name
+        action["target_norm"] = target_norm
+        out.append((max(float(score or 0), better_score), action))
+
+    return out
+
+
+def _turn1_compiled_draw_bench_has_room_v1(st):
+    try:
+        return len(getattr(st, "bench", []) or []) < 5
+    except Exception:
+        return True
+
+
+def _turn1_compiled_draw_is_basic_pokemon_v1(card):
+    try:
+        return bool(tf.is_basic_pokemon(card))
+    except Exception:
+        return False
+
+
+def _turn1_compiled_draw_required_pokemon_names_v1(effect):
+    names = []
+    for step in _turn1_compiled_draw_iter_steps_v1(effect.get("steps") or []):
+        if not isinstance(step, dict) or step.get("op") != "play_condition":
+            continue
+        cond = _turn1_compiled_draw_asdict_v1(step.get("condition"))
+        req = cond.get("requires_pokemon_in_play")
+        if isinstance(req, dict):
+            name = _turn1_compiled_draw_norm_v1(req.get("name") or "")
+            if name:
+                names.append(name)
+
+    # Preserve order, remove duplicates.
+    out = []
+    seen = set()
+    for n in names:
+        if n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+    return out
+
+
+def _turn1_compiled_draw_card_has_supported_draw_effect_v1(card):
+    try:
+        effects = list(tf.ability_effects(card))
+    except Exception:
+        effects = []
+
+    for effect in effects:
+        if _turn1_compiled_draw_effect_is_safely_supported_v1(effect):
+            return True
+
+    return False
+
+
+def turn1_compiled_draw_setup_candidates(st, target_norm, reqs):
+    if not _turn1_compiled_draw_bench_has_room_v1(st):
+        return []
+
+    out = []
+    in_play_names = _turn1_compiled_draw_in_play_names_v1(st)
+
+    # 1) Bench a source Pokémon from hand if it has a supported draw ability
+    # that could draw into the target.
+    for card in list(getattr(st, "hand", []) or []):
+        if not isinstance(card, dict):
+            continue
+        if not _turn1_compiled_draw_is_basic_pokemon_v1(card):
+            continue
+        if not _turn1_compiled_draw_card_has_supported_draw_effect_v1(card):
+            continue
+
+        try:
+            if target_norm and not any(tf.target_matches(c, target_norm) for c in getattr(st, "deck", []) or []):
+                continue
+        except Exception:
+            pass
+
+        out.append((
+            1000.25,
+            {
+                "_virtual_action": "CompiledDrawSetupBench",
+                "card": card,
+                "reason": "bench_draw_ability_source",
+            },
+        ))
+
+    # 2) Bench a named required Pokémon from hand if an existing in-play draw
+    # source is waiting on that condition, e.g. Solrock for Lunar Cycle.
+    needed_names = set()
+    for source in _turn1_compiled_draw_in_play_sources_v1(st):
+        try:
+            effects = list(tf.ability_effects(source))
+        except Exception:
+            effects = []
+        for effect in effects:
+            if not _turn1_compiled_draw_effect_is_safely_supported_v1(effect):
+                continue
+
+            names = _turn1_compiled_draw_required_pokemon_names_v1(effect)
+            for name in names:
+                if name not in in_play_names:
+                    needed_names.add(name)
+
+    for card in list(getattr(st, "hand", []) or []):
+        if not isinstance(card, dict):
+            continue
+        if not _turn1_compiled_draw_is_basic_pokemon_v1(card):
+            continue
+        cname = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_card_name_v1(card))
+        if cname not in needed_names:
+            continue
+
+        out.append((
+            1000.3,
+            {
+                "_virtual_action": "CompiledDrawSetupBench",
+                "card": card,
+                "reason": "bench_draw_ability_condition",
+            },
+        ))
+
+    # Dedupe by physical card object.
+    deduped = []
+    seen = set()
+    for score, action in out:
+        key = id(action.get("card"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append((score, action))
+
+    return deduped
+
+
+def turn1_use_compiled_draw_setup_bench(st, action, rng=None):
+    if not isinstance(action, dict):
+        return False
+    card = action.get("card")
+    if not isinstance(card, dict):
+        return False
+    if not _turn1_compiled_draw_bench_has_room_v1(st):
+        return False
+    if not _turn1_compiled_draw_is_basic_pokemon_v1(card):
+        return False
+
+    try:
+        st.hand.remove(card)
+    except ValueError:
+        return False
+    except Exception:
+        return False
+
+    try:
+        if not hasattr(st, "bench") or getattr(st, "bench", None) is None:
+            st.bench = []
+        st.bench.append(card)
+    except Exception:
+        return False
+
+    st.actions_used += 1
+
+    try:
+        st.log.append({
+            "event": "compiled_draw_ability_setup_bench",
+            "card": _turn1_compiled_draw_card_name_v1(card),
+            "reason": action.get("reason"),
+        })
+    except Exception:
+        pass
+
+    return True
+
+
+def _turn1_effect_is_supported_compiled_draw_v1(effect):
+    try:
+        return _turn1_compiled_draw_effect_is_safely_supported_v1(effect) and _turn1_compiled_draw_effect_has_draw_v1(effect)
+    except Exception:
+        return False
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_COMPILED_DRAW_TEXT_PLAY_CONDITION_V2
+# ---------------------------------------------------------------------
+# Some cards have duplicate/synthetic ability effects where the structured
+# play_condition is missing but the source text still says things like
+# "if you have Solrock in play". Parse those simple self-board conditions
+# conservatively so draw abilities cannot fire before their enabler is in play.
+
+def _turn1_compiled_draw_required_pokemon_names_from_text_v2(effect):
+    import re
+
+    raw_text = _turn1_compiled_draw_effect_text_v1(effect)
+    if not raw_text:
+        return []
+
+    names = []
+
+    patterns = [
+        r"if\s+you\s+have\s+([A-Za-z0-9'’.\-\s\[\]:éÉ]+?)\s+in\s+play",
+        r"if\s+([A-Za-z0-9'’.\-\s\[\]:éÉ]+?)\s+is\s+in\s+play",
+    ]
+
+    for pat in patterns:
+        for m in re.finditer(pat, raw_text, flags=re.IGNORECASE):
+            candidate = (m.group(1) or "").strip()
+            candidate_norm = _turn1_compiled_draw_norm_v1(candidate)
+
+            if not candidate_norm:
+                continue
+
+            # Avoid turning generic phrases into fake Pokémon names.
+            bad = {
+                "your opponent",
+                "opponent",
+                "this pokemon",
+                "this pokémon",
+                "this pokemon is",
+                "this pokémon is",
+                "any pokemon",
+                "any pokémon",
+                "a pokemon",
+                "a pokémon",
+                "evolved pokemon",
+                "evolved pokémon",
+                "basic pokemon",
+                "basic pokémon",
+            }
+            if candidate_norm in bad:
+                continue
+            if candidate_norm.startswith("your opponent"):
+                continue
+            if "pokemon" in candidate_norm or "pokémon" in candidate_norm:
+                continue
+
+            names.append(candidate_norm)
+
+    out = []
+    seen = set()
+    for name in names:
+        if name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+
+    return out
+
+
+_TURN1_ORIG_COMPILED_DRAW_REQUIRED_NAMES_BEFORE_TEXT_V2 = _turn1_compiled_draw_required_pokemon_names_v1
+
+
+def _turn1_compiled_draw_required_pokemon_names_v1(effect):
+    names = []
+    try:
+        names.extend(_TURN1_ORIG_COMPILED_DRAW_REQUIRED_NAMES_BEFORE_TEXT_V2(effect))
+    except Exception:
+        pass
+
+    try:
+        names.extend(_turn1_compiled_draw_required_pokemon_names_from_text_v2(effect))
+    except Exception:
+        pass
+
+    out = []
+    seen = set()
+    for name in names:
+        norm = _turn1_compiled_draw_norm_v1(name)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+
+    return out
+
+
+_TURN1_ORIG_COMPILED_DRAW_ALL_PLAY_CONDITIONS_BEFORE_TEXT_V2 = _turn1_compiled_draw_all_play_conditions_ok_v1
+
+
+def _turn1_compiled_draw_all_play_conditions_ok_v1(st, effect):
+    try:
+        if not _TURN1_ORIG_COMPILED_DRAW_ALL_PLAY_CONDITIONS_BEFORE_TEXT_V2(st, effect):
+            return False
+    except Exception:
+        return False
+
+    in_play = _turn1_compiled_draw_in_play_names_v1(st)
+
+    for required_name in _turn1_compiled_draw_required_pokemon_names_v1(effect):
+        if required_name not in in_play:
+            return False
+
+    return True
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_COMPILED_DRAW_CANDIDATE_CONDITION_GUARD_V3
+# ---------------------------------------------------------------------
+# Last-mile guard at candidate emission time. This prevents duplicate/synthetic
+# compiled draw effects from being offered before simple named in-play
+# requirements are actually satisfied, e.g. Lunar Cycle before Solrock is in play.
+
+def _turn1_compiled_draw_required_names_v3(effect):
+    names = []
+
+    try:
+        names.extend(_turn1_compiled_draw_required_pokemon_names_v1(effect))
+    except Exception:
+        pass
+
+    # Independent fallback in case earlier text parser wrapper did not bind.
+    try:
+        import re
+        raw_text = _turn1_compiled_draw_effect_text_v1(effect)
+        for pat in (
+            r"if\s+you\s+have\s+([A-Za-z0-9'’.\-\s\[\]:éÉ]+?)\s+in\s+play",
+            r"if\s+([A-Za-z0-9'’.\-\s\[\]:éÉ]+?)\s+is\s+in\s+play",
+        ):
+            for m in re.finditer(pat, raw_text or "", flags=re.IGNORECASE):
+                val = _turn1_compiled_draw_norm_v1((m.group(1) or "").strip())
+                if not val:
+                    continue
+                if "pokemon" in val or "pokémon" in val:
+                    continue
+                if val.startswith("your opponent") or val in {"opponent", "this"}:
+                    continue
+                names.append(val)
+    except Exception:
+        pass
+
+    out = []
+    seen = set()
+    for name in names:
+        norm = _turn1_compiled_draw_norm_v1(name)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+
+    return out
+
+
+def _turn1_compiled_draw_named_requirements_satisfied_v3(st, effect):
+    in_play = _turn1_compiled_draw_in_play_names_v1(st)
+    for name in _turn1_compiled_draw_required_names_v3(effect):
+        if name not in in_play:
+            return False
+    return True
+
+
+_TURN1_ORIG_COMPILED_DRAW_CANDIDATES_BEFORE_CONDITION_GUARD_V3 = turn1_compiled_draw_ability_candidates
+
+
+def turn1_compiled_draw_ability_candidates(st, target_norm, reqs):
+    raw = _TURN1_ORIG_COMPILED_DRAW_CANDIDATES_BEFORE_CONDITION_GUARD_V3(st, target_norm, reqs)
+
+    out = []
+    for score, action in raw:
+        if not isinstance(action, dict):
+            continue
+        effect = action.get("effect")
+        if not _turn1_compiled_draw_named_requirements_satisfied_v3(st, effect):
+            continue
+        out.append((score, action))
+
+    return out
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_COMPILED_DRAW_SIBLING_CONDITION_MERGE_V4
+# ---------------------------------------------------------------------
+# Some cards expose both a canonical compiled ability and a synthetic
+# source_ability for the same printed ability. The synthetic duplicate can have
+# empty text/steps, so local condition parsing returns no requirements even
+# though the sibling canonical effect requires something like Solrock in play.
+#
+# Merge named requirements across sibling effects with the same source card and
+# ability name before emitting a candidate.
+
+def _turn1_compiled_draw_required_names_for_source_effect_v4(source, effect):
+    names = []
+
+    try:
+        names.extend(_turn1_compiled_draw_required_names_v3(effect))
+    except Exception:
+        try:
+            names.extend(_turn1_compiled_draw_required_pokemon_names_v1(effect))
+        except Exception:
+            pass
+
+    ability_name = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_ability_name_v1(effect))
+
+    try:
+        siblings = list(tf.ability_effects(source))
+    except Exception:
+        siblings = []
+
+    for sib in siblings:
+        if not isinstance(sib, dict):
+            continue
+        sib_name = _turn1_compiled_draw_norm_v1(_turn1_compiled_draw_ability_name_v1(sib))
+        if sib_name != ability_name:
+            continue
+
+        try:
+            names.extend(_turn1_compiled_draw_required_names_v3(sib))
+        except Exception:
+            try:
+                names.extend(_turn1_compiled_draw_required_pokemon_names_v1(sib))
+            except Exception:
+                pass
+
+    out = []
+    seen = set()
+    for name in names:
+        norm = _turn1_compiled_draw_norm_v1(name)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+
+    return out
+
+
+def _turn1_compiled_draw_named_requirements_satisfied_for_action_v4(st, action):
+    if not isinstance(action, dict):
+        return False
+
+    source = action.get("source")
+    effect = action.get("effect")
+
+    if not isinstance(source, dict) or not isinstance(effect, dict):
+        return False
+
+    in_play = _turn1_compiled_draw_in_play_names_v1(st)
+
+    for name in _turn1_compiled_draw_required_names_for_source_effect_v4(source, effect):
+        if name not in in_play:
+            return False
+
+    return True
+
+
+_TURN1_ORIG_COMPILED_DRAW_CANDIDATES_BEFORE_SIBLING_CONDITION_MERGE_V4 = turn1_compiled_draw_ability_candidates
+
+
+def turn1_compiled_draw_ability_candidates(st, target_norm, reqs):
+    raw = _TURN1_ORIG_COMPILED_DRAW_CANDIDATES_BEFORE_SIBLING_CONDITION_MERGE_V4(st, target_norm, reqs)
+
+    out = []
+    seen = set()
+
+    for score, action in raw:
+        if not isinstance(action, dict):
+            continue
+
+        if not _turn1_compiled_draw_named_requirements_satisfied_for_action_v4(st, action):
+            continue
+
+        source = action.get("source")
+        ability_name = action.get("ability_name") or _turn1_compiled_draw_ability_name_v1(action.get("effect"))
+        key = (
+            id(source),
+            _turn1_compiled_draw_norm_v1(ability_name),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+
+        out.append((score, action))
+
+    return out
+
+
+
+# ---------------------------------------------------------------------
+# TURN1_COMPILED_DRAW_ACTUAL_DRAWN_LOG_HELPER_V1
+# ---------------------------------------------------------------------
+# Reports actual drawn cards for compiled draw abilities when a tiny forced
+# test deck has fewer cards than the intended draw amount.
+def _turn1_compiled_draw_actual_drawn_from_log_v3(st, stage, default=0):
+    total = 0
+
+    try:
+        for ev in list(getattr(st, "log", []) or []):
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("event") != "draw_cards":
+                continue
+            if ev.get("stage") != stage:
+                continue
+            drawn = ev.get("drawn")
+            if isinstance(drawn, list):
+                total += len(drawn)
+            elif isinstance(ev.get("amount"), int):
+                total += int(ev.get("amount") or 0)
+    except Exception:
+        total = 0
+
+    if total > 0:
+        return total
+
+    try:
+        return int(default or 0)
+    except Exception:
+        return 0
 
 
 def simulate_one_goal_trial(
@@ -6130,7 +7412,139 @@ def _turn1_cached_score_candidates(st, missing, going, enable_chain_search):
     except Exception:
         key = None
 
-    scored = _ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_FILTER_COMPAT(st, missing, going, enable_chain_search)
+    scored = list(_ORIG_SCORE_CANDIDATE_FOR_MISSING_TARGETS_BEFORE_ACTION_FILTER_COMPAT(
+        st,
+        missing,
+        going,
+        enable_chain_search,
+    ))
+
+    # TURN1_FILTER_GENERIC_DRAW_LEGACY_IN_ACTIVE_SCORER_V1
+    # Suppress older broad GenericAbility draw rows when the effect is now
+    # handled by the exact compiled draw runtime. This prevents duplicate
+    # Lunar Cycle rows and avoids bypassing structured costs/conditions.
+    filtered_legacy_generic_draw = []
+    for _score, _action, _tn in scored:
+        if (
+            isinstance(_action, dict)
+            and _action.get("_virtual_action") == "GenericAbility"
+            and _turn1_effect_is_supported_compiled_draw_v1(_action.get("effect"))
+        ):
+            continue
+        filtered_legacy_generic_draw.append((_score, _action, _tn))
+    scored = filtered_legacy_generic_draw
+
+    # TURN1_COMPILED_DRAW_IN_ACTIVE_CACHED_SCORER_V1
+    # This is the active scoring path. Add generic compiled draw setup/actions
+    # here instead of relying on earlier wrapper definitions that may be
+    # overwritten later in this file.
+    def score_key(action, target_norm):
+        if isinstance(action, dict):
+            va = action.get("_virtual_action")
+            if va == "CompiledDrawAbility":
+                return (
+                    va,
+                    id(action.get("source")),
+                    str(action.get("ability_name") or ""),
+                    str(target_norm or ""),
+                )
+            if va == "CompiledDrawSetupBench":
+                return (
+                    va,
+                    id(action.get("card")),
+                    str(action.get("reason") or ""),
+                    str(target_norm or ""),
+                )
+            if va == "BenchAbility":
+                return (
+                    va,
+                    id(action.get("card")),
+                    str(target_norm or ""),
+                )
+            return (
+                va,
+                str(action),
+                str(target_norm or ""),
+            )
+
+        return (
+            "card",
+            id(action),
+            str(target_norm or ""),
+        )
+
+    seen = set()
+    deduped = []
+    for score, action, target_norm in scored:
+        sk = score_key(action, target_norm)
+        if sk in seen:
+            continue
+        seen.add(sk)
+        deduped.append((score, action, target_norm))
+
+    target_norms = []
+    for req in missing or []:
+        try:
+            tn = choose_primary_target_norm(req, st)
+        except Exception:
+            tn = ""
+        if tn:
+            target_norms.append(tn)
+
+    for tn in target_norms:
+        try:
+            setup_candidates = list(turn1_compiled_draw_setup_candidates(st, tn, missing))
+        except Exception:
+            setup_candidates = []
+
+        for score, action in setup_candidates:
+            if score <= 0:
+                continue
+            sk = score_key(action, tn)
+            if sk in seen:
+                continue
+            seen.add(sk)
+            deduped.append((score, action, tn))
+
+        try:
+            draw_candidates = list(turn1_compiled_draw_ability_candidates(st, tn, missing))
+        except Exception:
+            draw_candidates = []
+
+        for score, action in draw_candidates:
+            if score <= 0:
+                continue
+            if isinstance(action, dict):
+                action = dict(action)
+                action["target_norm"] = tn
+            sk = score_key(action, tn)
+            if sk in seen:
+                continue
+            seen.add(sk)
+            deduped.append((score, action, tn))
+
+    scored = deduped
+
+    # TURN1_FILTER_LEGACY_DRAW_WHEN_COMPILED_EXISTS_V1
+    # If a generic compiled draw ability is available for a target, suppress
+    # older hardcoded draw shims for that same target. This prevents duplicate
+    # Teal Dance / Run Errand rows while keeping the old paths as fallback.
+    compiled_draw_targets = set()
+    for _score, _action, _tn in scored:
+        if isinstance(_action, dict) and _action.get("_virtual_action") == "CompiledDrawAbility":
+            compiled_draw_targets.add(str(_tn or ""))
+
+    if compiled_draw_targets:
+        filtered_scored = []
+        for _score, _action, _tn in scored:
+            if (
+                isinstance(_action, dict)
+                and _action.get("_virtual_action") in {"Teal Dance", "Run Errand"}
+                and str(_tn or "") in compiled_draw_targets
+            ):
+                continue
+            filtered_scored.append((_score, _action, _tn))
+        scored = filtered_scored
 
     if key is not None and len(_TURN1_SCORE_CANDIDATE_CACHE) < _TURN1_SCORE_CANDIDATE_CACHE_MAX:
         _TURN1_SCORE_CANDIDATE_CACHE[key] = scored
@@ -7807,6 +9221,10 @@ def turn1_action_filter_compat_target_compatible_with_action_filter(st: Any, tar
     return True
 
 def turn1_action_filter_compat_action_allowed_for_goal(st: Any, action: Any, target_norm: str) -> bool:
+    # TURN1_ALLOW_COMPILED_DRAW_VIRTUAL_ACTIONS_IN_COMPAT_FILTER_V1
+    if isinstance(action, dict) and action.get("_virtual_action") in {"CompiledDrawAbility", "CompiledDrawSetupBench"}:
+        return True
+
     if not turn1_action_filter_compat_position_allowed(st, action):
         try:
             st.log.append({
