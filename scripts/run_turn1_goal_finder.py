@@ -6726,6 +6726,16 @@ def _turn1_goal_trial_batch_worker(payload: Tuple[Any, ...]) -> List[Dict[str, A
     return out
 
 
+def _turn1_effective_parallel_workers(args: argparse.Namespace, trials: int) -> int:
+    # TURN1_EFFECTIVE_PARALLEL_WORKERS_REPORTING_V1
+    # Match actual executor behavior: tiny runs intentionally stay serial
+    # because process startup/pickling overhead is not worth it.
+    workers = _turn1_trial_worker_count(args, trials)
+    if workers <= 1 or int(trials or 0) < 100:
+        return 1
+    return workers
+
+
 def _turn1_parallel_goal_trials(
     args: argparse.Namespace,
     deck: List[Dict[str, Any]],
@@ -6804,7 +6814,7 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
         "played_exclusion_summary": exclusion_summary,
         "opponent_only_filter_summary": opponent_only_filter_summary,
         "active_repeat_normalization_summary": active_repeat_normalization_summary,
-        "parallel_workers": _turn1_trial_worker_count(args, int(getattr(args, "trials", 0) or 0)),
+        "parallel_workers": _turn1_effective_parallel_workers(args, int(getattr(args, "trials", 0) or 0)),
         "requested_trials": requested_trials,
         "actual_trials": actual_trials,
         "trial_count_ok": actual_trials == requested_trials,
