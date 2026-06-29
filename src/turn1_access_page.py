@@ -709,8 +709,44 @@ def _display_label_from_runtime_goal(goal_name: str, selected_labels: list[str])
     return str(goal_name)
 
 
+
+# TURN1_EXACT_CARD_ID_DECKLIST_WRITER_V1
+def _turn1_option_card_id_for_decklist_v1(opt: dict[str, Any]) -> str:
+    if not isinstance(opt, dict):
+        return ""
+
+    for key in ("card_id", "id", "representative_card_id"):
+        val = opt.get(key)
+        if val:
+            return str(val).strip()
+
+    card = opt.get("card")
+    if isinstance(card, dict):
+        for key in ("representative_card_id", "id", "card_id"):
+            val = card.get(key)
+            if val:
+                return str(val).strip()
+        try:
+            raw = ((card.get("sources") or {}).get("raw_card") or {})
+            if raw.get("id"):
+                return str(raw.get("id")).strip()
+        except Exception:
+            pass
+
+    return ""
+
+
+def _turn1_decklist_line_for_option_v1(opt: dict[str, Any]) -> str:
+    count = int(opt["count"])
+    label = _runtime_label_for_decklist(str(opt["label"]))
+    card_id = _turn1_option_card_id_for_decklist_v1(opt)
+    if card_id:
+        return f"{count} {label} [{card_id}]"
+    return f"{count} {label}"
+
+
 def _write_decklist_file(options: list[dict[str, Any]], path: Path) -> None:
-    lines = [f"{int(opt['count'])} {_runtime_label_for_decklist(opt['label'])}" for opt in options]
+    lines = [_turn1_decklist_line_for_option_v1(opt) for opt in options]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
