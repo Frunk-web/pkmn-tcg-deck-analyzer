@@ -44,6 +44,7 @@ import streamlit as st
 
 from src.deck_parser import DeckCard
 from src.card_index import get_card_index
+import re
 
 
 POKEMON_TCG_API_BASE = "https://api.pokemontcg.io/v2"
@@ -63,6 +64,32 @@ BASIC_ENERGY_FALLBACK_IMAGES: Dict[str, Tuple[str, str, str]] = {
     "darkness": ("sve-7", "https://images.pokemontcg.io/sve/7.png", "https://images.pokemontcg.io/sve/7_hires.png"),
     "metal": ("sve-8", "https://images.pokemontcg.io/sve/8.png", "https://images.pokemontcg.io/sve/8_hires.png"),
 }
+
+
+
+# EXACT_PRINT_PARENTHETICAL_NAME_ALIAS_V1
+def normalize_api_card_name(value: str) -> str:
+    return (value or "").lower().strip()
+
+
+def normalize_api_card_name_without_parenthetical(value: str) -> str:
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", str(value or "")).strip()
+    return normalize_api_card_name(text)
+
+
+def api_names_compatible_for_exact_print(api_name: str, deck_name: str, exact_print_requested: bool) -> bool:
+    api_norm = normalize_api_card_name(api_name)
+    deck_norm = normalize_api_card_name(deck_name)
+    if api_norm == deck_norm:
+        return True
+
+    if exact_print_requested:
+        return (
+            normalize_api_card_name_without_parenthetical(api_name)
+            == normalize_api_card_name_without_parenthetical(deck_name)
+        )
+
+    return False
 
 
 def get_api_key():
@@ -96,6 +123,26 @@ def normalize_set_aliases(set_code: Optional[str]) -> set:
 
     wanted = set_code.lower().strip()
     aliases = {wanted, wanted.replace("-", "")}
+
+    # EXACT_PRINT_SV_SET_ALIASES_V1
+    # PTCGL/export set codes for Scarlet & Violet sets are not always
+    # present as ptcgoCode in the local/API records, so map them to API ids.
+    sv_aliases = {
+            "svi": "sv1",
+            "pal": "sv2",
+            "obf": "sv3",
+            "mew": "sv3pt5",
+            "par": "sv4",
+            "paf": "sv4pt5",
+            "tef": "sv5",
+            "twm": "sv6",
+            "sfa": "sv6pt5",
+            "scr": "sv7",
+            "ssp": "sv8",
+            "pre": "sv8pt5",
+        }
+    if wanted in sv_aliases:
+        aliases.add(sv_aliases[wanted])
 
     # Common promo export pattern:
     # PR-SV should match Pokémon TCG API set id "svp".
@@ -258,6 +305,24 @@ def build_queries(card: DeckCard) -> List[str]:
     safe_name = card.name.replace('"', '\\"')
     queries = []
 
+    exact_print_requested = bool(
+        (card.set_code or card.collector_number)
+        and (card.set_code or "").lower() != "energy"
+    )
+
+    # EXACT_PRINT_SET_NUMBER_QUERY_V2
+    # Exact-print rows may have deck-export names without official subtitles:
+    #   Boss's Orders PAL 265
+    # while the API name is:
+    #   Boss's Orders (Ghetsis)
+    # So try set+number without name before name-constrained queries.
+    if exact_print_requested and card.collector_number:
+        if card.set_code and "-" not in card.set_code:
+            queries.append(
+                f"set.ptcgoCode:{card.set_code} number:{card.collector_number}"
+            )
+        queries.append(f"number:{card.collector_number}")
+
     # Avoid strict set-code query for hyphenated promo codes like PR-SV,
     # because those often do not match ptcgoCode directly.
     if (
@@ -276,9 +341,15 @@ def build_queries(card: DeckCard) -> List[str]:
         queries.append(f'name:"{safe_name}" number:{card.collector_number}')
 
     queries.append(f'name:"{safe_name}"')
-    return queries
 
-
+    # Preserve order while deduping.
+    out = []
+    seen = set()
+    for q in queries:
+        if q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out
 
 def find_best_api_match(card: DeckCard) -> Optional[dict]:
     queries = build_queries(card)
@@ -299,7 +370,11 @@ def find_best_api_match(card: DeckCard) -> Optional[dict]:
         exact_name_results = [
             r
             for r in results
-            if r.get("name", "").lower().strip() == card.name.lower().strip()
+            if api_names_compatible_for_exact_print(
+                r.get("name", ""),
+                card.name,
+                exact_print_requested,
+            )
         ]
         exact_name_results = exact_name_results or results
 

@@ -42,6 +42,18 @@ def normalize_card_name(value: Any) -> str:
     return text
 
 
+
+# EXACT_PRINT_PARENTHETICAL_NAME_ALIAS_V1
+def normalize_card_name_without_parenthetical(value: Any) -> str:
+    """Normalize a card name after removing parenthetical subtitles.
+
+    Example:
+      Boss's Orders (Ghetsis) -> Boss's Orders
+    """
+    text = re.sub(r"\s*\([^)]*\)\s*$", "", str(value or "")).strip()
+    return normalize_card_name(text)
+
+
 def _first_nonempty(mapping: Dict[str, Any], keys: Sequence[str]) -> Any:
     for key in keys:
         if key in mapping and mapping[key] not in (None, ""):
@@ -204,6 +216,42 @@ class CardIndex:
         wanted = str(set_code).lower().strip()
         aliases = {wanted, wanted.replace("-", "")}
 
+        # EXACT_PRINT_SV_SET_ALIASES_V1
+        # PTCGL/export set codes for Scarlet & Violet sets are not always
+        # present as ptcgoCode in the local/API records, so map them to API ids.
+        sv_aliases = {
+            "svi": "sv1",
+            "pal": "sv2",
+            "obf": "sv3",
+            "mew": "sv3pt5",
+            "par": "sv4",
+            "paf": "sv4pt5",
+            "tef": "sv5",
+            "twm": "sv6",
+            "sfa": "sv6pt5",
+            "scr": "sv7",
+            "ssp": "sv8",
+            "pre": "sv8pt5",
+        }
+        if wanted in sv_aliases:
+            aliases.add(sv_aliases[wanted])
+
+        # Common promo export pattern:
+        # PR-SV should match Pokémon TCG API set id svp.
+        if wanted.startswith("pr-"):
+            promo_part = wanted.replace("pr-", "")
+            aliases.add(f"{promo_part}p")
+
+        return aliases
+
+
+    def _set_aliases(set_code: Optional[str]) -> set[str]:
+        if not set_code:
+            return set()
+
+        wanted = str(set_code).lower().strip()
+        aliases = {wanted, wanted.replace("-", "")}
+
         # Common promo export pattern: PR-SV should match Pokémon TCG API set id svp.
         if wanted.startswith("pr-"):
             promo_part = wanted.replace("pr-", "")
@@ -245,7 +293,25 @@ class CardIndex:
         set_code: Optional[str] = None,
         collector_number: Optional[str] = None,
     ) -> Optional[CardRecord]:
-        candidates = self.raw_by_name_norm.get(normalize_card_name(name), [])
+        exact_print_requested = bool(set_code or collector_number)
+
+        candidates = list(self.raw_by_name_norm.get(normalize_card_name(name), []))
+
+        # EXACT_PRINT_PARENTHETICAL_NAME_ALIAS_V2
+        # For exact print requests, include official names with parenthetical
+        # subtitles when the deck export omits them:
+        #   Boss's Orders PAL 265
+        #   Boss's Orders (Ghetsis) PAL 265
+        if exact_print_requested:
+            wanted_base = normalize_card_name_without_parenthetical(name)
+            seen_ids = {c.card_id for c in candidates}
+            for record in self.raw_records:
+                if record.card_id in seen_ids:
+                    continue
+                if normalize_card_name_without_parenthetical(record.name) == wanted_base:
+                    candidates.append(record)
+                    seen_ids.add(record.card_id)
+
         if not candidates:
             return None
 
@@ -254,18 +320,15 @@ class CardIndex:
             for card in candidates
             if self._record_matches_print(card, set_code, collector_number)
         ]
+
         if print_matches:
             image_matches = [c for c in print_matches if c.image_url or c.image_large_url]
             return image_matches[0] if image_matches else print_matches[0]
 
-        # STRICT_EXACT_PRINT_IMAGES_V1
-        # If the decklist provided an exact print, never silently fall back to
-        # another card with the same name. A missing image is safer than showing
-        # the wrong Kakuna/Weedle/etc. Callers may still fall back to API/cache.
-        if set_code or collector_number:
+        # Exact-print rows should not silently fall back to another same-name print.
+        if exact_print_requested:
             return None
 
-        # Name-only rows keep the old fallback behavior.
         image_matches = [c for c in candidates if c.image_url or c.image_large_url]
         return image_matches[0] if image_matches else candidates[0]
 
