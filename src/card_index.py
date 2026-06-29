@@ -45,13 +45,27 @@ def normalize_card_name(value: Any) -> str:
 
 # EXACT_PRINT_PARENTHETICAL_NAME_ALIAS_V1
 def normalize_card_name_without_parenthetical(value: Any) -> str:
-    """Normalize a card name after removing parenthetical subtitles.
+    """Normalize exact-print alias names.
 
-    Example:
+    Examples:
       Boss's Orders (Ghetsis) -> Boss's Orders
+      Basic Darkness Energy -> Darkness Energy
     """
     text = re.sub(r"\s*\([^)]*\)\s*$", "", str(value or "")).strip()
+
+    # ENERGY_EXACT_PRINT_ALIAS_V1
+    # Deck exports often use "Darkness Energy", while the card database uses
+    # "Basic Darkness Energy". Treat these as the same only for exact-print
+    # alias expansion.
+    text = re.sub(
+        r"^basic\s+(.+\senergy)$",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
     return normalize_card_name(text)
+
 
 
 def _first_nonempty(mapping: Dict[str, Any], keys: Sequence[str]) -> Any:
@@ -216,6 +230,87 @@ class CardIndex:
         wanted = str(set_code).lower().strip()
         aliases = {wanted, wanted.replace("-", "")}
 
+        # EXACT_PRINT_SET_ALIASES_V1
+        # PTCGL/deck-export set codes are not always stored as ptcgoCode in
+        # local/API records. Map common export codes to API set ids.
+        set_id_aliases = {
+            "svi": "sv1",
+            "pal": "sv2",
+            "obf": "sv3",
+            "mew": "sv3pt5",
+            "par": "sv4",
+            "paf": "sv4pt5",
+            "tef": "sv5",
+            "twm": "sv6",
+            "sfa": "sv6pt5",
+            "scr": "sv7",
+            "ssp": "sv8",
+            "pre": "sv8pt5",
+            "mee": "sve",
+            "sve": "sve",
+            "meg": "me1",
+            "pfl": "me2",
+            "plf": "bw9",
+            "asc": "me2pt5",
+            "por": "me3",
+            "cri": "me4",
+        }
+        if wanted in set_id_aliases:
+            aliases.add(set_id_aliases[wanted])
+
+        # Common promo export pattern: PR-SV should match Pokémon TCG API set id svp.
+        if wanted.startswith("pr-"):
+            promo_part = wanted.replace("pr-", "")
+            aliases.add(f"{promo_part}p")
+
+        return aliases
+
+
+    def _set_aliases(set_code: Optional[str]) -> set[str]:
+        if not set_code:
+            return set()
+
+        wanted = str(set_code).lower().strip()
+        aliases = {wanted, wanted.replace("-", "")}
+
+        # EXACT_PRINT_SV_SET_ALIASES_V2
+        # PTCGL/deck-export set codes are not always stored as ptcgoCode in
+        # the local/API records. Map common export codes to API set ids.
+        set_id_aliases = {
+            "svi": "sv1",
+            "pal": "sv2",
+            "obf": "sv3",
+            "mew": "sv3pt5",
+            "par": "sv4",
+            "paf": "sv4pt5",
+            "tef": "sv5",
+            "twm": "sv6",
+            "sfa": "sv6pt5",
+            "scr": "sv7",
+            "ssp": "sv8",
+            "pre": "sv8pt5",
+            "meg": "me1",
+            "asc": "me2pt5",
+            "cri": "me4",
+        }
+        if wanted in set_id_aliases:
+            aliases.add(set_id_aliases[wanted])
+
+        # Common promo export pattern: PR-SV should match Pokémon TCG API set id svp.
+        if wanted.startswith("pr-"):
+            promo_part = wanted.replace("pr-", "")
+            aliases.add(f"{promo_part}p")
+
+        return aliases
+
+
+    def _set_aliases(set_code: Optional[str]) -> set[str]:
+        if not set_code:
+            return set()
+
+        wanted = str(set_code).lower().strip()
+        aliases = {wanted, wanted.replace("-", "")}
+
         # EXACT_PRINT_SV_SET_ALIASES_V1
         # PTCGL/export set codes for Scarlet & Violet sets are not always
         # present as ptcgoCode in the local/API records, so map them to API ids.
@@ -245,12 +340,41 @@ class CardIndex:
         return aliases
 
 
+    @staticmethod
     def _set_aliases(set_code: Optional[str]) -> set[str]:
         if not set_code:
             return set()
 
         wanted = str(set_code).lower().strip()
         aliases = {wanted, wanted.replace("-", "")}
+
+        # EXACT_PRINT_SET_ALIASES_LOCAL_V1
+        # PTCGL/deck-export set codes are not always stored as ptcgoCode in
+        # local card records. Map common export codes to API/local set ids.
+        set_id_aliases = {
+            "svi": "sv1",
+            "pal": "sv2",
+            "obf": "sv3",
+            "mew": "sv3pt5",
+            "par": "sv4",
+            "paf": "sv4pt5",
+            "tef": "sv5",
+            "twm": "sv6",
+            "sfa": "sv6pt5",
+            "scr": "sv7",
+            "ssp": "sv8",
+            "pre": "sv8pt5",
+            "mee": "sve",
+            "sve": "sve",
+            "meg": "me1",
+            "pfl": "me2",
+            "plf": "bw9",
+            "asc": "me2pt5",
+            "por": "me3",
+            "cri": "me4",
+        }
+        if wanted in set_id_aliases:
+            aliases.add(set_id_aliases[wanted])
 
         # Common promo export pattern: PR-SV should match Pokémon TCG API set id svp.
         if wanted.startswith("pr-"):
@@ -287,6 +411,29 @@ class CardIndex:
 
         return set_ok and number_ok
 
+    def _raw_exact_alias_index(self):
+        """Index raw records by exact-print alias-normalized name.
+
+        This avoids scanning every raw card once per deck card for aliases like:
+          Boss's Orders -> Boss's Orders (Ghetsis)
+          Darkness Energy -> Basic Darkness Energy
+        """
+        cached = getattr(self, "_raw_by_exact_alias_norm", None)
+        if cached is not None:
+            return cached
+
+        index = {}
+        for record in self.raw_records:
+            key = normalize_card_name_without_parenthetical(record.name)
+            index.setdefault(key, []).append(record)
+
+        try:
+            self._raw_by_exact_alias_norm = index
+        except Exception:
+            object.__setattr__(self, "_raw_by_exact_alias_norm", index)
+
+        return index
+
     def find_raw(
         self,
         name: str,
@@ -305,12 +452,11 @@ class CardIndex:
         if exact_print_requested:
             wanted_base = normalize_card_name_without_parenthetical(name)
             seen_ids = {c.card_id for c in candidates}
-            for record in self.raw_records:
+            for record in self._raw_exact_alias_index().get(wanted_base, []):
                 if record.card_id in seen_ids:
                     continue
-                if normalize_card_name_without_parenthetical(record.name) == wanted_base:
-                    candidates.append(record)
-                    seen_ids.add(record.card_id)
+                candidates.append(record)
+                seen_ids.add(record.card_id)
 
         if not candidates:
             return None

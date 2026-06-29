@@ -74,7 +74,19 @@ def normalize_api_card_name(value: str) -> str:
 
 def normalize_api_card_name_without_parenthetical(value: str) -> str:
     text = re.sub(r"\s*\([^)]*\)\s*$", "", str(value or "")).strip()
+
+    # ENERGY_EXACT_PRINT_ALIAS_V1
+    # Deck exports often use "Darkness Energy", while the API may use
+    # "Basic Darkness Energy".
+    text = re.sub(
+        r"^basic\s+(.+\senergy)$",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
     return normalize_api_card_name(text)
+
 
 
 def api_names_compatible_for_exact_print(api_name: str, deck_name: str, exact_print_requested: bool) -> bool:
@@ -124,10 +136,10 @@ def normalize_set_aliases(set_code: Optional[str]) -> set:
     wanted = set_code.lower().strip()
     aliases = {wanted, wanted.replace("-", "")}
 
-    # EXACT_PRINT_SV_SET_ALIASES_V1
-    # PTCGL/export set codes for Scarlet & Violet sets are not always
-    # present as ptcgoCode in the local/API records, so map them to API ids.
-    sv_aliases = {
+    # EXACT_PRINT_SET_ALIASES_V1
+    # PTCGL/deck-export set codes are not always stored as ptcgoCode in
+    # local/API records. Map common export codes to API set ids.
+    set_id_aliases = {
             "svi": "sv1",
             "pal": "sv2",
             "obf": "sv3",
@@ -140,9 +152,17 @@ def normalize_set_aliases(set_code: Optional[str]) -> set:
             "scr": "sv7",
             "ssp": "sv8",
             "pre": "sv8pt5",
+            "mee": "sve",
+            "sve": "sve",
+            "meg": "me1",
+            "pfl": "me2",
+            "plf": "bw9",
+            "asc": "me2pt5",
+            "por": "me3",
+            "cri": "me4",
         }
-    if wanted in sv_aliases:
-        aliases.add(sv_aliases[wanted])
+    if wanted in set_id_aliases:
+        aliases.add(set_id_aliases[wanted])
 
     # Common promo export pattern:
     # PR-SV should match Pokémon TCG API set id "svp".
