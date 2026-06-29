@@ -231,10 +231,11 @@ class CardIndex:
                 str(record.set_ptcgo_code or "").lower().strip(),
                 str(record.set_name or "").lower().strip(),
             }
-            set_ok = bool(wanted_aliases & record_values) or any(
-                alias and alias in str(record.set_name or "").lower()
-                for alias in wanted_aliases
-            )
+            # STRICT_SET_CODE_MATCH_V1
+            # Do not allow substring matches against set names.
+            # Example bug: deck code "CRI" matched "Crimson Invasion",
+            # causing Kakuna CRI 2 to display sm4-2.
+            set_ok = bool(wanted_aliases & record_values)
 
         return set_ok and number_ok
 
@@ -257,8 +258,14 @@ class CardIndex:
             image_matches = [c for c in print_matches if c.image_url or c.image_large_url]
             return image_matches[0] if image_matches else print_matches[0]
 
-        # If the exact print is not in the local index, still use an exact-name record
-        # so card type/basic-Pokémon metadata remains local and fast.
+        # STRICT_EXACT_PRINT_IMAGES_V1
+        # If the decklist provided an exact print, never silently fall back to
+        # another card with the same name. A missing image is safer than showing
+        # the wrong Kakuna/Weedle/etc. Callers may still fall back to API/cache.
+        if set_code or collector_number:
+            return None
+
+        # Name-only rows keep the old fallback behavior.
         image_matches = [c for c in candidates if c.image_url or c.image_large_url]
         return image_matches[0] if image_matches else candidates[0]
 
