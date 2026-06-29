@@ -194,10 +194,13 @@ def card_matches(card: dict, set_code: Optional[str], collector_number: Optional
     # Basic Energy exports can produce fake set_code="Energy".
     # Do not enforce set matching for that pseudo set.
     if wanted_aliases and (set_code or "").lower() != "energy":
+        # STRICT_SET_CODE_MATCH_V1
+        # Do not allow substring matches against set names.
+        # Example bug: deck code "CRI" matched "Crimson Invasion",
+        # causing Kakuna CRI 2 to display sm4-2.
         set_ok = (
             api_set_code in wanted_aliases
             or api_set_id in wanted_aliases
-            or any(alias in api_set_name for alias in wanted_aliases)
         )
 
     if wanted_number:
@@ -276,32 +279,46 @@ def build_queries(card: DeckCard) -> List[str]:
     return queries
 
 
+
 def find_best_api_match(card: DeckCard) -> Optional[dict]:
     queries = build_queries(card)
+
+    # STRICT_EXACT_PRINT_IMAGES_V2
+    # If the decklist provided set/number identity, do not accept another card
+    # with the same name just because it has an image.
+    exact_print_requested = bool(
+        (card.set_code or card.collector_number)
+        and (card.set_code or "").lower() != "energy"
+    )
+
     api_card = None
 
     for query in queries:
         results = pokemon_tcg_search(query)
 
         exact_name_results = [
-            r for r in results if r.get("name", "").lower().strip() == card.name.lower().strip()
+            r
+            for r in results
+            if r.get("name", "").lower().strip() == card.name.lower().strip()
         ]
         exact_name_results = exact_name_results or results
 
         filtered = [
-            r for r in exact_name_results if card_matches(r, card.set_code, card.collector_number)
+            r
+            for r in exact_name_results
+            if card_matches(r, card.set_code, card.collector_number)
         ]
 
         if filtered:
             image_matches = [r for r in filtered if api_card_has_image(r)]
             return image_matches[0] if image_matches else filtered[0]
 
-        if exact_name_results and api_card is None:
+        # Name-only fallback is allowed only for ambiguous/name-only deck rows.
+        if exact_name_results and api_card is None and not exact_print_requested:
             image_matches = [r for r in exact_name_results if api_card_has_image(r)]
             api_card = image_matches[0] if image_matches else exact_name_results[0]
 
     return api_card
-
 
 def try_attach_local_card_index_metadata(card: DeckCard) -> Optional[DeckCard]:
     """Attach metadata from the prebuilt local index before using the API.
@@ -328,28 +345,31 @@ def try_attach_local_card_index_metadata(card: DeckCard) -> Optional[DeckCard]:
     return matched
 
 
-def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
-    local_card = try_attach_local_card_index_metadata(card)
-    if local_card is not None:
-        return local_card
 
+def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
     key = make_cache_key(card.name, card.set_code, card.collector_number)
+
+    exact_print_requested = bool(
+        (card.set_code or card.collector_number)
+        and (card.set_code or "").lower() != "energy"
+    )
 
     if key in cache:
         cached_api_card = cache[key]
 
-        # Durable cache validation:
-        # Older cached entries may not have image URLs. If an image is missing,
-        # treat non-energy cache entries as stale and refetch them. For Basic
-        # Energy, we can safely attach a local fallback image.
-        if api_card_has_image(cached_api_card):
+        # STRICT_EXACT_PRINT_IMAGES_V2
+        # Old cache entries may contain a same-name-but-wrong-print card.
+        # If an exact print was requested, invalidate mismatched cache rows.
+        if exact_print_requested and not card_matches(
+            cached_api_card,
+            card.set_code,
+            card.collector_number,
+        ):
+            del cache[key]
+        elif api_card_has_image(cached_api_card):
             return attach_api_card_to_deck_card(card, cached_api_card)
-
-        if is_basic_energy_card(card):
-            attached = attach_api_card_to_deck_card(card, cached_api_card)
-            return apply_basic_energy_fallback_metadata(attached)
-
-        del cache[key]
+        else:
+            del cache[key]
 
     api_card = find_best_api_match(card)
 
@@ -359,13 +379,7 @@ def fetch_card_metadata(card: DeckCard, cache: Dict[str, dict]) -> DeckCard:
 
     cache[key] = api_card
     time.sleep(0.03)
-    attached = attach_api_card_to_deck_card(card, api_card)
-
-    if is_basic_energy_card(attached) and not (attached.image_url or attached.image_large_url):
-        attached = apply_basic_energy_fallback_metadata(attached)
-
-    return attached
-
+    return attach_api_card_to_deck_card(card, api_card)
 
 def attach_metadata(deck):
     """Attach card metadata using the preloaded local card index first.
