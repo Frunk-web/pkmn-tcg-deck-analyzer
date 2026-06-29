@@ -10750,8 +10750,14 @@ def resolve_decklist_with_exact_identity_v2(
             except Exception:
                 pass
 
+            exact_card = _turn1_exact_print_view_v1(
+                card,
+                requested_set_code=set_code,
+                requested_number=number,
+                requested_card_id=card_id,
+            )
             for _ in range(max(0, count_i)):
-                resolved.append(card)
+                resolved.append(exact_card)
             continue
 
         if card_id or (set_code and number):
@@ -11013,6 +11019,101 @@ def _turn1_basic_energy_proxy_name_from_decklist_v2(name: str) -> str:
     return f"Basic {energy_type[:1].upper()}{energy_type[1:].lower()} Energy"
 
 
+
+# TURN1_PRESERVE_EXACT_PRINT_VIEW_V1
+def _turn1_exact_print_view_v1(
+    card: Dict[str, Any],
+    requested_set_code: str = "",
+    requested_number: str = "",
+    requested_card_id: str = "",
+) -> Dict[str, Any]:
+    """
+    Return a shallow exact-print view of a compiled representative card.
+
+    Compiled cards may group same-effect printings under one representative,
+    e.g. Beedrill ex me4-3 can resolve to representative me4-98. That is fine
+    for effects, but downstream reports/debug/image checks should preserve the
+    exact selected print identity.
+    """
+    if not isinstance(card, dict):
+        return card
+
+    requested_set_code = str(requested_set_code or "").strip()
+    requested_number = str(requested_number or "").strip()
+    requested_card_id = str(requested_card_id or "").strip()
+
+    printings = [row for row in (card.get("same_effect_printings") or []) if isinstance(row, dict)]
+    selected = None
+
+    # 1. Exact card id wins.
+    if requested_card_id:
+        for row in printings:
+            if str(row.get("card_id") or "").strip().lower() == requested_card_id.lower():
+                selected = row
+                break
+
+    # 2. Direct set id / ptcgoCode / set name + number match.
+    if selected is None and requested_set_code and requested_number:
+        for row in printings:
+            row_number = str(row.get("number") or "").strip()
+            row_set = row.get("set") or {}
+            row_set_values = {
+                str(row_set.get("id") or "").strip().lower(),
+                str(row_set.get("ptcgoCode") or "").strip().lower(),
+                str(row_set.get("name") or "").strip().lower(),
+            }
+            if (
+                row_number.lower() == requested_number.lower()
+                and requested_set_code.lower() in row_set_values
+            ):
+                selected = row
+                break
+
+    # 3. Alias-safe fallback: if the requested collector number is unique within
+    # this same-effect group, preserve that print. This handles deck labels like
+    # "Beedrill ex CRI 3" where the compiled row stores set id "me4" but not the
+    # display/PTCGL alias "CRI".
+    if selected is None and requested_number:
+        number_matches = [
+            row
+            for row in printings
+            if str(row.get("number") or "").strip().lower() == requested_number.lower()
+        ]
+        if len(number_matches) == 1:
+            selected = number_matches[0]
+
+    if selected is None:
+        return card
+
+    exact = dict(card)
+    exact_card_id = str(selected.get("card_id") or requested_card_id or "").strip()
+
+    if exact_card_id:
+        exact["representative_card_id"] = exact_card_id
+        exact["card_id"] = exact_card_id
+        exact["id"] = exact_card_id
+        exact["selected_card_id"] = exact_card_id
+        exact["selected_printing"] = selected
+        exact["compiled_representative_card_id"] = (
+            card.get("representative_card_id")
+            or card.get("card_id")
+            or card.get("id")
+        )
+
+    try:
+        printed = dict(exact.get("printed") or {})
+        if selected.get("number"):
+            printed["number"] = str(selected.get("number"))
+        if selected.get("set"):
+            printed["set"] = selected.get("set")
+        exact["printed"] = printed
+    except Exception:
+        pass
+
+    return exact
+
+
+
 def resolve_decklist_with_exact_identity_v4(
     raw_decklist: Sequence[Tuple[int, str]],
     cards: Sequence[Dict[str, Any]],
@@ -11061,8 +11162,14 @@ def resolve_decklist_with_exact_identity_v4(
             except Exception:
                 pass
 
+            exact_card = _turn1_exact_print_view_v1(
+                card,
+                requested_set_code=set_code,
+                requested_number=number,
+                requested_card_id=card_id,
+            )
             for _ in range(max(0, count_i)):
-                resolved.append(card)
+                resolved.append(exact_card)
             continue
 
         if card_id or (set_code and number):
