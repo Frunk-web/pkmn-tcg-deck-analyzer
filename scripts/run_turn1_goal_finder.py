@@ -2050,28 +2050,53 @@ def turn1_effect_label_actions_from_line(line):
     return [p.strip() for p in raw.split("->") if p.strip()]
 
 
+
 def turn1_effect_label_incompatibility_reason(action_label, deck, reqs):
-    ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs)
-    if ok:
+    """
+    Canonical effect-label compatibility check.
+
+    Root fix:
+    Older guards classified ability/effect labels by rough text buckets and
+    could mark generic draw labels such as Run Errand as incompatible even when
+    the simulated line had already accessed every real goal piece.
+
+    Delegate to the newer validated effect-goal compatibility model:
+      - generic draw labels are compatible with any goal class
+      - restricted search labels still only match their valid target classes
+      - unknown/non-effect labels are not blocked here
+    """
+    try:
+        ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(
+            action_label,
+            deck,
+            reqs,
+        )
+        if ok:
+            return None
+        return reason
+    except NameError:
+        # During module definition/import edge cases, avoid false invalidation.
         return None
-
-    # If the effect-goal compatibility layer says this was not an effect label, do not block it here.
-    if reason == "not_effect_label":
-        return None
-
-    return reason
-
+    except Exception as exc:
+        return f"effect_label_guard_error:{type(exc).__name__}:{exc}"
 
 # TURN1_EFFECT_GOAL_COMPAT_PATCHED_EFFECT_LABEL_COMPAT
+
 def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
     blocked = []
-    for action in turn1_effect_label_actions_from_line(line):
-        reason = turn1_effect_label_incompatibility_reason(action, deck, reqs)
+    raw = str(line or "").strip()
+    if not raw or raw == "none":
+        return blocked
+
+    for action_label in [p.strip() for p in raw.split("->") if p.strip()]:
+        reason = turn1_effect_label_incompatibility_reason(action_label, deck, reqs)
         if reason:
-            blocked.append({"action": action, "reason": reason})
+            blocked.append({
+                "action": action_label,
+                "reason": reason,
+            })
+
     return blocked
-
-
 
 # ---------------------------------------------------------------------
 # TURN1_ACTIVE_COMPILED_SEARCH_RUNTIME
@@ -4421,10 +4446,12 @@ def turn1_apply_effect_name_compatibility_filter(results, deck, reqs):
 #   Shivery Chill in a Pokémon goal
 # because Shivery Chill searches Basic Water Energy, not Pokémon.
 
-def turn1_pre_summary_effect_label_is_compatible(action_label, deck, reqs):
-    ok, reason = _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs)
-    return ok, reason
 
+def turn1_pre_summary_effect_label_is_compatible(action_label, deck, reqs):
+    reason = turn1_effect_label_incompatibility_reason(action_label, deck, reqs)
+    if reason:
+        return False, reason
+    return True, "compatible"
 
 # TURN1_EFFECT_GOAL_COMPAT_PATCHED_PRE_SUMMARY_EFFECT_LABEL_COMPAT
 def turn1_pre_summary_effect_label_actions_from_line(line):
@@ -5970,6 +5997,60 @@ def _turn1_effect_goal_compat_classes_compatible(access_classes, goal_classes):
     return False
 
 
+
+# TURN1_EFFECT_GOAL_COMPAT_COMPILED_DRAW_LABEL_V4
+def _turn1_effect_goal_compat_compiled_label_access_classes_v4(action_label, deck):
+    """
+    Classify ability/effect labels using compiled effect structure.
+
+    This fixes labels like "Run Errand" whose runtime is already handled by the
+    generic compiled draw ability engine, but whose flattened label text may not
+    contain enough local context for the older text classifier.
+    """
+    label_norm = _turn1_effect_goal_compat_norm(action_label)
+    if not label_norm:
+        return set()
+
+    classes = set()
+
+    for card in deck or []:
+        if not isinstance(card, dict):
+            continue
+
+        effects = []
+        for key in ("compiled_effects", "effects"):
+            vals = card.get(key)
+            if isinstance(vals, list):
+                effects.extend(vals)
+
+        for effect in effects:
+            if not isinstance(effect, dict):
+                continue
+
+            effect_blob = _turn1_effect_goal_compat_flatten_strings(effect)
+            if label_norm not in _turn1_effect_goal_compat_norm(effect_blob):
+                continue
+
+            # Prefer the same structural predicate used by the runtime.
+            try:
+                if _turn1_effect_is_supported_compiled_draw_v1(effect):
+                    classes.add("generic_draw")
+                    continue
+            except Exception:
+                pass
+
+            # Fallback structural check: any compiled draw_cards step means this
+            # label can draw into any goal class.
+            try:
+                for step in _turn1_compiled_draw_iter_steps_v1(effect):
+                    if isinstance(step, dict) and step.get("op") == "draw_cards":
+                        classes.add("generic_draw")
+                        break
+            except Exception:
+                pass
+
+    return classes
+
 def _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, reqs):
     texts = _turn1_effect_goal_compat_effect_texts_for_label(action_label, deck)
 
@@ -5984,6 +6065,12 @@ def _turn1_effect_goal_compat_label_compatible_with_goal(action_label, deck, req
     access_classes = set()
     for t in texts:
         access_classes.update(_turn1_effect_goal_compat_access_classes_from_effect_text(t))
+
+    # TURN1_EFFECT_GOAL_COMPAT_COMPILED_DRAW_LABEL_V4
+    # Effect labels backed by compiled draw abilities, e.g. Run Errand, are
+    # generic draw even if the local flattened label text did not expose the
+    # draw_cards step clearly enough for text classification.
+    access_classes.update(_turn1_effect_goal_compat_compiled_label_access_classes_v4(action_label, deck))
 
     if _turn1_effect_goal_compat_classes_compatible(access_classes, goal_classes):
         return True, f"validated_effect_access:{sorted(access_classes)}"
@@ -6343,6 +6430,28 @@ def _turn1_result_normalizer_search_amount_from_card(card, ability_name):
     return 1
 
 
+
+# TURN1_COLLAPSE_DUPLICATE_ABILITY_LINE_LABELS_V1
+def _turn1_collapse_consecutive_duplicate_line_labels_v1(parts):
+    """
+    Collapse consecutive duplicate action labels in display/report lines.
+
+    This fixes compiled ability display artifacts like:
+      Run Errand -> Run Errand
+
+    The runtime log still records the actual draw/use events. This only cleans
+    the human-readable action line so one real ability use is not shown twice.
+    """
+    out = []
+    for part in parts or []:
+        label = str(part or "").strip()
+        if not label:
+            continue
+        if out and tf.norm(out[-1]) == tf.norm(label):
+            continue
+        out.append(label)
+    return out
+
 def _turn1_result_normalizer_split_line(line):
     raw = str(line or "").strip()
 
@@ -6379,6 +6488,30 @@ def _turn1_result_normalizer_remove_extra_occurrences(parts, label, keep=1):
 
 
 def _turn1_normalize_trial_result(result, deck):
+    # TURN1_COLLAPSE_DUPLICATE_ABILITY_LINE_LABELS_V1
+    try:
+        line = result.get("line") or "none"
+        if line and line != "none":
+            parts = _turn1_result_normalizer_split_line(line)
+            collapsed = _turn1_collapse_consecutive_duplicate_line_labels_v1(parts)
+            if collapsed != parts:
+                result["line"] = _turn1_result_normalizer_join_line(collapsed)
+                result["played"] = turn1_played_label(result["line"])
+    except Exception:
+        pass
+
+    # TURN1_COLLAPSE_DUPLICATE_ABILITY_LINE_LABELS_V1
+    try:
+        line = result.get("line") or "none"
+        if line and line != "none":
+            parts = _turn1_result_normalizer_split_line(line)
+            collapsed = _turn1_collapse_consecutive_duplicate_line_labels_v1(parts)
+            if collapsed != parts:
+                result["line"] = _turn1_result_normalizer_join_line(collapsed)
+                result["played"] = turn1_played_label(result["line"])
+    except Exception:
+        pass
+
     if not isinstance(result, dict):
         return result
 
@@ -7388,6 +7521,95 @@ def _turn1_score_cache_zone_key(st, attr):
     return _turn1_score_cache_freeze_value(value)
 
 
+
+# TURN1_ABILITY_ONCE_USAGE_BRIDGE_V5
+def _turn1_ability_once_norm_v5(value: Any) -> str:
+    try:
+        return tf.norm(str(value or ""))
+    except Exception:
+        return str(value or "").strip().lower()
+
+
+def _turn1_ability_once_used_names_v5(st: Any) -> set:
+    vals = getattr(st, "_turn1_used_ability_once_names_v5", None)
+    if not isinstance(vals, set):
+        vals = set(vals or [])
+        try:
+            setattr(st, "_turn1_used_ability_once_names_v5", vals)
+        except Exception:
+            pass
+    return vals
+
+
+def _turn1_mark_ability_once_used_v5(st: Any, ability_name: Any) -> None:
+    name = _turn1_ability_once_norm_v5(ability_name)
+    if not name:
+        return
+    vals = _turn1_ability_once_used_names_v5(st)
+    vals.add(name)
+    try:
+        setattr(st, "_turn1_used_ability_once_names_v5", vals)
+    except Exception:
+        pass
+
+
+def _turn1_effect_ability_name_for_once_v5(effect: Any) -> str:
+    if not isinstance(effect, dict):
+        return ""
+    for key in ("ability_name", "effect_name", "name", "label"):
+        val = effect.get(key)
+        if val:
+            return str(val)
+    return ""
+
+
+def _turn1_action_ability_name_for_once_v5(action: Any) -> str:
+    """
+    Return an ability/effect label only for virtual ability actions.
+
+    Physical cards like Ultra Ball, Cyrano, etc. are intentionally ignored here.
+    """
+    if not isinstance(action, dict):
+        return ""
+
+    va = str(action.get("_virtual_action") or "")
+    ability_like_virtuals = {
+        "CompiledDrawAbility",
+        "GenericAbility",
+        "BenchAbility",
+        "ActiveAbility",
+        "Ability",
+        "CompiledAbility",
+    }
+
+    if va not in ability_like_virtuals:
+        return ""
+
+    for key in ("ability_name", "effect_name", "label", "name"):
+        val = action.get(key)
+        if val:
+            return str(val)
+
+    effect_name = _turn1_effect_ability_name_for_once_v5(action.get("effect"))
+    if effect_name:
+        return effect_name
+
+    try:
+        label = action_label(action)
+        if label:
+            return str(label)
+    except Exception:
+        pass
+
+    return ""
+
+
+def _turn1_action_ability_already_used_once_v5(st: Any, action: Any) -> bool:
+    name = _turn1_action_ability_name_for_once_v5(action)
+    if not name:
+        return False
+    return _turn1_ability_once_norm_v5(name) in _turn1_ability_once_used_names_v5(st)
+
 def _turn1_score_cache_key(st, missing, going, enable_chain_search):
     zones = []
     for attr in [
@@ -7402,6 +7624,7 @@ def _turn1_score_cache_key(st, missing, going, enable_chain_search):
         'played_cards',
         'supporter_played',
         'attached_energy',
+        '_turn1_used_ability_once_names_v5',
     ]:
         zones.append((attr, _turn1_score_cache_zone_key(st, attr)))
 
@@ -7443,6 +7666,16 @@ def _turn1_cached_score_candidates(st, missing, going, enable_chain_search):
             continue
         filtered_legacy_generic_draw.append((_score, _action, _tn))
     scored = filtered_legacy_generic_draw
+
+    # TURN1_ABILITY_ONCE_USAGE_BRIDGE_V5
+    # The compiled draw runtime and older ability actions must share one
+    # once-per-turn usage state. Do not re-offer an ability label after it has
+    # already been used this turn.
+    scored = [
+        (_score, _action, _tn)
+        for (_score, _action, _tn) in scored
+        if not _turn1_action_ability_already_used_once_v5(st, _action)
+    ]
 
     # TURN1_COMPILED_DRAW_IN_ACTIVE_CACHED_SCORER_V1
     # This is the active scoring path. Add generic compiled draw setup/actions
@@ -8359,10 +8592,92 @@ def _turn1_text_is_opponent_only_draw_or_search(text: str) -> bool:
 
 
 # TURN1_DIRECT_SEARCH_ONLY_SEARCH_DECK_V1
+def _turn1_search_step_moves_to_accessible_zone_v1(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
+    """
+    Return True only for search_deck effects that move selected cards into an
+    access zone for turn-1 goals.
+
+    Important distinction:
+      - Ultra Ball / Cyrano / Fighting Gong: search deck, selected card becomes
+        accessible immediately.
+      - Ciphermaniac's Codebreaking: search deck, selected cards go on top of the
+        deck. They are not accessible until a later draw effect draws them.
+
+    Sparse compiled search_deck steps with no explicit destination remain allowed
+    so older valid search cards keep working.
+    """
+    text = _turn1_self_only_search_step_text(step, card)
+    t = tf.norm(text)
+
+    # Explicit non-access destinations. These must not feed the direct
+    # goal-aware "put selected into hand" executor.
+    top_deck_phrases = (
+        "top of your deck",
+        "on top of your deck",
+        "onto the top of your deck",
+        "put those cards on top",
+        "put them on top",
+        "put it on top",
+        "put that card on top",
+        "put those cards onto the top",
+        "put them onto the top",
+        "put it onto the top",
+        "put that card onto the top",
+    )
+    if any(p in t for p in top_deck_phrases):
+        return False
+
+    # Explicit access destinations.
+    access_phrases = (
+        "put it into your hand",
+        "put them into your hand",
+        "put that card into your hand",
+        "put those cards into your hand",
+        "put up to",
+        "into your hand",
+        "add it to your hand",
+        "add them to your hand",
+        "onto your bench",
+        "put it onto your bench",
+        "put them onto your bench",
+        "put that pokemon onto your bench",
+        "put that pokémon onto your bench",
+        "attach it",
+        "attach them",
+        "attach that",
+        "attach up to",
+        "discard it",
+        "discard them",
+    )
+    if any(p in t for p in access_phrases):
+        return True
+
+    # If the compiler has structured destination/zone metadata, respect obvious
+    # access vs non-access zones.
+    if isinstance(step, dict):
+        zone_values = []
+        for key in ("to", "destination", "destination_zone", "target_zone", "zone", "move_to", "put_to"):
+            val = step.get(key)
+            if val is not None:
+                zone_values.append(tf.norm(str(val)))
+
+        zone_blob = " ".join(zone_values)
+        if zone_blob:
+            if any(z in zone_blob for z in ("top_deck", "deck_top", "top of deck", "deck")):
+                if not any(z in zone_blob for z in ("hand", "bench", "play", "discard", "attached")):
+                    return False
+            if any(z in zone_blob for z in ("hand", "bench", "play", "in_play", "discard", "attached")):
+                return True
+
+    # Sparse self-search steps with no destination stay allowed.
+    return True
+
+
 def _turn1_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
     if not isinstance(step, dict):
         return False
-    if step.get("op") != "search_deck": return False
+    if step.get("op") != "search_deck":
+        return False
 
     text = _turn1_self_only_search_step_text(step, card)
 
@@ -8373,12 +8688,14 @@ def _turn1_is_self_search_step(step: Dict[str, Any], card: Optional[Dict[str, An
         return False
 
     if _turn1_text_mentions_self_search(text):
-        return True
+        return _turn1_search_step_moves_to_accessible_zone_v1(step, card)
 
     # If the compiler gave a structured search_deck op with no opponent text,
-    # allow it. This preserves normal compiled self-search effects that have
-    # sparse metadata.
-    return not _turn1_text_mentions_opponent_zone(text)
+    # allow it only if it does not explicitly place cards into a non-access zone.
+    return (
+        not _turn1_text_mentions_opponent_zone(text)
+        and _turn1_search_step_moves_to_accessible_zone_v1(step, card)
+    )
 
 
 def _turn1_is_self_draw_step(step: Dict[str, Any], card: Optional[Dict[str, Any]] = None) -> bool:
@@ -9448,6 +9765,24 @@ def execute_action(st: tf.SimState, action: Any, target_norm: str, rng: random.R
         st.actions_used += 1
         return
 
+    # TURN1_ABILITY_ONCE_USAGE_BRIDGE_V5
+    ability_once_name = _turn1_action_ability_name_for_once_v5(action)
+    if ability_once_name and _turn1_action_ability_already_used_once_v5(st, action):
+        try:
+            st.log.append({
+                "event": "blocked_repeat_ability_once_per_turn",
+                "ability": ability_once_name,
+                "action": action_label(action),
+                "target": target_norm,
+            })
+        except Exception:
+            pass
+        st.actions_used += 1
+        return
+
+    if ability_once_name:
+        _turn1_mark_ability_once_used_v5(st, ability_once_name)
+
     _ORIG_EXECUTE_ACTION_BEFORE_ACTION_FILTER_COMPAT(st, action, target_norm, rng, going, enable_chain_search)
 
 
@@ -9855,6 +10190,33 @@ def turn1_result_goal_filter_action_target_classes(action, deck):
     for blob in blobs:
         classes.update(turn1_result_goal_filter_classes_from_text(blob))
 
+        # TURN1_RESULT_FILTER_EFFECT_LABEL_GENERIC_DRAW_V1
+        # Root fix:
+        # Action labels such as "Run Errand" are ability/effect labels, not card
+        # names. The result filter was finding the owning card blob but not
+        # preserving the compiled/logical fact that the effect is a draw effect.
+        # That caused false report artifacts like:
+        #   missing_requirements = ["Blocked incompatible effect label: Run Errand"]
+        # even when Run Errand actually drew the missing goal card.
+        #
+        # If the owning effect/card text clearly includes draw-card language,
+        # classify the label as generic_draw, matching the direct card-path logic
+        # above for draw_cards compiled steps.
+        try:
+            norm_blob = turn1_result_goal_filter_norm(blob)
+
+            # Ability/effect labels such as Run Errand should inherit draw
+            # semantics from their owning effect text. This is destination-safe:
+            # it does not make search/top-deck effects compatible; it only says
+            # that labels backed by "draw ... card(s)" text are generic draw.
+            if (
+                re.search(r"\bdraw\b", norm_blob)
+                and re.search(r"\bcards?\b", norm_blob)
+            ):
+                classes.add("generic_draw")
+        except Exception:
+            pass
+
     # If it is not a card name and not a known effect label, leave empty.
     return classes
 
@@ -10056,6 +10418,652 @@ def simulate_one_goal_trial(*args, **kwargs):
     return result
 
 
+
+# TURN1_EXACT_CARD_ID_DECKLIST_RESOLUTION_V1
+_TURN1_EXACT_CARD_ID_RE_V1 = re.compile(r"^(?P<name>.*?)\s*\[(?P<card_id>[A-Za-z0-9_.:-]+)\]\s*$")
+
+
+def _turn1_card_identity_id_v1(card: Dict[str, Any]) -> str:
+    if not isinstance(card, dict):
+        return ""
+    return str(
+        card.get("representative_card_id")
+        or card.get("id")
+        or (((card.get("sources") or {}).get("raw_card") or {}).get("id"))
+        or ""
+    )
+
+
+def _turn1_card_identity_all_ids_v1(card: Dict[str, Any]) -> List[str]:
+    ids: List[str] = []
+    primary = _turn1_card_identity_id_v1(card)
+    if primary:
+        ids.append(primary)
+
+    try:
+        for x in card.get("same_effect_card_ids") or []:
+            if x:
+                ids.append(str(x))
+    except Exception:
+        pass
+
+    try:
+        for row in card.get("same_effect_printings") or []:
+            cid = row.get("card_id") if isinstance(row, dict) else ""
+            if cid:
+                ids.append(str(cid))
+    except Exception:
+        pass
+
+    out: List[str] = []
+    seen = set()
+    for cid in ids:
+        key = cid.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            out.append(cid.strip())
+    return out
+
+
+def _turn1_parse_decklist_name_card_id_v1(name: str) -> Tuple[str, str]:
+    raw = str(name or "").strip()
+    m = _TURN1_EXACT_CARD_ID_RE_V1.match(raw)
+    if not m:
+        return raw, ""
+    clean_name = str(m.group("name") or "").strip()
+    card_id = str(m.group("card_id") or "").strip()
+    return clean_name, card_id
+
+
+def _turn1_build_card_id_index_v1(cards: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    index: Dict[str, Dict[str, Any]] = {}
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+        for cid in _turn1_card_identity_all_ids_v1(card):
+            index.setdefault(cid.lower(), card)
+    return index
+
+
+def resolve_decklist_with_exact_card_ids_v1(
+    raw_decklist: Sequence[Tuple[int, str]],
+    cards: Sequence[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Any]]:
+    """
+    Resolve decklist rows like:
+        1 Lunatone [me1-74]
+
+    Exact card id wins. Rows without an exact id keep the old resolver behavior,
+    including Basic Energy proxy handling.
+    """
+    id_index = _turn1_build_card_id_index_v1(cards)
+
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[Any] = []
+    fallback_rows: List[Tuple[int, str]] = []
+
+    for count, raw_name in raw_decklist or []:
+        clean_name, card_id = _turn1_parse_decklist_name_card_id_v1(str(raw_name))
+        try:
+            count_i = int(count)
+        except Exception:
+            count_i = 0
+
+        if card_id:
+            card = id_index.get(card_id.lower())
+            if card is None:
+                unresolved.append((count, raw_name, {"card_id": card_id, "reason": "unknown_card_id"}))
+                continue
+
+            # Guard against accidental id/name mismatch when possible.
+            try:
+                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                    unresolved.append((
+                        count,
+                        raw_name,
+                        {
+                            "card_id": card_id,
+                            "resolved_name": tf.card_name(card),
+                            "reason": "card_id_name_mismatch",
+                        },
+                    ))
+                    continue
+            except Exception:
+                pass
+
+            for _ in range(max(0, count_i)):
+                resolved.append(card)
+        else:
+            fallback_rows.append((count_i, clean_name))
+
+    if fallback_rows:
+        fallback_deck, fallback_unresolved = resolve_decklist_with_basic_energy(fallback_rows, cards)
+        resolved.extend(fallback_deck)
+        unresolved.extend(fallback_unresolved)
+
+    return resolved, unresolved
+
+
+def decklist_entries_with_exact_card_ids_v1(raw_decklist: Sequence[Tuple[int, str]]) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for count, raw_name in raw_decklist or []:
+        clean_name, card_id = _turn1_parse_decklist_name_card_id_v1(str(raw_name))
+        row = {"count": count, "name": clean_name}
+        if card_id:
+            row["card_id"] = card_id
+        entries.append(row)
+    return entries
+
+
+
+# TURN1_SET_NUMBER_DECKLIST_RESOLUTION_V2
+_TURN1_SET_NUMBER_RE_V2 = re.compile(
+    r"^(?P<name>.*?)\s+(?P<set_code>[A-Za-z][A-Za-z0-9_.-]{1,})\s+(?P<number>[A-Za-z]*\d[A-Za-z0-9/_.-]*)\s*$"
+)
+
+
+def _turn1_parse_decklist_identity_v2(name: str) -> Tuple[str, str, str, str]:
+    """
+    Supports:
+      Lunatone [me1-74]
+      Lunatone MEG 74
+      Meowth ex POR 62
+      Basic Fighting Energy MEE 6
+
+    Returns:
+      clean_name, card_id, set_code, number
+    """
+    raw = str(name or "").strip()
+
+    clean_name, card_id = _turn1_parse_decklist_name_card_id_v1(raw)
+    if card_id:
+        return clean_name, card_id, "", ""
+
+    m = _TURN1_SET_NUMBER_RE_V2.match(raw)
+    if not m:
+        return raw, "", "", ""
+
+    clean_name = str(m.group("name") or "").strip()
+    set_code = str(m.group("set_code") or "").strip()
+    number = str(m.group("number") or "").strip()
+    return clean_name, "", set_code, number
+
+
+def _turn1_card_set_codes_v2(card: Dict[str, Any]) -> List[str]:
+    codes: List[str] = []
+
+    def add(x: Any) -> None:
+        s = str(x or "").strip()
+        if s:
+            codes.append(s)
+
+    if isinstance(card, dict):
+        printed_set = (card.get("printed") or {}).get("set") or {}
+        add(printed_set.get("id"))
+
+        raw = ((card.get("sources") or {}).get("raw_card") or {})
+        raw_set = raw.get("set") or {}
+        add(raw_set.get("ptcgoCode"))
+        add(raw_set.get("id"))
+
+        for row in card.get("same_effect_printings") or []:
+            if isinstance(row, dict):
+                s = row.get("set") or {}
+                add(s.get("id"))
+                add(s.get("ptcgoCode"))
+
+    out: List[str] = []
+    seen = set()
+    for c in codes:
+        k = c.lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(c)
+    return out
+
+
+def _turn1_card_number_v2(card: Dict[str, Any]) -> str:
+    if not isinstance(card, dict):
+        return ""
+    return str(
+        ((card.get("printed") or {}).get("number"))
+        or (((card.get("sources") or {}).get("raw_card") or {}).get("number"))
+        or ""
+    ).strip()
+
+
+def _turn1_build_set_number_index_v2(cards: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    index: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+
+        number = _turn1_card_number_v2(card)
+        if not number:
+            continue
+
+        for set_code in _turn1_card_set_codes_v2(card):
+            index.setdefault((set_code.lower(), number.lower()), card)
+
+        # Also index same-effect printings by set id + number when available.
+        for row in card.get("same_effect_printings") or []:
+            if not isinstance(row, dict):
+                continue
+            row_number = str(row.get("number") or "").strip()
+            row_set = row.get("set") or {}
+            row_set_id = str(row_set.get("id") or "").strip()
+            if row_set_id and row_number:
+                index.setdefault((row_set_id.lower(), row_number.lower()), card)
+
+    return index
+
+
+
+# TURN1_BASIC_ENERGY_EXACT_IDENTITY_FALLBACK_V1
+def _turn1_is_basic_energy_decklist_name_v1(name: str) -> bool:
+    s = str(name or "").strip().lower()
+    return bool(re.match(r"^basic\s+\w+\s+energy$", s))
+
+
+def resolve_decklist_with_exact_identity_v2(
+    raw_decklist: Sequence[Tuple[int, str]],
+    cards: Sequence[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], List[Any]]:
+    """
+    Exact identity resolver.
+
+    Priority:
+      1. Explicit card id: Lunatone [me1-74]
+      2. Set code + number: Lunatone MEG 74
+      3. Old fallback name resolver
+    """
+    id_index = _turn1_build_card_id_index_v1(cards)
+    set_number_index = _turn1_build_set_number_index_v2(cards)
+
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[Any] = []
+    fallback_rows: List[Tuple[int, str]] = []
+
+    for count, raw_name in raw_decklist or []:
+        clean_name, card_id, set_code, number = _turn1_parse_decklist_identity_v2(str(raw_name))
+        try:
+            count_i = int(count)
+        except Exception:
+            count_i = 0
+
+        card = None
+        identity_reason = ""
+
+        if card_id:
+            card = id_index.get(card_id.lower())
+            identity_reason = f"card_id={card_id}"
+        elif set_code and number:
+            card = set_number_index.get((set_code.lower(), number.lower()))
+            identity_reason = f"set_number={set_code} {number}"
+
+        if card is not None:
+            try:
+                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                    unresolved.append((
+                        count,
+                        raw_name,
+                        {
+                            "resolved_name": tf.card_name(card),
+                            "identity": identity_reason,
+                            "reason": "identity_name_mismatch",
+                        },
+                    ))
+                    continue
+            except Exception:
+                pass
+
+            for _ in range(max(0, count_i)):
+                resolved.append(card)
+            continue
+
+        if card_id or (set_code and number):
+            # Basic Energy is modeled by Turn-1 proxy cards, not exact compiled
+            # printings, so preserve exact identity for real cards while allowing
+            # lines like "Basic Fighting Energy MEE 6" to use the existing proxy resolver.
+            if _turn1_is_basic_energy_decklist_name_v1(clean_name):
+                fallback_rows.append((count_i, clean_name))
+                continue
+
+            unresolved.append((
+                count,
+                raw_name,
+                {
+                    "card_id": card_id,
+                    "set_code": set_code,
+                    "number": number,
+                    "reason": "unknown_exact_identity",
+                },
+            ))
+            continue
+
+        fallback_rows.append((count_i, clean_name))
+
+    if fallback_rows:
+        fallback_deck, fallback_unresolved = resolve_decklist_with_basic_energy(fallback_rows, cards)
+        resolved.extend(fallback_deck)
+        unresolved.extend(fallback_unresolved)
+
+    return resolved, unresolved
+
+
+def decklist_entries_with_exact_identity_v2(raw_decklist: Sequence[Tuple[int, str]]) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for count, raw_name in raw_decklist or []:
+        clean_name, card_id, set_code, number = _turn1_parse_decklist_identity_v2(str(raw_name))
+        row = {"count": count, "name": clean_name}
+        if card_id:
+            row["card_id"] = card_id
+        if set_code and number:
+            row["set_code"] = set_code
+            row["number"] = number
+        entries.append(row)
+    return entries
+
+
+
+# TURN1_EXACT_IDENTITY_BEFORE_COMPLETE_FILTER_V3
+
+# TURN1_SET_CODE_ALIAS_IDENTITY_V4
+def _turn1_build_set_id_to_codes_v4(cards: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+    aliases: Dict[str, List[str]] = {}
+
+    def add(set_id: Any, code: Any) -> None:
+        sid = str(set_id or "").strip()
+        c = str(code or "").strip()
+        if not sid or not c:
+            return
+        key = sid.lower()
+        aliases.setdefault(key, [])
+        if c.lower() not in {x.lower() for x in aliases[key]}:
+            aliases[key].append(c)
+
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+
+        raw = ((card.get("sources") or {}).get("raw_card") or {})
+        raw_set = raw.get("set") or {}
+        raw_set_id = raw_set.get("id")
+        add(raw_set_id, raw_set_id)
+        add(raw_set_id, raw_set.get("ptcgoCode"))
+
+        printed_set = (card.get("printed") or {}).get("set") or {}
+        printed_set_id = printed_set.get("id")
+        add(printed_set_id, printed_set_id)
+
+        for row in card.get("same_effect_printings") or []:
+            if isinstance(row, dict):
+                s = row.get("set") or {}
+                row_set_id = s.get("id")
+                add(row_set_id, row_set_id)
+
+    return aliases
+
+
+def _turn1_build_set_number_index_v4(cards: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str], Dict[str, Any]]:
+    index: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    set_id_to_codes = _turn1_build_set_id_to_codes_v4(cards)
+
+    def aliases_for_set_id(set_id: Any) -> List[str]:
+        sid = str(set_id or "").strip()
+        if not sid:
+            return []
+        out = [sid]
+        out.extend(set_id_to_codes.get(sid.lower(), []))
+        deduped: List[str] = []
+        seen = set()
+        for x in out:
+            k = str(x or "").strip().lower()
+            if k and k not in seen:
+                seen.add(k)
+                deduped.append(str(x).strip())
+        return deduped
+
+    def add(set_code: Any, number: Any, card: Dict[str, Any]) -> None:
+        sc = str(set_code or "").strip()
+        num = str(number or "").strip()
+        if sc and num:
+            index.setdefault((sc.lower(), num.lower()), card)
+
+    for card in cards or []:
+        if not isinstance(card, dict):
+            continue
+
+        # Representative/raw card identity.
+        number = _turn1_card_number_v2(card)
+        for set_code in _turn1_card_set_codes_v2(card):
+            add(set_code, number, card)
+
+        # Also index same-effect printings using both API set id and UI/PTCGO aliases.
+        for row in card.get("same_effect_printings") or []:
+            if not isinstance(row, dict):
+                continue
+
+            row_number = str(row.get("number") or "").strip()
+            row_set = row.get("set") or {}
+            row_set_id = str(row_set.get("id") or "").strip()
+
+            for alias in aliases_for_set_id(row_set_id):
+                add(alias, row_number, card)
+
+    return index
+
+
+
+# TURN1_ENERGY_NAME_PROXY_FALLBACK_V2
+_TURN1_BASIC_ENERGY_TYPES_V2 = {
+    "grass",
+    "fire",
+    "water",
+    "lightning",
+    "psychic",
+    "fighting",
+    "darkness",
+    "metal",
+}
+
+
+def _turn1_basic_energy_proxy_name_from_decklist_v2(name: str) -> str:
+    """
+    Normalize UI/decklist energy labels to the simulator proxy names.
+
+    Accepts:
+      Grass Energy
+      Basic Grass Energy
+      Fighting Energy
+      Basic Fighting Energy
+
+    Returns:
+      Basic Grass Energy
+      Basic Fighting Energy
+      or "" if not a recognized Basic Energy label.
+    """
+    s = str(name or "").strip()
+    m = re.match(r"^(?:Basic\s+)?(?P<type>\w+)\s+Energy$", s, flags=re.IGNORECASE)
+    if not m:
+        return ""
+
+    energy_type = str(m.group("type") or "").strip()
+    if energy_type.lower() not in _TURN1_BASIC_ENERGY_TYPES_V2:
+        return ""
+
+    return f"Basic {energy_type[:1].upper()}{energy_type[1:].lower()} Energy"
+
+
+def resolve_decklist_with_exact_identity_v4(
+    raw_decklist: Sequence[Tuple[int, str]],
+    cards: Sequence[Dict[str, Any]],
+    identity_cards: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Any]]:
+    exact_cards = list(identity_cards or cards or [])
+    fallback_cards = list(cards or [])
+
+    id_index = _turn1_build_card_id_index_v1(exact_cards)
+    set_number_index = _turn1_build_set_number_index_v4(exact_cards)
+
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[Any] = []
+    fallback_rows: List[Tuple[int, str]] = []
+
+    for count, raw_name in raw_decklist or []:
+        clean_name, card_id, set_code, number = _turn1_parse_decklist_identity_v2(str(raw_name))
+        try:
+            count_i = int(count)
+        except Exception:
+            count_i = 0
+
+        card = None
+        identity_reason = ""
+
+        if card_id:
+            card = id_index.get(card_id.lower())
+            identity_reason = f"card_id={card_id}"
+        elif set_code and number:
+            card = set_number_index.get((set_code.lower(), number.lower()))
+            identity_reason = f"set_number={set_code} {number}"
+
+        if card is not None:
+            try:
+                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                    unresolved.append((
+                        count,
+                        raw_name,
+                        {
+                            "resolved_name": tf.card_name(card),
+                            "identity": identity_reason,
+                            "reason": "identity_name_mismatch",
+                        },
+                    ))
+                    continue
+            except Exception:
+                pass
+
+            for _ in range(max(0, count_i)):
+                resolved.append(card)
+            continue
+
+        if card_id or (set_code and number):
+            energy_proxy_name = _turn1_basic_energy_proxy_name_from_decklist_v2(clean_name)
+            if energy_proxy_name:
+                fallback_rows.append((count_i, energy_proxy_name))
+                continue
+
+            unresolved.append((
+                count,
+                raw_name,
+                {
+                    "card_id": card_id,
+                    "set_code": set_code,
+                    "number": number,
+                    "reason": "unknown_exact_identity",
+                },
+            ))
+            continue
+
+        fallback_rows.append((count_i, clean_name))
+
+    if fallback_rows:
+        fallback_deck, fallback_unresolved = resolve_decklist_with_basic_energy(fallback_rows, fallback_cards)
+        resolved.extend(fallback_deck)
+        unresolved.extend(fallback_unresolved)
+
+    return resolved, unresolved
+
+
+def resolve_decklist_with_exact_identity_v3(
+    raw_decklist: Sequence[Tuple[int, str]],
+    cards: Sequence[Dict[str, Any]],
+    identity_cards: Optional[Sequence[Dict[str, Any]]] = None,
+) -> Tuple[List[Dict[str, Any]], List[Any]]:
+    """
+    Resolve exact deck identities against the full card pool, even when
+    --complete-only is enabled.
+
+    Why:
+      - Exact UI lines like "Lunatone MEG 74" should resolve to that actual card.
+      - --complete-only may filter some selected exact cards out before resolution.
+      - Ambiguous name-only fallback still uses the supplied filtered cards.
+    """
+    exact_cards = list(identity_cards or cards or [])
+    fallback_cards = list(cards or [])
+
+    id_index = _turn1_build_card_id_index_v1(exact_cards)
+    set_number_index = _turn1_build_set_number_index_v2(exact_cards)
+
+    resolved: List[Dict[str, Any]] = []
+    unresolved: List[Any] = []
+    fallback_rows: List[Tuple[int, str]] = []
+
+    for count, raw_name in raw_decklist or []:
+        clean_name, card_id, set_code, number = _turn1_parse_decklist_identity_v2(str(raw_name))
+        try:
+            count_i = int(count)
+        except Exception:
+            count_i = 0
+
+        card = None
+        identity_reason = ""
+
+        if card_id:
+            card = id_index.get(card_id.lower())
+            identity_reason = f"card_id={card_id}"
+        elif set_code and number:
+            card = set_number_index.get((set_code.lower(), number.lower()))
+            identity_reason = f"set_number={set_code} {number}"
+
+        if card is not None:
+            try:
+                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                    unresolved.append((
+                        count,
+                        raw_name,
+                        {
+                            "resolved_name": tf.card_name(card),
+                            "identity": identity_reason,
+                            "reason": "identity_name_mismatch",
+                        },
+                    ))
+                    continue
+            except Exception:
+                pass
+
+            for _ in range(max(0, count_i)):
+                resolved.append(card)
+            continue
+
+        if card_id or (set_code and number):
+            if _turn1_is_basic_energy_decklist_name_v1(clean_name):
+                fallback_rows.append((count_i, clean_name))
+                continue
+
+            unresolved.append((
+                count,
+                raw_name,
+                {
+                    "card_id": card_id,
+                    "set_code": set_code,
+                    "number": number,
+                    "reason": "unknown_exact_identity",
+                },
+            ))
+            continue
+
+        fallback_rows.append((count_i, clean_name))
+
+    if fallback_rows:
+        fallback_deck, fallback_unresolved = resolve_decklist_with_basic_energy(fallback_rows, fallback_cards)
+        resolved.extend(fallback_deck)
+        unresolved.extend(fallback_unresolved)
+
+    return resolved, unresolved
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Turn 1 multi-card goal finder: estimate P(X and Y and Z by end of Turn 1).")
     ap.add_argument("--compiled", default="data/compiled_cards/auto/compiled_cards_all.json")
@@ -10112,12 +11120,13 @@ def main() -> None:
     if not reqs:
         raise SystemExit("No valid goal requirements were parsed.")
 
-    cards = tf.load_compiled_cards(args.compiled)
+    all_cards = tf.load_compiled_cards(args.compiled)
+    cards = all_cards
     if args.complete_only:
         cards = tf.filter_complete_cards(cards)
 
     raw_decklist = tf.parse_decklist(args.decklist)
-    deck, unresolved = resolve_decklist_with_basic_energy(raw_decklist, cards)
+    deck, unresolved = resolve_decklist_with_exact_identity_v4(raw_decklist, cards, identity_cards=all_cards)
     deck = instantiate_deck(deck)
 
     result: Dict[str, Any] = {
@@ -10141,7 +11150,7 @@ def main() -> None:
             "policy": "Greedy best-first action choice, scoring each legal action against currently missing goal pieces.",
             "played_exclusion_filter": getattr(args, "exclude_played", ""),
         },
-        "decklist_entries": [{"count": c, "name": n} for c, n in raw_decklist],
+        "decklist_entries": decklist_entries_with_exact_identity_v2(raw_decklist),
         "unresolved": unresolved,
         "outputs": {"json": args.out, "summary_csv": args.csv_out, "lines_csv": args.lines_csv},
     }
