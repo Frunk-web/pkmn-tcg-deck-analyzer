@@ -10549,7 +10549,7 @@ def resolve_decklist_with_exact_card_ids_v1(
 
             # Guard against accidental id/name mismatch when possible.
             try:
-                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                if clean_name and not _turn1_exact_identity_names_compatible_v1(clean_name, tf.card_name(card)):
                     unresolved.append((
                         count,
                         raw_name,
@@ -10736,7 +10736,7 @@ def resolve_decklist_with_exact_identity_v2(
 
         if card is not None:
             try:
-                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                if clean_name and not _turn1_exact_identity_names_compatible_v1(clean_name, tf.card_name(card)):
                     unresolved.append((
                         count,
                         raw_name,
@@ -10801,6 +10801,84 @@ def decklist_entries_with_exact_identity_v2(raw_decklist: Sequence[Tuple[int, st
 
 # TURN1_EXACT_IDENTITY_BEFORE_COMPLETE_FILTER_V3
 
+
+
+# TURN1_EXACT_IDENTITY_PRINTING_ALIAS_PARENTHESES_V1
+# Canonical exact-identity resolver fix.
+#
+# Exact decklists often use Live/Limitless set codes, while compiled semantics
+# keep PokemonTCG API set ids inside same_effect_printings.
+#
+# Example:
+#   decklist: Boss's Orders PAL 265
+#   compiled same_effect_printing: sv2-265 Boss's Orders (Ghetsis)
+#
+# This patch keeps exact identity strict, but teaches the resolver:
+#   PAL == sv2
+#   Boss's Orders == Boss's Orders (Ghetsis), for parenthetical print variants.
+
+_TURN1_MANUAL_SET_ID_ALIASES_V1 = {
+    # Scarlet & Violet era
+    "sv1": ["SVI"],
+    "sv2": ["PAL"],
+    "sv3": ["OBF"],
+    "sv3pt5": ["MEW"],
+    "sv4": ["PAR"],
+    "sv4pt5": ["PAF"],
+    "sv5": ["TEF"],
+    "sv6": ["TWM"],
+    "sv6pt5": ["SFA"],
+    "sv7": ["SCR"],
+    "sv8": ["SSP"],
+
+    # Sword & Shield common aliases used by Limitless/PTCGL-style decklists
+    "swsh1": ["SSH"],
+    "swsh2": ["RCL"],
+    "swsh3": ["DAA"],
+    "swsh4": ["VIV"],
+    "swsh45": ["SHF"],
+    "swsh5": ["BST"],
+    "swsh6": ["CRE"],
+    "swsh7": ["EVS"],
+    "swsh8": ["FST"],
+    "swsh9": ["BRS"],
+    "swsh10": ["ASR"],
+    "swsh11": ["LOR"],
+    "swsh12": ["SIT"],
+    "swsh12pt5": ["CRZ"],
+}
+
+
+def _turn1_exact_identity_base_name_norm_v1(name: Any) -> str:
+    s = str(name or "").strip()
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", s).strip()
+    s = re.sub(r"\s+", " ", s)
+    try:
+        return tf.norm(s)
+    except Exception:
+        return s.lower().strip()
+
+
+def _turn1_exact_identity_names_compatible_v1(requested_name: Any, resolved_name: Any) -> bool:
+    requested = str(requested_name or "").strip()
+    resolved = str(resolved_name or "").strip()
+
+    if not requested or not resolved:
+        return True
+
+    try:
+        if tf.norm(requested) == tf.norm(resolved):
+            return True
+    except Exception:
+        pass
+
+    return (
+        _turn1_exact_identity_base_name_norm_v1(requested)
+        == _turn1_exact_identity_base_name_norm_v1(resolved)
+    )
+
+
+
 # TURN1_SET_CODE_ALIAS_IDENTITY_V4
 def _turn1_build_set_id_to_codes_v4(cards: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
     aliases: Dict[str, List[str]] = {}
@@ -10814,6 +10892,13 @@ def _turn1_build_set_id_to_codes_v4(cards: Sequence[Dict[str, Any]]) -> Dict[str
         aliases.setdefault(key, [])
         if c.lower() not in {x.lower() for x in aliases[key]}:
             aliases[key].append(c)
+
+        # TURN1_EXACT_IDENTITY_PRINTING_ALIAS_PARENTHESES_V1
+        # Also register known decklist/UI aliases for API set ids.
+        for alias in _TURN1_MANUAL_SET_ID_ALIASES_V1.get(key, []):
+            alias_s = str(alias or "").strip()
+            if alias_s and alias_s.lower() not in {x.lower() for x in aliases[key]}:
+                aliases[key].append(alias_s)
 
     for card in cards or []:
         if not isinstance(card, dict):
@@ -10962,7 +11047,7 @@ def resolve_decklist_with_exact_identity_v4(
 
         if card is not None:
             try:
-                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                if clean_name and not _turn1_exact_identity_names_compatible_v1(clean_name, tf.card_name(card)):
                     unresolved.append((
                         count,
                         raw_name,
@@ -11051,7 +11136,7 @@ def resolve_decklist_with_exact_identity_v3(
 
         if card is not None:
             try:
-                if clean_name and tf.norm(tf.card_name(card)) != tf.norm(clean_name):
+                if clean_name and not _turn1_exact_identity_names_compatible_v1(clean_name, tf.card_name(card)):
                     unresolved.append((
                         count,
                         raw_name,
