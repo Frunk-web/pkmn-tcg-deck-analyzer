@@ -114,14 +114,26 @@ def parse_goal_string(goal: str, default_zone: str = "accessed") -> List[GoalReq
     Commas separate AND requirements. A pipe creates an OR group inside a
     requirement.
 
+    Repeated compact requirements are collapsed into min_count requirements.
+
     Examples:
-      me1-76,me1-77,me1-132
-      me1-76|me1-72,me1-77
+      N's Zorua,N's Zorua,N's Zorua
+        -> one requirement, label="3x N's Zorua", min_count=3
+
+      me1-76|me1-72,me1-76|me1-72
+        -> one OR requirement, min_count=2
 
     Zone override syntax is optional:
       me1-76@in_play,me1-77@hand,me1-132@hand
     """
+    # TURN1_COMPACT_GOAL_DUPLICATE_MIN_COUNT_V1
+    # Root fix: repeated comma-separated compact goals should require multiple
+    # physical copies, not create several identical min_count=1 requirements
+    # that can all be satisfied by the same accessed card instance.
     reqs: List[GoalRequirement] = []
+    index_by_key = {}
+    base_label_by_key = {}
+
     for idx, part in enumerate([p.strip() for p in str(goal or "").split(",") if p.strip()], start=1):
         zone = default_zone
         body = part
@@ -129,11 +141,31 @@ def parse_goal_string(goal: str, default_zone: str = "accessed") -> List[GoalReq
             body, zone_part = part.rsplit("@", 1)
             body = body.strip()
             zone = zone_part.strip() or default_zone
+
         options = [GoalOption(raw=o.strip(), norm=tf.norm(o.strip())) for o in body.split("|") if o.strip()]
         if not options:
             continue
+
         label = " OR ".join(o.raw for o in options)
+
+        # Logical key: same zone + same OR option set means another required
+        # physical copy of the same compact requirement.
+        option_key = tuple(sorted(o.norm for o in options if o.norm))
+        key = (str(zone or default_zone), option_key)
+
+        if key in index_by_key:
+            req = reqs[index_by_key[key]]
+            req.min_count = max(1, int(req.min_count or 1)) + 1
+
+            base_label = base_label_by_key.get(key) or label
+            display_base = f"({base_label})" if " OR " in base_label else base_label
+            req.label = f"{req.min_count}x {display_base}"
+            continue
+
+        index_by_key[key] = len(reqs)
+        base_label_by_key[key] = label
         reqs.append(GoalRequirement(label=label, options=options, zone=zone, min_count=1))
+
     return reqs
 
 
@@ -11987,3 +12019,373 @@ def _turn1_goal_select_from_deck(
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------
+# TURN1_DIRECT_SEARCH_MISSING_COPY_SCORER_V1
+# ---------------------------------------------------------------------
+# Root fix:
+# The old scorer can miss direct-search cards whose compiled filter is stored
+# only as raw text, e.g. Buddy-Buddy Poffin:
+#   "up to 2 Basic Pokémon with 70 HP or less"
+#
+# The executor/search-step layer already recognizes these as legal accessible
+# search effects. This scoring layer gives such cards credit for the number of
+# currently missing physical goal copies they can actually access, capped by the
+# effect amount.
+#
+# This is generic: Ultra Ball gets credit for 1 matching Pokémon; Buddy-Buddy
+# Poffin gets credit for up to 2 matching Basic <=70 HP Pokémon; other direct
+# search cards use their compiled filters and amount caps.
+
+def _turn1_direct_search_missing_copy_amount_v1(step):
+    if not isinstance(step, dict):
+        return 1
+
+    amount = step.get("amount")
+    if isinstance(amount, int):
+        return max(1, amount)
+    if isinstance(amount, str) and amount.isdigit():
+        return max(1, int(amount))
+
+    for key in ("count", "max_count", "search_count", "num_cards"):
+        value = step.get(key)
+        if isinstance(value, int):
+            return max(1, value)
+        if isinstance(value, str) and value.isdigit():
+            return max(1, int(value))
+
+    blob = _turn1_compiled_draw_norm_v1(str(step))
+    if "up to 2" in blob or "up to two" in blob:
+        return 2
+    if "up to 3" in blob or "up to three" in blob:
+        return 3
+    if "up to 4" in blob or "up to four" in blob:
+        return 4
+
+    return 1
+
+
+def _turn1_direct_search_missing_copy_filter_allows_card_v1(filt, card):
+    try:
+        if _turn1_active_compiled_search_filter_allows_card(filt, card):
+            return True
+    except Exception:
+        pass
+
+    blob = _turn1_compiled_draw_norm_v1(str(filt or ""))
+
+    if "basic pokemon" in blob or "basic pokémon" in blob:
+        try:
+            if not tf.is_basic_pokemon(card):
+                return False
+        except Exception:
+            return False
+
+    if "70 hp or less" in blob or "hp or less" in blob:
+        hp = None
+        for key in ("hp", "HP"):
+            try:
+                raw = card.get(key)
+                if raw is not None and str(raw).strip().isdigit():
+                    hp = int(str(raw).strip())
+                    break
+            except Exception:
+                pass
+
+        if hp is None:
+            try:
+                hp = int(str(card.get("identity", {}).get("hp") or "").strip())
+            except Exception:
+                hp = None
+
+        # If the metadata is missing, fall back to text/name compatibility only
+        # for cards already matching the missing goal requirement. This avoids
+        # blocking exact resolved Basic Pokémon that lost hp metadata upstream.
+        if hp is not None and hp > 70:
+            return False
+
+    return True
+
+
+def _turn1_direct_search_missing_copy_score_v1(st, action, missing, going):
+    if not isinstance(action, dict):
+        return 0.0
+
+    try:
+        if not tf.card_can_be_played_from_hand(action, going, getattr(st, "supporter_used", False)):
+            return 0.0
+    except Exception:
+        return 0.0
+
+    best_units = 0
+    best_target = ""
+
+    try:
+        steps = list(_turn1_search_steps_for_card(action))
+    except Exception:
+        steps = []
+
+    if not steps:
+        return 0.0
+
+    for step in steps:
+        if not isinstance(step, dict) or step.get("op") != "search_deck":
+            continue
+
+        try:
+            if not _turn1_search_step_moves_to_accessible_zone_v1(step, action):
+                continue
+        except Exception:
+            continue
+
+        amount = _turn1_direct_search_missing_copy_amount_v1(step)
+        filt = tf.extract_filter(step)
+
+        for req in missing or []:
+            current = 0
+            try:
+                current = sum(
+                    1
+                    for c in zone_cards(st, None, getattr(req, "zone", "accessed"))
+                    if any(card_matches_option(c, opt) for opt in getattr(req, "options", []) or [])
+                )
+            except Exception:
+                current = 0
+
+            try:
+                needed = max(1, int(getattr(req, "min_count", 1) or 1))
+            except Exception:
+                needed = 1
+
+            deficit = max(0, needed - current)
+            if deficit <= 0:
+                continue
+
+            matching_in_deck = 0
+            for c in list(getattr(st, "deck", []) or []):
+                try:
+                    if not any(card_matches_option(c, opt) for opt in getattr(req, "options", []) or []):
+                        continue
+                    if not _turn1_direct_search_missing_copy_filter_allows_card_v1(filt, c):
+                        continue
+                    matching_in_deck += 1
+                except Exception:
+                    continue
+
+            units = min(amount, deficit, matching_in_deck)
+            if units > best_units:
+                best_units = units
+                try:
+                    best_target = choose_primary_target_norm(req, st) or ""
+                except Exception:
+                    best_target = ""
+
+    if best_units <= 0:
+        return 0.0
+
+    name = tf.card_name(action)
+
+    # Base above generic draw setup but below very specific high-confidence
+    # chains. Multi-search gets a large bump so Poffin beats one-card searches
+    # when it fills two missing physical copies.
+    score = 900.0 + 220.0 * float(best_units)
+
+    # Poffin-like bench search often directly satisfies hand_or_in_play goals.
+    try:
+        if any(
+            isinstance(step, dict)
+            and str(step.get("destination") or "").lower() in {"self.bench", "bench", "in_play", "play"}
+            for step in steps
+        ):
+            score += 50.0
+    except Exception:
+        pass
+
+    try:
+        action["_turn1_direct_search_missing_copy_units_v1"] = best_units
+    except Exception:
+        pass
+
+    return score, best_target
+
+
+_TURN1_ORIG_SCORE_CANDIDATE_BEFORE_DIRECT_SEARCH_MISSING_COPY_V1 = score_candidate_for_missing_targets
+
+
+def score_candidate_for_missing_targets(
+    st: tf.SimState,
+    missing: Sequence[GoalRequirement],
+    going: str,
+    enable_chain_search: bool,
+) -> List[Tuple[float, Any, str]]:
+    scored = _TURN1_ORIG_SCORE_CANDIDATE_BEFORE_DIRECT_SEARCH_MISSING_COPY_V1(
+        st,
+        missing,
+        going,
+        enable_chain_search,
+    )
+
+    existing_action_ids = set()
+    for _score, action, _tn in scored or []:
+        try:
+            existing_action_ids.add(id(action))
+        except Exception:
+            pass
+
+    additions = []
+    for c in list(getattr(st, "hand", []) or []):
+        if not isinstance(c, dict):
+            continue
+        try:
+            if id(c) in existing_action_ids:
+                continue
+        except Exception:
+            pass
+
+        result = _turn1_direct_search_missing_copy_score_v1(st, c, missing, going)
+        if not result:
+            continue
+
+        score, target_norm = result
+        if score <= 0:
+            continue
+
+        additions.append((score, c, target_norm))
+
+    if additions:
+        try:
+            st.log.append({
+                "event": "direct_search_missing_copy_scorer_added",
+                "actions": [
+                    {
+                        "card": action_label(action),
+                        "score": score,
+                        "target_norm": tn,
+                        "units": action.get("_turn1_direct_search_missing_copy_units_v1") if isinstance(action, dict) else None,
+                    }
+                    for score, action, tn in additions
+                ],
+            })
+        except Exception:
+            pass
+
+    return list(scored or []) + additions
+
+
+# ---------------------------------------------------------------------
+# TURN1_PREVIOUS_TURN_KO_DRAW_ABILITY_GUARD_V1
+# ---------------------------------------------------------------------
+# Root fix:
+# Draw abilities like Fezandipiti ex's Flip the Script require a previous-turn
+# knockout condition:
+#   "if any of your Pokemon were Knocked Out during your opponent's last turn"
+#
+# The Turn-1 access simulator does not model a prior opponent knockout. These
+# effects must not be treated as free generic draw engines.
+
+def _turn1_prev_turn_ko_condition_text_v1(effect):
+    try:
+        text = _turn1_compiled_draw_norm_v1(
+            _turn1_compiled_draw_effect_text_v1(effect)
+            + " "
+            + _turn1_compiled_draw_flatten_strings_v1(effect)
+        )
+    except Exception:
+        text = _turn1_compiled_draw_norm_v1(str(effect or ""))
+
+    phrases = [
+        "knocked out during your opponents last turn",
+        "knocked out during your opponent s last turn",
+        "were knocked out during your opponents last turn",
+        "were knocked out during your opponent s last turn",
+        "was knocked out during your opponents last turn",
+        "was knocked out during your opponent s last turn",
+    ]
+
+    return any(p in text for p in phrases)
+
+
+_TURN1_ORIG_COMPILED_DRAW_CAN_USE_BEFORE_PREV_TURN_KO_GUARD_V1 = _turn1_compiled_draw_can_use_v1
+
+
+def _turn1_compiled_draw_can_use_v1(st, source, effect, target_norm, reqs):
+    if _turn1_prev_turn_ko_condition_text_v1(effect):
+        try:
+            st.log.append({
+                "event": "blocked_previous_turn_ko_draw_ability",
+                "source": _turn1_compiled_draw_card_name_v1(source),
+                "ability": _turn1_compiled_draw_ability_name_v1(effect),
+                "reason": "Turn-1 simulator does not satisfy previous-opponent-turn knockout condition.",
+            })
+        except Exception:
+            pass
+        return False, 0
+
+    return _TURN1_ORIG_COMPILED_DRAW_CAN_USE_BEFORE_PREV_TURN_KO_GUARD_V1(
+        st,
+        source,
+        effect,
+        target_norm,
+        reqs,
+    )
+
+
+def _turn1_line_previous_turn_ko_effect_labels_v1(line, deck):
+    raw = str(line or "").strip()
+    if not raw or raw == "none":
+        return []
+
+    labels = [_turn1_compiled_draw_norm_v1(p.strip()) for p in raw.split("->") if p.strip()]
+    if not labels:
+        return []
+
+    blocked = []
+    seen = set()
+
+    for card in deck or []:
+        try:
+            effects = list(tf.ability_effects(card))
+        except Exception:
+            effects = []
+
+        for effect in effects:
+            try:
+                ability_name = _turn1_compiled_draw_ability_name_v1(effect)
+                ability_norm = _turn1_compiled_draw_norm_v1(ability_name)
+            except Exception:
+                continue
+
+            if not ability_norm or ability_norm not in labels:
+                continue
+
+            if not _turn1_prev_turn_ko_condition_text_v1(effect):
+                continue
+
+            if ability_name not in seen:
+                seen.add(ability_name)
+                blocked.append(ability_name)
+
+    return blocked
+
+
+_TURN1_ORIG_INCOMPATIBLE_EFFECT_LABELS_BEFORE_PREV_TURN_KO_GUARD_V1 = turn1_incompatible_effect_labels_in_line
+
+
+def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
+    blocked = list(
+        _TURN1_ORIG_INCOMPATIBLE_EFFECT_LABELS_BEFORE_PREV_TURN_KO_GUARD_V1(
+            line,
+            deck,
+            reqs,
+        )
+        or []
+    )
+
+    for label in _turn1_line_previous_turn_ko_effect_labels_v1(line, deck):
+        blocked.append({
+            "action": label,
+            "reason": "Previous-opponent-turn knockout condition is not satisfied in Turn-1 access simulation.",
+        })
+
+    return blocked

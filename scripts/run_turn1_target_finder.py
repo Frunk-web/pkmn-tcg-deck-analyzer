@@ -1208,6 +1208,45 @@ def filter_allows_card(filt: Dict[str, Any], card: Dict[str, Any]) -> bool:
     return True
 
 def search_amount(step: Dict[str, Any]) -> int:
+
+    # TURN1_SEARCH_AMOUNT_FROM_TEXT_CANONICAL_V1
+    # Canonical amount parser for compiled search effects like Buddy-Buddy Poffin:
+    #   amount: {"mode": "from_text"}
+    #   source_text: "Search your deck for up to 2 Basic Pokémon with 70 HP or less..."
+    #
+    # Without this, execute_steps(search_deck) defaults Poffin to selecting only
+    # one card even though the printed effect allows up to two.
+    try:
+        import re
+        blob = " ".join(
+            str((step or {}).get(k) or "")
+            for k in ("source_text", "text", "raw_text", "effect_text", "description")
+        ).lower()
+
+        amount_obj = (step or {}).get("amount")
+        amount_is_from_text = (
+            isinstance(amount_obj, dict)
+            and str(amount_obj.get("mode") or "").lower() == "from_text"
+        )
+
+        if amount_is_from_text or "up to" in blob:
+            m = re.search(r"up to\s+(\d+)", blob)
+            if m:
+                return max(1, int(m.group(1)))
+
+            words = {
+                "one": 1,
+                "two": 2,
+                "three": 3,
+                "four": 4,
+                "five": 5,
+            }
+            m = re.search(r"up to\s+(one|two|three|four|five)\b", blob)
+            if m:
+                return words[m.group(1)]
+    except Exception:
+        pass
+
     for key in ("amount", "count", "max_cards", "number"):
         if key in step:
             return max(1, amount_value(step[key], default=1))
@@ -5257,7 +5296,165 @@ def _turn1_v73_hp_ok(card, text):
     hp = _turn1_v73_hp(card)
     return hp is not None and hp <= int(m.group(1))
 
+
+# TURN1_V73_FROM_TEXT_BASIC_HP_FILTER_CANONICAL_V1
+# Canonical filter matcher fix.
+#
+# Poffin-style compiled filters can arrive as:
+#   {"from_text": "up to 2 Basic Pokémon with 70 HP or less"}
+#
+# This belongs in filter_allows_card/_turn1_v73_filter_decision, not in V78,
+# because V78 correctly delegates to filter_allows_card before selecting.
+
+def _turn1_v73_from_text_flatten_v1(obj, depth=0):
+    if obj is None or depth > 6:
+        return ""
+    if isinstance(obj, str):
+        return obj
+    if isinstance(obj, (int, float, bool)):
+        return str(obj)
+    if isinstance(obj, (list, tuple, set)):
+        return " ".join(_turn1_v73_from_text_flatten_v1(x, depth + 1) for x in obj)
+    if isinstance(obj, dict):
+        parts = []
+        for k, v in obj.items():
+            parts.append(str(k))
+            parts.append(_turn1_v73_from_text_flatten_v1(v, depth + 1))
+        return " ".join(parts)
+    return str(obj)
+
+
+def _turn1_v73_parse_int_v1(value):
+    try:
+        s = str(value or "").strip()
+        if s.isdigit():
+            return int(s)
+    except Exception:
+        pass
+    return None
+
+
+def _turn1_v73_find_hp_v1(obj, depth=0):
+    if obj is None or depth > 6:
+        return None
+
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if _turn1_v73_norm(k) == "hp":
+                hp = _turn1_v73_parse_int_v1(v)
+                if hp is not None:
+                    return hp
+
+        for v in obj.values():
+            hp = _turn1_v73_find_hp_v1(v, depth + 1)
+            if hp is not None:
+                return hp
+
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            hp = _turn1_v73_find_hp_v1(v, depth + 1)
+            if hp is not None:
+                return hp
+
+    return None
+
+
+def _turn1_v73_card_supertype_norm_v1(card):
+    if not isinstance(card, dict):
+        return ""
+
+    try:
+        st = card_supertype(card)
+        if st:
+            return _turn1_v73_norm(st)
+    except Exception:
+        pass
+
+    for container_key in ("identity", "gameplay", "printed", "raw_card"):
+        container = card.get(container_key)
+        if isinstance(container, dict):
+            raw = container.get("supertype")
+            if raw:
+                return _turn1_v73_norm(raw)
+
+    raw = card.get("supertype")
+    if raw:
+        return _turn1_v73_norm(raw)
+
+    return ""
+
+
+def _turn1_v73_card_is_basic_pokemon_v1(card):
+    supertype = _turn1_v73_card_supertype_norm_v1(card)
+    if supertype and supertype != "pokemon":
+        return False
+
+    try:
+        if is_basic_pokemon(card):
+            return True
+    except Exception:
+        pass
+
+    blob = _turn1_v73_norm(_turn1_v73_from_text_flatten_v1(card))
+
+    if supertype == "pokemon" and "basic" in blob:
+        return True
+
+    return False
+
+
+def _turn1_v73_from_text_basic_hp_filter_decision_v1(filt, card):
+    if not isinstance(filt, dict):
+        return None
+
+    raw_text = " ".join(
+        str(filt.get(k) or "")
+        for k in ("from_text", "source_text", "raw_text", "text", "filter_text", "description")
+    )
+    blob = _turn1_v73_norm(raw_text)
+
+    if not blob:
+        return None
+
+    wants_basic_pokemon = "basic pokemon" in blob
+    wants_hp_lte = "hp or less" in blob
+
+    if not wants_basic_pokemon and not wants_hp_lte:
+        return None
+
+    if wants_basic_pokemon:
+        if _turn1_v73_card_supertype_norm_v1(card) != "pokemon":
+            return False
+        if not _turn1_v73_card_is_basic_pokemon_v1(card):
+            return False
+
+    if wants_hp_lte:
+        import re
+        hp_limit = 70
+        m = re.search(r"(\d{2,3})\s*hp\s*or\s*less", blob)
+        if m:
+            hp_limit = int(m.group(1))
+
+        hp = _turn1_v73_find_hp_v1(card)
+
+        # Fail closed if the card has no HP metadata. This prevents Poffin-like
+        # text from accidentally accepting arbitrary Basic Pokémon with unknown HP.
+        if hp is None:
+            return False
+
+        if hp > hp_limit:
+            return False
+
+    return True
+
+
+
 def _turn1_v73_filter_decision(filt, card):
+    # TURN1_V73_FROM_TEXT_BASIC_HP_FILTER_CANONICAL_V1
+    from_text_basic_hp_decision = _turn1_v73_from_text_basic_hp_filter_decision_v1(filt, card)
+    if from_text_basic_hp_decision is not None:
+        return bool(from_text_basic_hp_decision)
+
     if not isinstance(filt, dict):
         return None
     text = _turn1_v73_norm(_turn1_v73_blob(filt))
