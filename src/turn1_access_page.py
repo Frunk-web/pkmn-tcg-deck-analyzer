@@ -11,7 +11,7 @@ import subprocess
 # Prevent Streamlit from hanging forever while Automatic Goal Finder runs.
 #
 # Defaults can be overridden in PowerShell before launching Streamlit:
-#   $env:TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS = "120"
+#   $env:TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS = "600"
 #   $env:TURN1_STREAMLIT_MAX_TRIALS = "200"
 #   $env:TURN1_STREAMLIT_MAX_ACTIONS = "8"
 
@@ -127,7 +127,7 @@ def _turn1_v45_timeout_completed_process(cmd, timeout_seconds, exc, cap_changes)
 
 
 def _turn1_v45_subprocess_run_with_timeout(*args, **kwargs):
-    timeout_seconds = _turn1_v45_int_env("TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS", 120)
+    timeout_seconds = _turn1_v45_int_env("TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS", 600)
 
     cap_changes = []
 
