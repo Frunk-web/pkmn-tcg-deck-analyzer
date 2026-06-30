@@ -240,6 +240,174 @@ def _compiled_semantics_path() -> Path:
     return plain
 
 
+
+def _turn1_cmd_arg_value(cmd: list[Any], flag: str, default: str = "") -> str:
+    try:
+        idx = list(cmd).index(flag)
+        if idx + 1 < len(cmd):
+            return str(cmd[idx + 1])
+    except Exception:
+        pass
+    return default
+
+
+def _run_goal_finder_subprocess_with_progress(cmd: list[Any], *, cwd: str) -> subprocess.CompletedProcess:
+    timeout_seconds = _turn1_v45_int_env("TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS", 600)
+
+    trials_label = _turn1_cmd_arg_value(cmd, "--trials", "?")
+    going_label = _turn1_cmd_arg_value(cmd, "--going", "?")
+    workers_label = _turn1_cmd_arg_value(cmd, "--workers", "?")
+    actions_label = _turn1_cmd_arg_value(cmd, "--max-actions", "?")
+    progress_json_raw = _turn1_cmd_arg_value(cmd, "--progress-json", "")
+
+    progress_json_path = Path(progress_json_raw) if progress_json_raw else None
+    if progress_json_path is not None:
+        try:
+            progress_json_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    progress = st.progress(
+        0,
+        text=(
+            "Starting automatic goal finder... "
+            f"trials={trials_label}, going={going_label}, "
+            f"workers={workers_label}, max actions={actions_label}"
+        ),
+    )
+    status = st.empty()
+
+    start = time.time()
+
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        cwd=cwd,
+    )
+
+    stdout = ""
+    stderr = ""
+
+    last_completed = 0
+    last_total = 0
+
+    def read_progress_payload() -> dict[str, Any] | None:
+        if progress_json_path is None or not progress_json_path.exists():
+            return None
+        try:
+            return json.loads(progress_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    try:
+        while proc.poll() is None:
+            elapsed = time.time() - start
+
+            if timeout_seconds and elapsed >= timeout_seconds:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                stderr = (
+                    str(stderr or "")
+                    + "\n\nTurn 1 Automatic Goal Finder timed out in the Streamlit frontend."
+                    + f"\nTimeout: {timeout_seconds} seconds."
+                    + "\n\nTry fewer trials, max actions 6, and chain-search off/on depending on the test."
+                )
+                progress.progress(100, text=f"Goal finder timed out after {elapsed:.1f}s.")
+                status.error("Automatic goal finder timed out.")
+                return subprocess.CompletedProcess(
+                    args=cmd,
+                    returncode=124,
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+
+            payload = read_progress_payload()
+            if payload:
+                try:
+                    completed = int(payload.get("completed_trials", 0) or 0)
+                    total = int(payload.get("total_trials", 0) or 0)
+                except Exception:
+                    completed, total = 0, 0
+
+                if total > 0:
+                    last_completed = max(last_completed, completed)
+                    last_total = max(last_total, total)
+                    pct = min(99, max(0, int((last_completed / last_total) * 100)))
+                    progress.progress(
+                        pct,
+                        text=(
+                            f"Running trials: {last_completed}/{last_total} complete "
+                            f"({pct}%). Elapsed {elapsed:.1f}s."
+                        ),
+                    )
+                    status.caption(
+                        f"Going={payload.get('going') or going_label}; "
+                        f"workers={workers_label}; max actions={actions_label}"
+                    )
+                else:
+                    progress.progress(0, text=f"Preparing trial progress... elapsed {elapsed:.1f}s.")
+                    status.caption("Waiting for backend trial counter.")
+            else:
+                progress.progress(0, text=f"Preparing simulation... elapsed {elapsed:.1f}s.")
+                status.caption("Waiting for backend trial counter.")
+
+            time.sleep(0.25)
+
+        stdout, stderr = proc.communicate()
+        elapsed = time.time() - start
+
+        payload = read_progress_payload()
+        if payload:
+            try:
+                completed = int(payload.get("completed_trials", last_completed) or last_completed)
+                total = int(payload.get("total_trials", last_total) or last_total)
+            except Exception:
+                completed, total = last_completed, last_total
+
+            if total > 0:
+                progress.progress(
+                    100 if proc.returncode == 0 else min(99, int((completed / total) * 100)),
+                    text=f"Trials complete: {completed}/{total}. Elapsed {elapsed:.1f}s.",
+                )
+            else:
+                progress.progress(100, text=f"Goal finder complete in {elapsed:.1f}s.")
+        else:
+            progress.progress(100, text=f"Goal finder complete in {elapsed:.1f}s.")
+
+        if proc.returncode == 0:
+            status.success("Automatic goal finder finished.")
+        else:
+            status.warning("Automatic goal finder returned a non-zero exit code.")
+
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    except Exception as exc:
+        try:
+            proc.kill()
+            stdout, stderr = proc.communicate()
+        except Exception:
+            pass
+
+        elapsed = time.time() - start
+        progress.progress(100, text=f"Goal finder failed after {elapsed:.1f}s.")
+        status.error("Automatic goal finder failed.")
+
+        return subprocess.CompletedProcess(
+            args=cmd,
+            returncode=1,
+            stdout=stdout,
+            stderr=(str(stderr or "") + f"\n\nFrontend progress runner error: {exc}"),
+        )
+
 def _strict_goal_finder_path() -> Path:
     return _repo_root() / "scripts" / "run_turn1_goal_finder_strict.py"
 
@@ -855,6 +1023,7 @@ def _run_goal_finder(
     json_path = reports_dir / f"turn1_{safe_goal}_{stamp}.json"
     summary_csv_path = reports_dir / f"turn1_{safe_goal}_{stamp}_summary.csv"
     lines_csv_path = reports_dir / f"turn1_{safe_goal}_{stamp}_lines.csv"
+    progress_json_path = reports_dir / f"goal_progress_{stamp}.json"
     goal_file_path = reports_dir / f"goal_{safe_goal}_{stamp}.json"
 
     _write_decklist_file(all_options, decklist_path)
@@ -897,6 +1066,8 @@ def _run_goal_finder(
         str(summary_csv_path),
         "--lines-csv",
         str(lines_csv_path),
+        "--progress-json",
+        str(progress_json_path),
     ]
 
     if complete_only:
@@ -915,13 +1086,8 @@ def _run_goal_finder(
         cmd.extend(["--exclude-played", ", ".join(excluded_names)])
 
     start = time.time()
-    proc = subprocess.run(
+    proc = _run_goal_finder_subprocess_with_progress(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         cwd=str(_repo_root()),
     )
     elapsed = time.time() - start
@@ -948,6 +1114,7 @@ def _run_goal_finder(
             "json": str(json_path),
             "summary_csv": str(summary_csv_path),
             "lines_csv": str(lines_csv_path),
+            "progress_json": str(progress_json_path),
         },
     }
 
@@ -1315,6 +1482,7 @@ def _run_goal_finder(
     json_path = reports_dir / f"turn1_{safe_goal}_{stamp}.json"
     summary_csv_path = reports_dir / f"turn1_{safe_goal}_{stamp}_summary.csv"
     lines_csv_path = reports_dir / f"turn1_{safe_goal}_{stamp}_lines.csv"
+    progress_json_path = reports_dir / f"goal_progress_{stamp}.json"
 
     _write_decklist_file(all_options, decklist_path)
     _turn1_v19_write_goal_file(
@@ -1358,6 +1526,8 @@ def _run_goal_finder(
         str(summary_csv_path),
         "--lines-csv",
         str(lines_csv_path),
+        "--progress-json",
+        str(progress_json_path),
     ]
 
     if complete_only:
@@ -1376,13 +1546,8 @@ def _run_goal_finder(
         cmd.extend(["--exclude-played", ", ".join(excluded_names)])
 
     start = time.time()
-    proc = subprocess.run(
+    proc = _run_goal_finder_subprocess_with_progress(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
         cwd=str(_repo_root()),
     )
     elapsed = time.time() - start
@@ -1410,6 +1575,7 @@ def _run_goal_finder(
             "json": str(json_path),
             "summary_csv": str(summary_csv_path),
             "lines_csv": str(lines_csv_path),
+            "progress_json": str(progress_json_path),
         },
     }
 
