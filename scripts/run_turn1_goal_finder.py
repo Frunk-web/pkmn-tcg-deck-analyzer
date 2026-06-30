@@ -6841,6 +6841,94 @@ def run_goal_scenario(args: argparse.Namespace, deck: List[Dict[str, Any]], reqs
 
 
 # ---------------------------------------------------------------------
+# TURN1_TRIAL_PROGRESS_JSON_V1
+# ---------------------------------------------------------------------
+_TURN1_PROGRESS_COMPLETED_TRIALS_V1 = 0
+_TURN1_PROGRESS_STARTED_V1 = False
+
+
+def _turn1_progress_json_path_v1(args):
+    raw = str(getattr(args, "progress_json", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        from pathlib import Path as _Path
+        return _Path(raw)
+    except Exception:
+        return None
+
+
+def _turn1_progress_total_trials_v1(args):
+    try:
+        trials = max(0, int(getattr(args, "trials", 0) or 0))
+    except Exception:
+        trials = 0
+
+    going = str(getattr(args, "going", "") or "").strip().lower()
+    scenario_count = 2 if going == "both" else 1
+    return trials * scenario_count
+
+
+def _turn1_write_progress_json_v1(args, *, going="", completed=None, phase="running"):
+    path = _turn1_progress_json_path_v1(args)
+    if path is None:
+        return
+
+    global _TURN1_PROGRESS_COMPLETED_TRIALS_V1
+
+    try:
+        total = _turn1_progress_total_trials_v1(args)
+        done = _TURN1_PROGRESS_COMPLETED_TRIALS_V1 if completed is None else int(completed)
+        done = max(0, min(done, total if total > 0 else done))
+        pct = (float(done) / float(total) * 100.0) if total else 0.0
+
+        import json as _json
+        import time as _time
+
+        payload = {
+            "phase": str(phase or "running"),
+            "going": str(going or ""),
+            "completed_trials": done,
+            "total_trials": total,
+            "percent": pct,
+            "updated_at": _time.time(),
+        }
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        return
+
+
+def _turn1_progress_begin_v1(args, going=""):
+    global _TURN1_PROGRESS_STARTED_V1, _TURN1_PROGRESS_COMPLETED_TRIALS_V1
+
+    if not _TURN1_PROGRESS_STARTED_V1:
+        _TURN1_PROGRESS_STARTED_V1 = True
+        _TURN1_PROGRESS_COMPLETED_TRIALS_V1 = 0
+        _turn1_write_progress_json_v1(args, going=going, completed=0, phase="running")
+
+
+def _turn1_progress_add_trials_v1(args, going="", count=1):
+    global _TURN1_PROGRESS_COMPLETED_TRIALS_V1
+
+    try:
+        _TURN1_PROGRESS_COMPLETED_TRIALS_V1 += max(0, int(count or 0))
+    except Exception:
+        _TURN1_PROGRESS_COMPLETED_TRIALS_V1 += 1
+
+    _turn1_write_progress_json_v1(
+        args,
+        going=going,
+        completed=_TURN1_PROGRESS_COMPLETED_TRIALS_V1,
+        phase="running",
+    )
+
+
+
+# ---------------------------------------------------------------------
 # TURN1_PARALLEL_GOAL_TRIALS
 # ---------------------------------------------------------------------
 def _turn1_trial_worker_count(args: argparse.Namespace, trials: int) -> int:
@@ -6862,24 +6950,31 @@ def _turn1_serial_goal_trials(
     going: str,
 ) -> List[Dict[str, Any]]:
     _turn1_set_action_budget_from_args(args)
+    _turn1_progress_begin_v1(args, going=going)
+
     rng = random.Random(args.seed + (0 if going == "first" else 1000003))
-    return [
-        simulate_one_goal_trial(
-            deck=deck,
-            rng=rng,
-            reqs=reqs,
-            mode=mode,
-            going=going,
-            hand_size=args.hand_size,
-            prize_count=args.prizes,
-            use_mulligans=not args.no_mulligans,
-            draw_for_turn=not args.no_draw_for_turn,
-            max_actions=args.max_actions,
-            enable_chain_search=args.chain_search,
-            goal_zone=args.goal_zone,
+    out: List[Dict[str, Any]] = []
+
+    for _ in range(args.trials):
+        out.append(
+            simulate_one_goal_trial(
+                deck=deck,
+                rng=rng,
+                reqs=reqs,
+                mode=mode,
+                going=going,
+                hand_size=args.hand_size,
+                prize_count=args.prizes,
+                use_mulligans=not args.no_mulligans,
+                draw_for_turn=not args.no_draw_for_turn,
+                max_actions=args.max_actions,
+                enable_chain_search=args.chain_search,
+                goal_zone=args.goal_zone,
+            )
         )
-        for _ in range(args.trials)
-    ]
+        _turn1_progress_add_trials_v1(args, going=going, count=1)
+
+    return out
 
 
 def _turn1_install_parallel_worker_patches(args: argparse.Namespace) -> None:
@@ -6952,21 +7047,40 @@ def _turn1_parallel_goal_trials(
     if workers <= 1 or trials < 100:
         return _turn1_serial_goal_trials(args, deck, reqs, mode, going)
 
-    base = trials // workers
-    rem = trials % workers
+    _turn1_progress_begin_v1(args, going=going)
+
+    # Smaller batches make frontend progress update by completed trial batches,
+    # not only when an entire worker-sized chunk finishes.
+    target_batches = max(workers * 20, 1)
+    chunk_size = max(1, (trials + target_batches - 1) // target_batches)
+
     payloads = []
     start = 0
-    for i in range(workers):
-        count = base + (1 if i < rem else 0)
-        if count <= 0:
-            continue
+    while start < trials:
+        count = min(chunk_size, trials - start)
         payloads.append((args, deck, reqs, mode, going, start, count))
         start += count
 
     results: List[Dict[str, Any]] = []
-    with ProcessPoolExecutor(max_workers=len(payloads)) as pool:
-        for batch in pool.map(_turn1_goal_trial_batch_worker, payloads):
-            results.extend(batch)
+    batches: List[Tuple[int, List[Dict[str, Any]]]] = []
+
+    from concurrent.futures import as_completed
+
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        future_to_start = {
+            pool.submit(_turn1_goal_trial_batch_worker, payload): int(payload[5])
+            for payload in payloads
+        }
+
+        for future in as_completed(future_to_start):
+            batch_start = future_to_start[future]
+            batch = future.result()
+            batches.append((batch_start, batch))
+            _turn1_progress_add_trials_v1(args, going=going, count=len(batch))
+
+    for _batch_start, batch in sorted(batches, key=lambda x: x[0]):
+        results.extend(batch)
+
     return results
 
 
@@ -11454,6 +11568,7 @@ def main() -> None:
     ap.add_argument("--out", default=default_report_file("turn1_goal_finder.json"))
     ap.add_argument("--csv-out", default=default_report_file("turn1_goal_finder_summary.csv"))
     ap.add_argument("--lines-csv", default=default_report_file("turn1_goal_finder_lines.csv"))
+    ap.add_argument("--progress-json", default="", help="Optional JSON file for live completed-trial progress.")
     args = ap.parse_args()
     try:
         _main_file = os.path.basename(str(getattr(sys.modules.get("__main__"), "__file__", "")))
