@@ -48,6 +48,7 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -90,12 +91,17 @@ except Exception:  # pragma: no cover
 # -----------------------------
 
 
-def norm(s: Any) -> str:
-    text = unicodedata.normalize("NFKD", str(s or ""))
+@lru_cache(maxsize=200000)
+def _norm_text_cached(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = text.lower()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def norm(s: Any) -> str:
+    return _norm_text_cached(str(s or ""))
 
 
 def pct(x: float) -> float:
