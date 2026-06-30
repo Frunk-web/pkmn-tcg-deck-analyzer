@@ -222,9 +222,16 @@ def instantiate_deck(deck: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # original return through _turn1_card_goal_match_store(...).
 
 _TURN1_CARD_MATCH_CACHE = {}
+_TURN1_CARD_KEY_CACHE = {}
+_TURN1_GOAL_OPTION_KEY_CACHE = {}
 
 
 def _turn1_card_key_for_match(card):
+    oid = id(card)
+    cached = _TURN1_CARD_KEY_CACHE.get(oid)
+    if cached is not None:
+        return cached
+
     if isinstance(card, dict):
         ident = card.get("identity") or {}
         key = (
@@ -236,43 +243,72 @@ def _turn1_card_key_for_match(card):
             or ident.get("canonical_id")
         )
         if key:
-            return ("id", str(key))
-        name = card.get("name") or card.get("card_name") or ident.get("name") or ident.get("canonical_name")
-        set_code = card.get("set_code") or ident.get("set_code") or card.get("set") or ident.get("set")
-        number = card.get("number") or card.get("collector_number") or ident.get("number") or ident.get("collector_number")
-        if name:
-            return ("name", str(name), str(set_code or ""), str(number or ""))
-    return ("obj", id(card))
+            out = ("id", str(key))
+        else:
+            name = card.get("name") or card.get("card_name") or ident.get("name") or ident.get("canonical_name")
+            set_code = card.get("set_code") or ident.get("set_code") or card.get("set") or ident.get("set")
+            number = card.get("number") or card.get("collector_number") or ident.get("number") or ident.get("collector_number")
+            if name:
+                out = ("name", str(name), str(set_code or ""), str(number or ""))
+            else:
+                out = ("obj", oid)
+    else:
+        out = ("obj", oid)
+
+    if len(_TURN1_CARD_KEY_CACHE) < 500000:
+        _TURN1_CARD_KEY_CACHE[oid] = out
+
+    return out
 
 
 def _turn1_goal_option_key_for_match(option):
     if option is None or isinstance(option, (str, int, float, bool)):
         return option
+
+    oid = id(option)
+    cached = _TURN1_GOAL_OPTION_KEY_CACHE.get(oid)
+    if cached is not None:
+        return cached
+
     if hasattr(option, "__dict__"):
         try:
-            return (type(option).__name__, tuple(sorted((str(k), _turn1_goal_option_key_for_match(v)) for k, v in vars(option).items())))
+            key = (type(option).__name__, tuple(sorted((str(k), _turn1_goal_option_key_for_match(v)) for k, v in vars(option).items())))
         except Exception:
-            return (type(option).__name__, id(option))
-    if isinstance(option, dict):
+            key = (type(option).__name__, oid)
+    elif isinstance(option, dict):
         keep = {}
         for k, v in option.items():
             if str(k) in {"label", "name", "target", "target_norm", "options", "aliases", "card", "card_name", "set_code", "number", "collector_number"}:
                 keep[str(k)] = _turn1_goal_option_key_for_match(v)
         if keep:
-            return ("dict", tuple(sorted(keep.items())))
-        return ("dict_id", id(option))
-    if isinstance(option, (list, tuple)):
-        return (type(option).__name__, tuple(_turn1_goal_option_key_for_match(x) for x in option))
-    if isinstance(option, set):
+            key = ("dict", tuple(sorted(keep.items())))
+        else:
+            key = ("dict_id", oid)
+    elif isinstance(option, (list, tuple)):
+        key = (type(option).__name__, tuple(_turn1_goal_option_key_for_match(x) for x in option))
+    elif isinstance(option, set):
         try:
-            return ("set", tuple(sorted(_turn1_goal_option_key_for_match(x) for x in option)))
+            key = ("set", tuple(sorted(_turn1_goal_option_key_for_match(x) for x in option)))
         except Exception:
-            return ("set_id", id(option))
-    return (type(option).__name__, repr(option))
+            key = ("set_id", oid)
+    else:
+        key = (type(option).__name__, repr(option))
+
+    if len(_TURN1_GOAL_OPTION_KEY_CACHE) < 200000:
+        _TURN1_GOAL_OPTION_KEY_CACHE[oid] = key
+
+    return key
 
 
 def _turn1_card_goal_match_key(card, option):
-    return (_turn1_card_key_for_match(card), _turn1_goal_option_key_for_match(option))
+    # Matching depends on immutable card identity/name fields and the stable
+    # GoalOption object. For hot-loop caching, object identity is enough and
+    # avoids rebuilding card/option semantic keys before every cache lookup.
+    try:
+        opt_norm = getattr(option, "norm", None)
+    except Exception:
+        opt_norm = None
+    return (id(card), id(option), str(opt_norm or ""))
 
 
 def _turn1_card_goal_match_store(key, value):
@@ -2150,6 +2186,8 @@ def turn1_incompatible_effect_labels_in_line(line, deck, reqs):
 # runtime does not use an Active-only ability.
 
 
+from functools import lru_cache
+@lru_cache(maxsize=200000)
 def _turn1_active_compiled_search_norm(value):
     import re as _re
     import unicodedata as _unicodedata
@@ -8476,6 +8514,7 @@ def _turn1_self_only_search_add_text_parts(value: Any, parts: List[str], depth: 
         return
 
 
+@lru_cache(maxsize=200000)
 def _turn1_self_only_search_norm_text(value: Any) -> str:
     parts: List[str] = []
     _turn1_self_only_search_add_text_parts(value, parts)
@@ -9006,6 +9045,7 @@ def turn1_action_filter_compat_flatten_text(obj: Any, limit: int = 20000) -> str
     return " ".join(parts)
 
 
+@lru_cache(maxsize=200000)
 def turn1_action_filter_compat_norm_blob(s: Any) -> str:
     text = str(s or "").lower()
     text = text.replace("pokémon", "pokemon")
@@ -9243,6 +9283,7 @@ def turn1_action_filter_compat_categories_compatible(search_cats: set, card_cats
 #      filters are unavailable.
 
 
+@lru_cache(maxsize=200000)
 def _turn1_search_text_target_filter_norm(value: Any) -> str:
     try:
         return turn1_action_filter_compat_norm_blob(str(value or ""))
@@ -9354,7 +9395,40 @@ def _turn1_search_text_target_filter_card_has_rule_box(card: Any) -> bool:
     )
 
 
+def _turn1_search_text_target_filter_state_signature(st: Any):
+    parts = []
+    for zone in ["deck", "hand", "discard", "bench", "prizes"]:
+        try:
+            values = getattr(st, zone, []) or []
+            parts.append((zone, tuple(id(c) for c in values if isinstance(c, dict))))
+        except Exception:
+            parts.append((zone, ()))
+    try:
+        active = getattr(st, "active", None)
+        parts.append(("active", id(active) if isinstance(active, dict) else None))
+    except Exception:
+        parts.append(("active", None))
+    return tuple(parts)
+
+
 def _turn1_search_text_target_filter_target_cards_for_norm(st: Any, target_norm: str) -> List[Dict[str, Any]]:
+    cache = None
+    try:
+        cache = getattr(st, "_turn1_target_cards_for_norm_cache_v1", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            setattr(st, "_turn1_target_cards_for_norm_cache_v1", cache)
+    except Exception:
+        cache = None
+
+    sig = _turn1_search_text_target_filter_state_signature(st)
+    cache_key = (str(target_norm or ""), sig)
+
+    if isinstance(cache, dict):
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
     pools: List[Any] = []
     for zone in ["deck", "hand", "discard", "bench", "prizes"]:
         try:
@@ -9381,6 +9455,15 @@ def _turn1_search_text_target_filter_target_cards_for_norm(st: Any, target_norm:
             if key not in seen:
                 out.append(c)
                 seen.add(key)
+
+    if isinstance(cache, dict):
+        try:
+            if len(cache) > 20000:
+                cache.clear()
+            cache[cache_key] = tuple(out)
+        except Exception:
+            pass
+
     return out
 
 
@@ -9429,12 +9512,34 @@ def _turn1_search_text_target_filter_action_search_steps(action: Any) -> List[An
     return steps
 
 
+_TURN1_ACTION_BLOB_CACHE = {}
+
+
 def _turn1_search_text_target_filter_action_blob(action: Any) -> str:
+    key = id(action)
+    cached = _TURN1_ACTION_BLOB_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     try:
         source, effect, _va = turn1_action_filter_compat_action_source_and_effect(action)
     except Exception:
         source, effect = action, None
-    return _turn1_search_text_target_filter_norm(_turn1_search_text_target_filter_flatten_strings(effect) + " " + _turn1_search_text_target_filter_flatten_strings(source) + " " + _turn1_search_text_target_filter_flatten_strings(action))
+
+    blob = _turn1_search_text_target_filter_norm(
+        _turn1_search_text_target_filter_flatten_strings(effect)
+        + " "
+        + _turn1_search_text_target_filter_flatten_strings(source)
+        + " "
+        + _turn1_search_text_target_filter_flatten_strings(action)
+    )
+
+    if len(_TURN1_ACTION_BLOB_CACHE) < 500000:
+        _TURN1_ACTION_BLOB_CACHE[key] = blob
+
+    return blob
+
+_TURN1_TEXT_ALLOWS_TARGET_CACHE = {}
 
 
 def _turn1_search_text_target_filter_text_allows_target(action_blob: str, target_card: Dict[str, Any]) -> bool:
@@ -9443,35 +9548,58 @@ def _turn1_search_text_target_filter_text_allows_target(action_blob: str, target
     if not s:
         return False
 
+    try:
+        target_key = _turn1_card_key_for_match(target_card)
+    except Exception:
+        target_key = ("obj", id(target_card))
+
+    cache_key = (s, target_key)
+    cached = _TURN1_TEXT_ALLOWS_TARGET_CACHE.get(cache_key)
+    if cached is not None:
+        return bool(cached)
+
+    def finish(value: bool) -> bool:
+        result = bool(value)
+        if len(_TURN1_TEXT_ALLOWS_TARGET_CACHE) < 500000:
+            _TURN1_TEXT_ALLOWS_TARGET_CACHE[cache_key] = result
+        return result
+
     stype = _turn1_search_text_target_filter_card_supertype(target_card)
     subtypes = _turn1_search_text_target_filter_card_subtypes(target_card)
     types = _turn1_search_text_target_filter_card_types(target_card)
     hp = _turn1_search_text_target_filter_card_hp(target_card)
+
     is_pokemon = stype == "pokemon"
     is_energy = stype == "energy"
     is_trainer = stype == "trainer"
     is_basic = "basic" in subtypes
     no_rule_box = not _turn1_search_text_target_filter_card_has_rule_box(target_card)
 
+    pokemon_word = ("pokemon" in s) or ("pok mon" in s)
+    basic_pokemon_word = ("basic pokemon" in s) or ("basic pok mon" in s)
+
     # Explicit negative/positional categories.
     if "opponent" in s and "your opponent" in s and not any(x in s for x in ["your deck", "your hand"]):
-        return False
+        return finish(False)
 
     # Rule-box constrained Pokémon search: Poké Pad style.
-    if "pokemon" in s or "pokémon" in s:
-        if "doesn't have a rule box" in s or "does not have a rule box" in s or "without a rule box" in s:
-            if is_pokemon and no_rule_box:
-                return True
-            return False
+    if pokemon_word:
+        if (
+            "doesn't have a rule box" in s
+            or "does not have a rule box" in s
+            or "without a rule box" in s
+            or "doesn t have a rule box" in s
+        ):
+            return finish(is_pokemon and no_rule_box)
 
     # HP-limited Basic Pokémon search: Buddy-Buddy Poffin style.
     hp_match = re.search(r"hp\s*(?:is\s*)?(\d+)\s*or\s*less", s)
-    if hp_match and ("basic pokemon" in s or "basic pokémon" in s):
+    if hp_match and basic_pokemon_word:
         try:
             lim = int(hp_match.group(1))
         except Exception:
             lim = 0
-        return bool(is_pokemon and is_basic and hp and hp <= lim)
+        return finish(is_pokemon and is_basic and hp and hp <= lim)
 
     # Type-specific Basic Pokémon / Energy search: Fighting Gong style.
     pokemon_type_words = {
@@ -9485,40 +9613,49 @@ def _turn1_search_text_target_filter_text_allows_target(action_blob: str, target
         "metal": "metal",
         "colorless": "colorless",
     }
+
     for word, typ in pokemon_type_words.items():
-        if (f"basic {word} pokemon" in s or f"basic {word} pokémon" in s) and is_pokemon and is_basic and typ in types:
-            return True
+        if (
+            (f"basic {word} pokemon" in s or f"basic {word} pok mon" in s)
+            and is_pokemon
+            and is_basic
+            and typ in types
+        ):
+            return finish(True)
         if f"basic {word} energy" in s and is_energy and is_basic and typ in types:
-            return True
-        if (f"{word} pokemon" in s or f"{word} pokémon" in s) and is_pokemon and typ in types:
-            return True
+            return finish(True)
+        if (
+            (f"{word} pokemon" in s or f"{word} pok mon" in s)
+            and is_pokemon
+            and typ in types
+        ):
+            return finish(True)
         if f"{word} energy" in s and is_energy and typ in types:
-            return True
+            return finish(True)
 
     # Generic categories.
-    if ("basic pokemon" in s or "basic pokémon" in s) and is_pokemon and is_basic:
-        return True
-    if ("pokemon" in s or "pokémon" in s) and is_pokemon:
-        return True
+    if basic_pokemon_word and is_pokemon and is_basic:
+        return finish(True)
+    if pokemon_word and is_pokemon:
+        return finish(True)
     if "basic energy" in s and is_energy and is_basic:
-        return True
+        return finish(True)
     if "energy" in s and is_energy:
-        return True
+        return finish(True)
 
     if is_trainer:
         if "supporter" in s and "supporter" in subtypes:
-            return True
+            return finish(True)
         if "item" in s and "item" in subtypes:
-            return True
+            return finish(True)
         if "stadium" in s and "stadium" in subtypes:
-            return True
-        if "tool" in s and ("tool" in subtypes or "pokemon tool" in subtypes or "pokémon tool" in subtypes):
-            return True
+            return finish(True)
+        if "tool" in s and ("tool" in subtypes or "pokemon tool" in subtypes or "pok mon tool" in subtypes):
+            return finish(True)
         if "trainer" in s:
-            return True
+            return finish(True)
 
-    return False
-
+    return finish(False)
 
 def turn1_action_filter_compat_target_compatible_with_action_filter(st: Any, target_norm: str, action: Any) -> bool:
     source, effect, va = turn1_action_filter_compat_action_source_and_effect(action)
@@ -9534,6 +9671,8 @@ def turn1_action_filter_compat_target_compatible_with_action_filter(st: Any, tar
     steps = _turn1_search_text_target_filter_action_search_steps(action)
     action_name = action_label(action)
 
+    action_blob_for_fallback = None
+
     if matching_cards and steps:
         for target_card in matching_cards:
             for step in steps:
@@ -9548,7 +9687,9 @@ def turn1_action_filter_compat_target_compatible_with_action_filter(st: Any, tar
                     pass
                 # Some compiled filters are incomplete; use printed/compiled text fallback.
                 try:
-                    if _turn1_search_text_target_filter_text_allows_target(_turn1_search_text_target_filter_action_blob(action), target_card):
+                    if action_blob_for_fallback is None:
+                        action_blob_for_fallback = _turn1_search_text_target_filter_action_blob(action)
+                    if _turn1_search_text_target_filter_text_allows_target(action_blob_for_fallback, target_card):
                         return True
                 except Exception:
                     pass
@@ -12303,6 +12444,16 @@ def _turn1_direct_search_missing_copy_filter_allows_card_v1(filt, card):
 def _turn1_direct_search_missing_copy_score_v1(st, action, missing, going):
     if not isinstance(action, dict):
         return 0.0
+
+    # Meowth ex searches Supporters, not missing physical goal copies directly.
+    # It already has a dedicated single-target/Supporter-chain handler earlier.
+    # Do not let this generic direct-search missing-copy scorer rescore it
+    # thousands of times in chain-search.
+    try:
+        if tf.is_meowth_ex(action):
+            return 0.0
+    except Exception:
+        pass
 
     try:
         if not tf.card_can_be_played_from_hand(action, going, getattr(st, "supporter_used", False)):
