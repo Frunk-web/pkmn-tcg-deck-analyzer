@@ -442,7 +442,7 @@ def _exact_legal_opening_probability(
 
 
 # ---------------------------------------------------------------------
-# TURN1_EXACT_REQUIRED_COPIES_V17
+# TURN1_EXACT_REQUIRED_COPIES
 # ---------------------------------------------------------------------
 
 def _goal_satisfied_by_counts(draw_counts: list[int], min_counts: list[int], mode: str) -> bool:
@@ -684,7 +684,7 @@ def _render_goal_images(selected_cards: list[dict[str, Any]]) -> None:
 
 
 # ---------------------------------------------------------------------
-# TURN1_RUNTIME_LABEL_NORMALIZATION_V10
+# TURN1_RUNTIME_LABEL_NORMALIZATION
 # ---------------------------------------------------------------------
 
 def _runtime_label_for_decklist(label: str) -> str:
@@ -747,8 +747,8 @@ def _display_label_from_runtime_goal(goal_name: str, selected_labels: list[str])
 
 
 
-# TURN1_EXACT_CARD_ID_DECKLIST_WRITER_V1
-def _turn1_option_card_id_for_decklist_v1(opt: dict[str, Any]) -> str:
+# TURN1_EXACT_CARD_ID_DECKLIST_WRITER
+def _turn1_option_card_id_for_decklist(opt: dict[str, Any]) -> str:
     if not isinstance(opt, dict):
         return ""
 
@@ -773,17 +773,17 @@ def _turn1_option_card_id_for_decklist_v1(opt: dict[str, Any]) -> str:
     return ""
 
 
-def _turn1_decklist_line_for_option_v1(opt: dict[str, Any]) -> str:
+def _turn1_decklist_line_for_option(opt: dict[str, Any]) -> str:
     count = int(opt["count"])
     label = _runtime_label_for_decklist(str(opt["label"]))
-    card_id = _turn1_option_card_id_for_decklist_v1(opt)
+    card_id = _turn1_option_card_id_for_decklist(opt)
     if card_id:
         return f"{count} {label} [{card_id}]"
     return f"{count} {label}"
 
 
 def _write_decklist_file(options: list[dict[str, Any]], path: Path) -> None:
-    lines = [_turn1_decklist_line_for_option_v1(opt) for opt in options]
+    lines = [_turn1_decklist_line_for_option(opt) for opt in options]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -800,7 +800,7 @@ def _parse_json_maybe(text: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------
-# TURN1_GOAL_MIN_COUNT_UI_V16
+# TURN1_GOAL_MIN_COUNT_UI
 # ---------------------------------------------------------------------
 
 def _goal_min_count_for_label(label: str, goal_quantities: dict[str, int] | None) -> int:
@@ -865,128 +865,6 @@ def _write_goal_file(
     }
 
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _run_goal_finder(
-    *,
-    all_options: list[dict[str, Any]],
-    selected_labels: list[str],
-    goal_mode: str,
-    goal_zone: str,
-    going: str,
-    trials: int,
-    seed: int,
-    max_actions: int,
-    example_lines: int,
-    workers: int,
-    complete_only: bool,
-    chain_search: bool,
-    goal_quantities: dict[str, int] | None = None,
-    excluded_labels: list[str] | None = None,
-) -> dict[str, Any]:
-    reports_dir = _reports_dir()
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_goal = "_".join(label.split()[0] for label in selected_labels)[:80] or "goal"
-
-    decklist_path = reports_dir / f"deck_{safe_goal}_{stamp}.txt"
-    json_path = reports_dir / f"turn1_{safe_goal}_{stamp}.json"
-    summary_csv_path = reports_dir / f"turn1_{safe_goal}_{stamp}_summary.csv"
-    lines_csv_path = reports_dir / f"turn1_{safe_goal}_{stamp}_lines.csv"
-    progress_json_path = reports_dir / f"goal_progress_{stamp}.json"
-    goal_file_path = reports_dir / f"goal_{safe_goal}_{stamp}.json"
-
-    _write_decklist_file(all_options, decklist_path)
-    _write_goal_file(
-        goal_file_path,
-        selected_labels=selected_labels,
-        goal_mode=goal_mode,
-        goal_zone=goal_zone,
-        goal_quantities=goal_quantities or {},
-    )
-
-    cmd = [
-        sys.executable,
-        str(_strict_goal_finder_path()),
-        "--compiled",
-        str(_compiled_semantics_path()),
-        "--decklist",
-        str(decklist_path),
-        "--goal-file",
-        str(goal_file_path),
-        "--goal-name",
-        _goal_display_name_from_quantities(selected_labels, goal_quantities or {}),
-        "--goal-mode",
-        goal_mode,
-        "--goal-zone",
-        goal_zone,
-        "--going",
-        going,
-        "--trials", str(int(trials)),
-        "--workers", str(int(workers)),
-        "--seed",
-        str(int(seed)),
-        "--max-actions",
-        str(int(max_actions)),
-        "--example-lines",
-        str(int(example_lines)),
-        "--out",
-        str(json_path),
-        "--csv-out",
-        str(summary_csv_path),
-        "--lines-csv",
-        str(lines_csv_path),
-        "--progress-json",
-        str(progress_json_path),
-    ]
-
-    if complete_only:
-        cmd.append("--complete-only")
-    if chain_search:
-        cmd.append("--chain-search")
-
-    excluded_labels = excluded_labels or []
-    excluded_names = [
-        _runtime_goal_name(label)
-        for label in excluded_labels
-        if str(label).strip()
-    ]
-
-    if excluded_names:
-        cmd.extend(["--exclude-played", ", ".join(excluded_names)])
-
-    start = time.time()
-    proc = _run_goal_finder_subprocess_with_progress(
-        cmd,
-        cwd=str(_repo_root()),
-    )
-    elapsed = time.time() - start
-
-    stdout_json = _parse_json_maybe(proc.stdout)
-    report_json = None
-    if json_path.exists():
-        try:
-            report_json = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            report_json = None
-
-    return {
-        "returncode": proc.returncode,
-        "elapsed_seconds": elapsed,
-        "command": cmd,
-        "stdout": proc.stdout,
-        "stderr": proc.stderr,
-        "stdout_json": stdout_json,
-        "report_json": report_json,
-        "paths": {
-            "decklist": str(decklist_path),
-            "goal_file": str(goal_file_path),
-            "json": str(json_path),
-            "summary_csv": str(summary_csv_path),
-            "lines_csv": str(lines_csv_path),
-            "progress_json": str(progress_json_path),
-        },
-    }
-
 
 def _scenario_summary_df(result: dict[str, Any]) -> pd.DataFrame:
     stdout_json = result.get("stdout_json") or {}
@@ -1214,7 +1092,7 @@ def _render_runtime_result(result: dict[str, Any], selected_labels: list[str], g
 
 
 # ---------------------------------------------------------------------
-# TURN1_FRONTEND_EXCLUDE_HELPERS_V15
+# TURN1_FRONTEND_EXCLUDE_HELPERS
 # ---------------------------------------------------------------------
 
 def _is_supporter_option(opt: dict[str, Any]) -> bool:
@@ -1270,61 +1148,10 @@ def _ordered_unique_labels(labels: list[str], all_labels: list[str]) -> list[str
 
 
 # ---------------------------------------------------------------------
-# TURN1_FORCE_GOAL_FILE_RUNTIME_V19
+
 # ---------------------------------------------------------------------
-# This intentionally redefines _run_goal_finder after earlier versions.
-# Python resolves the global function at click time, so this override wins.
-
-def _turn1_v19_goal_min_count(label: str, goal_quantities: dict[str, int] | None) -> int:
-    try:
-        return max(1, int((goal_quantities or {}).get(label, 1)))
-    except Exception:
-        return 1
-
-
-def _turn1_v19_goal_display_name(
-    selected_labels: list[str],
-    goal_quantities: dict[str, int] | None,
-) -> str:
-    pieces = []
-
-    for label in selected_labels:
-        clean = _runtime_goal_name(label)
-        qty = _turn1_v19_goal_min_count(label, goal_quantities)
-        pieces.append(clean if qty == 1 else f"{qty}x {clean}")
-
-    return " + ".join(pieces)
-
-
-def _turn1_v19_write_goal_file(
-    path: Path,
-    selected_labels: list[str],
-    goal_mode: str,
-    goal_zone: str,
-    goal_quantities: dict[str, int] | None,
-) -> None:
-    payload = {
-        "name": _turn1_v19_goal_display_name(selected_labels, goal_quantities),
-        "mode": goal_mode,
-        "requirements": [],
-    }
-
-    for label in selected_labels:
-        clean = _runtime_goal_name(label)
-        qty = _turn1_v19_goal_min_count(label, goal_quantities)
-
-        payload["requirements"].append(
-            {
-                "label": clean if qty == 1 else f"{qty}x {clean}",
-                "options": [clean],
-                "zone": goal_zone,
-                "min_count": qty,
-            }
-        )
-
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
+# Goal-finder subprocess runner
+# ---------------------------------------------------------------------
 def _run_goal_finder(
     *,
     all_options: list[dict[str, Any]],
@@ -1354,7 +1181,7 @@ def _run_goal_finder(
     progress_json_path = reports_dir / f"goal_progress_{stamp}.json"
 
     _write_decklist_file(all_options, decklist_path)
-    _turn1_v19_write_goal_file(
+    _write_goal_file(
         goal_file_path,
         selected_labels=selected_labels,
         goal_mode=goal_mode,
@@ -1362,7 +1189,7 @@ def _run_goal_finder(
         goal_quantities=goal_quantities or {},
     )
 
-    goal_display_name = _turn1_v19_goal_display_name(selected_labels, goal_quantities or {})
+    goal_display_name = _goal_display_name_from_quantities(selected_labels, goal_quantities or {})
 
     cmd = [
         sys.executable,
@@ -1476,7 +1303,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 "Which cards are you trying to access?",
                 options=all_labels,
                 default=_default_goal_labels(options),
-                key="turn1_goal_cards_v09",
+                key="turn1_goal_cards",
             )
 
         with c2:
@@ -1484,7 +1311,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 "Goal rule",
                 options=["Need all selected cards", "Need any one selected card"],
                 index=0,
-                key="turn1_goal_mode_label_v09",
+                key="turn1_goal_mode_label",
             )
             goal_mode = "all" if goal_mode_label.startswith("Need all") else "any"
 
@@ -1493,14 +1320,14 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 "Include natural draw",
                 value=True,
                 help="Opening 7 plus one natural draw. This is only for the exact baseline.",
-                key="turn1_include_draw_v09",
+                key="turn1_include_draw",
             )
 
         st.radio(
             "Going first or second",
             options=["Both", "Going first", "Going second"],
             horizontal=True,
-            key="turn1_going_baseline_info_v09",
+            key="turn1_going_baseline_info",
             help="For the exact natural baseline, first and second are the same. The runtime goal finder below handles first/second separately.",
         )
 
@@ -1509,7 +1336,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
         st.info("Choose at least one goal card.")
         return
 
-    # TURN1_GOAL_QUANTITY_CONTROLS_V16
+    # TURN1_GOAL_QUANTITY_CONTROLS
     goal_quantities: dict[str, int] = {}
 
     with st.container(border=True):
@@ -1543,13 +1370,13 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 "are in the chosen goal zone."
             )
 
-    # TURN1_ATTACH_REQUIRED_COUNTS_BEFORE_EXACT_V18
+    # TURN1_ATTACH_REQUIRED_COUNTS_BEFORE_EXACT
     # Required-copy inputs must be attached before exact baseline math,
     # selected-card breakdown, and runtime goal-file generation.
     for card in selected_cards:
         card["required_count"] = _goal_min_count_for_label(card["label"], goal_quantities)
 
-    # TURN1_FORCE_REQUIRED_COUNTS_FOR_RUNTIME_V20
+    # TURN1_FORCE_REQUIRED_COUNTS_FOR_RUNTIME
     # These values drive both exact baseline math and the runtime goal file.
     for card in selected_cards:
         card["required_count"] = _goal_min_count_for_label(card["label"], goal_quantities)
@@ -1617,7 +1444,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
 
     _render_goal_images(selected_cards)
 
-    # TURN1_REQUIRED_COPY_DEBUG_V20
+    # TURN1_REQUIRED_COPY_DEBUG
     st.caption(
         "Runtime goal: "
         + _goal_display_name_from_quantities(selected_labels, {
@@ -1636,22 +1463,22 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 "Goal zone",
                 options=["hand_or_in_play", "hand", "in_play", "accessed"],
                 index=0,
-                key="turn1_goal_zone_v09",
+                key="turn1_goal_zone",
             )
             going = st.selectbox(
                 "Going",
                 options=["both", "first", "second"],
                 index=0,
-                key="turn1_runtime_going_v09",
+                key="turn1_runtime_going",
             )
 
         with r2:
-            trials = st.number_input("Trials", min_value=25, max_value=50000, value=5000, step=100, key="turn1_trials_v09")
-            seed = st.number_input("Seed", min_value=0, max_value=999999, value=1, step=1, key="turn1_seed_v09")
-            example_lines = st.number_input("Example lines", min_value=1, max_value=100, value=25, step=1, key="turn1_example_lines_v09")
+            trials = st.number_input("Trials", min_value=25, max_value=50000, value=5000, step=100, key="turn1_trials")
+            seed = st.number_input("Seed", min_value=0, max_value=999999, value=1, step=1, key="turn1_seed")
+            example_lines = st.number_input("Example lines", min_value=1, max_value=100, value=25, step=1, key="turn1_example_lines")
 
         with r3:
-            max_actions = st.number_input("Max actions", min_value=1, max_value=30, value=6, step=1, key="turn1_max_actions_v09")
+            max_actions = st.number_input("Max actions", min_value=1, max_value=30, value=6, step=1, key="turn1_max_actions")
             worker_max = max(1, min(8, os.cpu_count() or 1))
             worker_default = max(1, min(worker_max, int(os.environ.get("TURN1_STREAMLIT_GOAL_WORKERS", "2"))))
             workers = st.number_input(
@@ -1660,13 +1487,13 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
                 max_value=worker_max,
                 value=worker_default,
                 step=1,
-                key="turn1_workers_v01",
+                key="turn1_workers",
                 help="Parallel worker processes for Monte Carlo trials. Use 1 if deployment CPU is limited.",
             )
-            complete_only = st.toggle("Complete-only", value=True, key="turn1_complete_only_v09")
-            chain_search = st.toggle("Chain-search", value=True, key="turn1_chain_search_v09")
+            complete_only = st.toggle("Complete-only", value=True, key="turn1_complete_only")
+            chain_search = st.toggle("Chain-search", value=True, key="turn1_chain_search")
 
-        # TURN1_EXCLUDE_PLAYED_UI_V15
+        # TURN1_EXCLUDE_PLAYED_UI
         goal_clean_names = {
             _runtime_goal_name(label).lower()
             for label in selected_labels
@@ -1688,7 +1515,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
         exclude_other_supporters = st.toggle(
             "Exclude other Supporters except my goal cards",
             value=False,
-            key="turn1_exclude_other_supporters_v15",
+            key="turn1_exclude_other_supporters",
         )
 
         manually_excluded = st.multiselect(
@@ -1696,7 +1523,7 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
             options=all_labels,
             default=[],
             help="A run is still allowed to draw these cards. It is only invalid if the simulator plays them in the action line.",
-            key="turn1_exclude_played_cards_v15",
+            key="turn1_exclude_played_cards",
         )
 
         auto_excluded = supporter_labels if exclude_other_supporters else []
@@ -1717,9 +1544,9 @@ def render_turn1_access_tab(summary=None, card_odds_df=None, deck=None) -> None:
         else:
             st.warning(f"Compiled semantics file not found: {compiled_path}")
 
-        run_clicked = st.button("Run automatic goal finder", type="primary", key="turn1_run_goal_finder_v09")
+        run_clicked = st.button("Run automatic goal finder", type="primary", key="turn1_run_goal_finder")
 
-    result_key = "turn1_runtime_result_v09"
+    result_key = "turn1_runtime_result"
 
     if run_clicked:
         with st.spinner("Running automatic goal finder..."):
