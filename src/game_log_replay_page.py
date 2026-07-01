@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import html
+import time
 import textwrap
 from collections import Counter
 
@@ -72,12 +73,19 @@ def _pokemon_html(pokemon: PokemonInPlay | None) -> str:
         if int(pokemon.damage or 0) > 0
         else ""
     )
+    instance_label = html.escape(getattr(pokemon, "copy_label", "") or "")
+    instance_badge = (
+        f'<div class="glr-instance-badge">{instance_label}</div>'
+        if instance_label
+        else ""
+    )
 
     return f"""
     <div class="glr-pokemon">
       <div class="glr-card-stack">
         {_card_html(pokemon.card)}
         {damage_badge}
+        {instance_badge}
       </div>
       <div class="glr-pokemon-meta">
         <span>{int(pokemon.damage)} damage</span>
@@ -359,6 +367,25 @@ def _board_css() -> str:
         position: relative;
       }
 
+      .glr-instance-badge {
+        position: absolute;
+        left: -8px;
+        top: -8px;
+        max-width: 92%;
+        border-radius: 999px;
+        padding: 3px 7px;
+        background: rgba(15, 23, 42, 0.92);
+        color: #ffffff;
+        border: 2px solid #ffffff;
+        box-shadow: 0 6px 14px rgba(15, 23, 42, 0.25);
+        font-weight: 900;
+        font-size: 0.62rem;
+        z-index: 6;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
       .glr-damage-counter {
         position: absolute;
         right: -10px;
@@ -626,24 +653,68 @@ def _sync_replay_step(signature: str, frame_count: int) -> int:
     return current
 
 
+def _rerun() -> None:
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
+def _speed_to_delay_seconds(speed_label: str) -> float:
+    speed_map = {
+        "0.5x": 2.0,
+        "1x": 1.0,
+        "1.5x": 1.0 / 1.5,
+        "2x": 0.5,
+        "3x": 1.0 / 3.0,
+    }
+    return speed_map.get(speed_label, 1.0)
+
+
 def _render_replay_controls(frame_count: int) -> int:
     step_key = "game_log_replay_step"
+    autoplay_key = "game_log_replay_autoplay"
+    speed_key = "game_log_replay_speed"
+
     current = int(st.session_state.get(step_key, 0) or 0)
     max_step = max(0, frame_count - 1)
+    current = max(0, min(current, max_step))
+    st.session_state[step_key] = current
 
-    c1, c2, c3, c4, c5 = st.columns([0.85, 0.85, 3.0, 0.85, 0.85])
+    if speed_key not in st.session_state:
+        st.session_state[speed_key] = "1x"
+
+    if autoplay_key not in st.session_state:
+        st.session_state[autoplay_key] = False
+
+    c1, c2, c3, c4, c5, c6, c7 = st.columns([0.8, 0.8, 0.9, 2.8, 0.8, 0.8, 0.9])
 
     with c1:
         if st.button("⏮ Start", use_container_width=True, disabled=current <= 0):
+            st.session_state[autoplay_key] = False
             st.session_state[step_key] = 0
-            st.rerun()
+            _rerun()
 
     with c2:
         if st.button("◀ Back", use_container_width=True, disabled=current <= 0):
+            st.session_state[autoplay_key] = False
             st.session_state[step_key] = max(0, current - 1)
-            st.rerun()
+            _rerun()
 
     with c3:
+        is_playing = bool(st.session_state.get(autoplay_key, False))
+        label = "⏸ Pause" if is_playing else "▶ Play"
+        disabled = current >= max_step and not is_playing
+
+        if st.button(label, use_container_width=True, disabled=disabled):
+            if current >= max_step:
+                st.session_state[step_key] = 0
+                st.session_state[autoplay_key] = True
+            else:
+                st.session_state[autoplay_key] = not is_playing
+            _rerun()
+
+    with c4:
         new_step = st.slider(
             "Replay action",
             min_value=0,
@@ -653,20 +724,60 @@ def _render_replay_controls(frame_count: int) -> int:
             key="game_log_replay_slider",
         )
         if new_step != current:
+            st.session_state[autoplay_key] = False
             st.session_state[step_key] = int(new_step)
-            st.rerun()
-
-    with c4:
-        if st.button("Next ▶", use_container_width=True, disabled=current >= max_step):
-            st.session_state[step_key] = min(max_step, current + 1)
-            st.rerun()
+            _rerun()
 
     with c5:
+        if st.button("Next ▶", use_container_width=True, disabled=current >= max_step):
+            st.session_state[autoplay_key] = False
+            st.session_state[step_key] = min(max_step, current + 1)
+            _rerun()
+
+    with c6:
         if st.button("End ⏭", use_container_width=True, disabled=current >= max_step):
+            st.session_state[autoplay_key] = False
             st.session_state[step_key] = max_step
-            st.rerun()
+            _rerun()
+
+    with c7:
+        st.selectbox(
+            "Speed",
+            options=["0.5x", "1x", "1.5x", "2x", "3x"],
+            index=["0.5x", "1x", "1.5x", "2x", "3x"].index(st.session_state.get(speed_key, "1x")),
+            key=speed_key,
+            label_visibility="collapsed",
+        )
+
+    progress_pct = 0.0 if max_step == 0 else current / max_step
+    st.progress(progress_pct, text=f"Action {current} / {max_step} · Speed {st.session_state.get(speed_key, '1x')}")
+
+    if current >= max_step and st.session_state.get(autoplay_key):
+        st.session_state[autoplay_key] = False
 
     return int(st.session_state.get(step_key, 0) or 0)
+
+
+def _maybe_autoplay_advance(frame_count: int) -> None:
+    step_key = "game_log_replay_step"
+    autoplay_key = "game_log_replay_autoplay"
+    speed_key = "game_log_replay_speed"
+
+    if not st.session_state.get(autoplay_key, False):
+        return
+
+    max_step = max(0, frame_count - 1)
+    current = int(st.session_state.get(step_key, 0) or 0)
+
+    if current >= max_step:
+        st.session_state[autoplay_key] = False
+        return
+
+    delay = _speed_to_delay_seconds(str(st.session_state.get(speed_key, "1x")))
+    time.sleep(delay)
+
+    st.session_state[step_key] = min(max_step, current + 1)
+    _rerun()
 
 
 def render_game_log_replay_tab() -> None:
@@ -732,6 +843,22 @@ def render_game_log_replay_tab() -> None:
         st.markdown(f"**Action {step} of {len(frames) - 1} · line {event.line_no} · `{event.event_type}`**")
         st.code(event.raw)
 
+        if event.metadata.get("ambiguous_target"):
+            st.warning(
+                "Ambiguous target: the log did not identify the exact card copy. "
+                f"Applied heuristic `{event.metadata.get('target_heuristic', 'default')}`."
+            )
+            with st.expander("Target ambiguity details", expanded=False):
+                st.json(
+                    {
+                        "reason": event.metadata.get("target_reason", ""),
+                        "chosen": event.metadata.get("chosen_target", ""),
+                        "candidates": event.metadata.get("candidate_targets", []),
+                    }
+                )
+        elif event.metadata.get("target_confidence") == "missing":
+            st.warning(event.metadata.get("target_reason", "Target could not be resolved."))
+
     if frame.state.winner:
         st.success(f"Winner: {frame.state.winner}")
 
@@ -749,3 +876,5 @@ def render_game_log_replay_tab() -> None:
         st.dataframe(_events_df(events), use_container_width=True, hide_index=True)
     else:
         st.dataframe(_resolver_df(events), use_container_width=True, hide_index=True)
+
+    _maybe_autoplay_advance(len(frames))

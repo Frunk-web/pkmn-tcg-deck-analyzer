@@ -79,6 +79,38 @@ def _damage_counter_amount(text: str) -> int | None:
     return None
 
 
+
+def _zone_hint(text: str) -> str:
+    clean = str(text or "")
+    if "Active Spot" in clean or "Active Pokémon" in clean:
+        return "active"
+    if "Bench" in clean:
+        return "bench"
+    return ""
+
+
+def _target_owner_hint(text: str) -> str:
+    """
+    For lines like:
+      FrunkUke's Raging Bolt used ... on BananaHammer33’s Budew
+    the final possessive card owner is usually the target owner.
+    """
+    pattern = re.compile(r"(?P<player>[A-Za-z0-9_ .-]+)[\'’]s\s+\([^)]+\)")
+    matches = [m.group("player").strip() for m in pattern.finditer(text or "")]
+    return matches[-1] if matches else ""
+
+
+def _damage_counter_amount(text: str) -> int | None:
+    m = re.search(r"put\s+(?P<n>\d+)\s+damage counters?", text or "", re.IGNORECASE)
+    if m:
+        return int(m.group("n")) * 10
+
+    if re.search(r"put\s+a\s+damage counter", text or "", re.IGNORECASE):
+        return 10
+
+    return None
+
+
 def parse_battle_log(raw_log: str) -> list[LogEvent]:
     events: list[LogEvent] = []
     current_turn_player = ""
@@ -117,16 +149,33 @@ def parse_battle_log(raw_log: str) -> list[LogEvent]:
                 event_type = "place_damage_counters"
                 actor = detail.split(" put ", 1)[0].strip()
                 amount = _damage_counter_amount(detail)
+            elif "drew" in detail and ("played it to the Bench" in detail or "played them to the Bench" in detail):
+                event_type = "draw_and_play_to_bench"
+                actor = detail.split(" drew ", 1)[0].strip()
+                amount = len(cards) if cards else None
+            elif "drew" in detail and cards:
+                event_type = "draw_revealed"
+                actor = detail.split(" drew ", 1)[0].strip()
+                amount = len(cards)
+            elif re.search(r"\bdrew\s+\d+\s+cards?\b", detail):
+                event_type = "draw_count"
+                actor = detail.split(" drew ", 1)[0].strip() if " drew " in detail else actor
+                m = re.search(r"\bdrew\s+(?P<n>\d+)\s+cards?\b", detail)
+                amount = int(m.group("n")) if m else None
             elif "drawn cards" in line:
                 event_type = "draw_count"
                 amount = int(re.search(r"(\d+)", line).group(1)) if re.search(r"(\d+)", line) else None
+            elif "was discarded from" in line or "were discarded from" in line:
+                event_type = "discard_from_play"
             elif "discarded" in line:
                 event_type = "discard_count"
                 amount = int(re.search(r"(\d+)", line).group(1)) if re.search(r"(\d+)", line) else None
             elif "attached" in line:
                 event_type = "attach_energy"
+                actor = detail.split(" attached ", 1)[0].strip() if " attached " in detail else actor
             elif "moved" in line:
                 event_type = "move_card"
+                actor = detail.split(" moved ", 1)[0].strip() if " moved " in detail else actor
             elif "shuffled" in line:
                 event_type = "shuffle_deck"
             elif "Damage breakdown" in line:
@@ -134,8 +183,6 @@ def parse_battle_log(raw_log: str) -> list[LogEvent]:
             elif "damage" in line.lower():
                 event_type = "damage_breakdown"
                 amount = _damage_amount(line)
-            elif "was discarded from" in line or "were discarded from" in line:
-                event_type = "discard_from_play"
             else:
                 event_type = "effect_detail"
         elif " chose " in line and "opening coin flip" in line:
@@ -222,6 +269,14 @@ def parse_battle_log(raw_log: str) -> list[LogEvent]:
             if " wins" in line:
                 actor = line.rsplit(" ", 2)[-2].strip(". ")
                 metadata["winner"] = actor
+
+        zone_hint = _zone_hint(line)
+        if zone_hint:
+            metadata["target_zone"] = zone_hint
+
+        target_owner = _target_owner_hint(line)
+        if target_owner:
+            metadata["target_owner"] = target_owner
 
         event = LogEvent(
             index=len(events),
