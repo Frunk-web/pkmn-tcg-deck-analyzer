@@ -1,4 +1,4 @@
-# TURN1_RUNTIME_CONTROLS_V47
+# TURN1_RUNTIME_CONTROLS
 from __future__ import annotations
 
 import json
@@ -6,19 +6,17 @@ import math
 import subprocess
 
 # ---------------------------------------------------------------------
-# TURN1_FRONTEND_SUBPROCESS_TIMEOUT_GUARD_V45
+# TURN1_FRONTEND_GOAL_FINDER_TIMEOUT_GUARD
 # ---------------------------------------------------------------------
-# Prevent Streamlit from hanging forever while Automatic Goal Finder runs.
+# The automatic goal finder is launched with subprocess.Popen in
+# _run_goal_finder_subprocess_with_progress(), where the progress bar can poll
+# backend trial progress and enforce the timeout directly.
 #
-# Defaults can be overridden in PowerShell before launching Streamlit:
-#   $env:TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS = "600"
-#   $env:TURN1_STREAMLIT_MAX_TRIALS = "200"
-#   $env:TURN1_STREAMLIT_MAX_ACTIONS = "8"
+# Keep this small environment helper, but do not monkey-patch subprocess.run and
+# do not mutate command arguments. The UI should send exactly the trials,
+# workers, and max-actions values the user selected.
 
-_ORIG_SUBPROCESS_RUN_TURN1_V45 = subprocess.run
-
-
-def _turn1_v45_int_env(name, default):
+def _turn1_goal_int_env(name: str, default: int) -> int:
     import os as _os
 
     try:
@@ -26,135 +24,6 @@ def _turn1_v45_int_env(name, default):
     except Exception:
         return default
 
-
-def _turn1_v45_is_goal_finder_cmd(cmd):
-    if isinstance(cmd, (list, tuple)):
-        joined = " ".join(str(x) for x in cmd).lower()
-    else:
-        joined = str(cmd).lower()
-
-    return "run_turn1_goal_finder" in joined
-
-
-def _turn1_v45_cap_flag(cmd, flag, cap):
-    if not isinstance(cmd, list):
-        return cmd, None
-
-    if flag not in cmd:
-        return cmd, None
-
-    idx = cmd.index(flag)
-
-    if idx + 1 >= len(cmd):
-        return cmd, None
-
-    old = cmd[idx + 1]
-
-    try:
-        old_int = int(old)
-    except Exception:
-        return cmd, None
-
-    if old_int > cap:
-        cmd[idx + 1] = str(cap)
-        return cmd, (flag, old_int, cap)
-
-    return cmd, None
-
-
-def _turn1_v45_capped_goal_finder_cmd(cmd):
-    if not isinstance(cmd, (list, tuple)):
-        return cmd, []
-
-    cmd = list(cmd)
-
-    if not _turn1_v45_is_goal_finder_cmd(cmd):
-        return cmd, []
-
-    changes = []
-
-    max_trials = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_TRIALS", 100)
-    max_actions = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_ACTIONS", 6)
-    max_workers = _turn1_v45_int_env("TURN1_STREAMLIT_MAX_WORKERS", 2)
-
-    "--trials", str(int(trials)),
-    if change:
-        changes.append(change)
-
-    cmd, change = _turn1_v45_cap_flag(cmd, "--max-actions", max_actions)
-    if change:
-        changes.append(change)
-    "--workers", str(int(workers)),
-    if change:
-        changes.append(change)
-
-    return cmd, changes
-
-
-def _turn1_v45_timeout_completed_process(cmd, timeout_seconds, exc, cap_changes):
-    stdout = getattr(exc, "stdout", "") or ""
-    stderr = getattr(exc, "stderr", "") or ""
-
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode("utf-8", errors="replace")
-
-    if isinstance(stderr, bytes):
-        stderr = stderr.decode("utf-8", errors="replace")
-
-    cap_msg = ""
-
-    if cap_changes:
-        cap_lines = [
-            f"{flag}: requested {old}, capped to {new}"
-            for flag, old, new in cap_changes
-        ]
-        cap_msg = "\nFrontend safety caps applied:\n" + "\n".join(cap_lines)
-
-    stderr = (
-        str(stderr)
-        + "\n\nTurn 1 Automatic Goal Finder timed out in the Streamlit frontend."
-        + f"\nTimeout: {timeout_seconds} seconds."
-        + cap_msg
-        + "\n\nTry fewer trials, max actions 6, and chain-search off/on depending on the test."
-    )
-
-    return subprocess.CompletedProcess(
-        args=cmd,
-        returncode=124,
-        stdout=stdout,
-        stderr=stderr,
-    )
-
-
-def _turn1_v45_subprocess_run_with_timeout(*args, **kwargs):
-    timeout_seconds = _turn1_v45_int_env("TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS", 600)
-
-    cap_changes = []
-
-    if args:
-        cmd, cap_changes = _turn1_v45_capped_goal_finder_cmd(args[0])
-        args = (cmd,) + args[1:]
-    elif "args" in kwargs:
-        cmd, cap_changes = _turn1_v45_capped_goal_finder_cmd(kwargs["args"])
-        kwargs["args"] = cmd
-    else:
-        cmd = None
-
-    if _turn1_v45_is_goal_finder_cmd(cmd):
-        kwargs.setdefault("timeout", timeout_seconds)
-
-    try:
-        return _ORIG_SUBPROCESS_RUN_TURN1_V45(*args, **kwargs)
-    except subprocess.TimeoutExpired as exc:
-        return _turn1_v45_timeout_completed_process(
-            cmd=cmd,
-            timeout_seconds=timeout_seconds,
-            exc=exc,
-            cap_changes=cap_changes,
-        )
-
-
-subprocess.run = _turn1_v45_subprocess_run_with_timeout
 
 
 import os
@@ -252,7 +121,7 @@ def _turn1_cmd_arg_value(cmd: list[Any], flag: str, default: str = "") -> str:
 
 
 def _run_goal_finder_subprocess_with_progress(cmd: list[Any], *, cwd: str) -> subprocess.CompletedProcess:
-    timeout_seconds = _turn1_v45_int_env("TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS", 600)
+    timeout_seconds = _turn1_goal_int_env("TURN1_STREAMLIT_GOAL_TIMEOUT_SECONDS", 600)
 
     trials_label = _turn1_cmd_arg_value(cmd, "--trials", "?")
     going_label = _turn1_cmd_arg_value(cmd, "--going", "?")
@@ -1906,14 +1775,3 @@ def render_turn1_access_lab(summary=None, card_odds_df=None, deck=None) -> None:
 
 def render_turn1_access_page(summary=None, card_odds_df=None, deck=None) -> None:
     return render_turn1_access_tab(summary, card_odds_df, deck)
-
-# ---------------------------------------------------------------------
-# TURN1_DISABLE_GOAL_FINDER_COMMAND_CAPPER
-# ---------------------------------------------------------------------
-# The old v45 subprocess wrapper capped goal-finder commands to small defaults
-# such as 100 trials / 1 worker. That made the UI display one value while the
-# backend received another. Keep the timeout wrapper, but stop mutating the
-# command arguments.
-def _turn1_v45_capped_goal_finder_cmd(cmd):
-    return cmd, {}
-
