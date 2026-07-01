@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -27,9 +27,23 @@ class PokemonInPlay:
     attached: list[CardRef] = field(default_factory=list)
     evolution_stack: list[CardRef] = field(default_factory=list)
 
+    # Board-instance identity. This is different from card identity.
+    # Example: two copies of (sv6_129) Drakloak become Drakloak #1 and Drakloak #2.
+    instance_id: str = ""
+    copy_number: int = 0
+    created_event_index: int = -1
+    inferred: bool = False
+
     @property
     def display_name(self) -> str:
         return self.card.display_name
+
+    @property
+    def copy_label(self) -> str:
+        base = self.card.name or self.card.exported_id or "Pokémon"
+        if self.copy_number > 0:
+            return f"{base} #{self.copy_number}"
+        return base
 
 
 @dataclass
@@ -46,6 +60,9 @@ class PlayerState:
     prizes_taken: list[CardRef] = field(default_factory=list)
     user_known_prizes: list[CardRef] = field(default_factory=list)
     starting_prize_count: int = 6
+
+    # Per-player board-instance counters.
+    pokemon_instance_counters: dict[str, int] = field(default_factory=dict)
 
     @property
     def remaining_prize_count(self) -> int:
@@ -77,6 +94,9 @@ class GameState:
     stadium: CardRef | None = None
     winner: str = ""
     last_event: LogEvent | None = None
+
+    # Accumulated honesty log: exact/inferred/ambiguous target decisions.
+    ambiguities: list[dict[str, Any]] = field(default_factory=list)
 
     def ensure_player(self, name: str) -> PlayerState:
         clean = str(name or "").strip()
