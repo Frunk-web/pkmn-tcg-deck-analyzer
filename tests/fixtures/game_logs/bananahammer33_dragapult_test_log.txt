@@ -1,0 +1,190 @@
+﻿Setup
+FrunkUke chose tails for the opening coin flip.
+BananaHammer33 won the coin toss.
+BananaHammer33 decided to go second.
+FrunkUke drew 7 cards for the opening hand.
+- 7 drawn cards.
+   • (me1_131) Ultra Ball, (me1_131) Ultra Ball, (mee_1) Basic Grass Energy, (me3_62) Meowth ex, (sv7_131) Area Zero Underdepths, (sv5_123) Raging Bolt ex, (sv6_25) Teal Mask Ogerpon ex
+BananaHammer33 drew 7 cards for the opening hand.
+- 7 drawn cards.
+FrunkUke played (sv5_123) Raging Bolt ex to the Active Spot.
+BananaHammer33 played (sv8-5_4) Budew to the Active Spot.
+
+FrunkUke's Turn
+FrunkUke drew (me1_115) Energy Switch.
+FrunkUke played (sv6_25) Teal Mask Ogerpon ex to the Bench.
+FrunkUke's (sv6_25) Teal Mask Ogerpon ex used Teal Dance.
+- FrunkUke attached (mee_1) Basic Grass Energy to (sv6_25) Teal Mask Ogerpon ex on the Bench.
+- FrunkUke drew (mee_3) Basic Water Energy.
+FrunkUke played (me1_131) Ultra Ball.
+- FrunkUke discarded 2 cards.
+   • (me1_115) Energy Switch, (sv7_131) Area Zero Underdepths
+- FrunkUke drew (sv6_64) Wellspring Mask Ogerpon ex.
+- FrunkUke shuffled their deck.
+FrunkUke played (sv6_64) Wellspring Mask Ogerpon ex to the Bench.
+FrunkUke attached (mee_3) Basic Water Energy to (sv6_64) Wellspring Mask Ogerpon ex on the Bench.
+FrunkUke ended their turn.
+
+BananaHammer33's Turn
+BananaHammer33 drew a card.
+BananaHammer33 played (me3_81) Poké Pad.
+- BananaHammer33 drew (sv6_128) Dreepy.
+- BananaHammer33 shuffled their deck.
+BananaHammer33 played (sv6_128) Dreepy to the Bench.
+BananaHammer33 played (me1_131) Ultra Ball.
+- BananaHammer33 discarded 2 cards.
+   • (sv6_129) Drakloak, (me1_127) Risky Ruins
+- BananaHammer33 drew (me3_62) Meowth ex.
+- BananaHammer33 shuffled their deck.
+BananaHammer33 played (me3_62) Meowth ex to the Bench.
+BananaHammer33's (me3_62) Meowth ex used Last-Ditch Catch.
+- BananaHammer33 drew (me1_119) Lillie's Determination.
+- BananaHammer33 shuffled their deck.
+BananaHammer33 played (me1_119) Lillie's Determination.
+- BananaHammer33 shuffled 3 cards into their deck.
+- BananaHammer33 drew 8 cards.
+BananaHammer33 played (sv6-5_18) Duskull to the Bench.
+BananaHammer33 played (me3_81) Poké Pad.
+- BananaHammer33 drew (sv6_128) Dreepy.
+- BananaHammer33 shuffled their deck.
+BananaHammer33 played (sv6_128) Dreepy to the Bench.
+BananaHammer33 attached (mee_5) Basic Psychic Energy to (sv6_128) Dreepy on the Bench.
+BananaHammer33's (sv8-5_4) Budew used Itchy Pollen on FrunkUke’s (sv5_123) Raging Bolt ex for 10 damage.
+
+FrunkUke's Turn
+FrunkUke drew (sv7_131) Area Zero Underdepths.
+FrunkUke played (me3_62) Meowth ex to the Bench.
+FrunkUke's (me3_62) Meowth ex used Last-Ditch Catch.
+- FrunkUke drew (sv7_133) Crispin.
+- FrunkUke shuffled their deck.
+FrunkUke played (sv7_133) Crispin.
+- FrunkUke drew (mee_4) Basic Lightning Energy.
+- FrunkUke attached (mee_6) Basic Fighting Energy to (sv5_123) Raging Bolt ex in the Active Spot.
+- FrunkUke shuffled their deck.
+FrunkUke attached (mee_4) Basic Lightning Energy to (sv5_123) Raging Bolt ex in the Active Spot.
+FrunkUke's (sv5_123) Raging Bolt ex used Bellowing Thunder on BananaHammer33’s (sv8-5_4) Budew for 70 damage.
+- Damage breakdown:
+   • 1 selected Energy: 70 damage
+
+- (mee_1) Basic Grass Energy was discarded from FrunkUke's (sv6_25) Teal Mask Ogerpon ex.
+BananaHammer33's (sv8-5_4) Budew was Knocked Out!
+FrunkUke took a Prize card.
+(sv5_145) Ciphermaniac's Codebreaking was added to FrunkUke's hand.
+BananaHammer33's (sv6-5_18) Duskull is now in the Active Spot.
+
+BananaHammer33's Turn
+BananaHammer33 drew a card.
+BananaHammer33 evolved (sv6_128) Dreepy to (sv6_129) Drakloak on the Bench.
+BananaHammer33 played (sv6-5_38) Fezandipiti ex to the Bench.
+BananaHammer33 played (me1_119) Lillie's Determination.
+- BananaHammer33 shuffled 3 cards into their deck.
+- BananaHammer33 drew 8 cards.
+BananaHammer33 played (sv5_144) Buddy-Buddy Poffin.
+- BananaHammer33 drew (sv6_128) Dreepy and played it to the Bench.
+- BananaHammer33 shuffled their deck.
+BananaHammer33's (sv6_129) Drakloak used Recon Directive.
+- BananaHammer33 drew a card.
+BananaHammer33's (sv6-5_38) Fezandipiti ex used Flip the Script.
+- BananaHammer33 drew 3 cards.
+BananaHammer33 played (me1_131) Ultra Ball.
+- BananaHammer33 discarded 2 cards.
+   • (mee_2) Basic Fire Energy, (sv6-5_18) Duskull
+- BananaHammer33 drew (sv6_129) Drakloak.
+- BananaHammer33 shuffled their deck.
+BananaHammer33 evolved (sv6_128) Dreepy to (sv6_129) Drakloak on the Bench.
+BananaHammer33's (sv6_129) Drakloak used Recon Directive.
+- BananaHammer33 drew a card.
+BananaHammer33 attached (mee_5) Basic Psychic Energy to (sv6_129) Drakloak on the Bench.
+BananaHammer33 ended their turn.
+
+FrunkUke's Turn
+FrunkUke drew (me3_62) Meowth ex.
+FrunkUke played (me1_131) Ultra Ball.
+- FrunkUke discarded 2 cards.
+   • (sv5_145) Ciphermaniac's Codebreaking, (sv7_131) Area Zero Underdepths
+- FrunkUke drew (me1_104) Mega Kangaskhan ex.
+- FrunkUke shuffled their deck.
+FrunkUke played (me1_104) Mega Kangaskhan ex to the Bench.
+FrunkUke played (me3_62) Meowth ex to the Bench.
+FrunkUke's (me3_62) Meowth ex used Last-Ditch Catch.
+- FrunkUke drew (me1_114) Boss's Orders.
+- FrunkUke shuffled their deck.
+FrunkUke played (me1_114) Boss's Orders.
+- BananaHammer33's (sv6-5_38) Fezandipiti ex was switched with BananaHammer33's (sv6-5_18) Duskull to become the Active Pokémon.
+BananaHammer33's (sv6-5_38) Fezandipiti ex is now in the Active Spot.
+FrunkUke's (sv5_123) Raging Bolt ex used Bellowing Thunder on BananaHammer33’s (sv6-5_38) Fezandipiti ex for 210 damage.
+- Damage breakdown:
+   • 3 selected Energy: 210 damage
+
+- 2 cards were discarded from FrunkUke's (sv5_123) Raging Bolt ex.
+   • (mee_4) Basic Lightning Energy, (mee_6) Basic Fighting Energy
+- (mee_3) Basic Water Energy was discarded from FrunkUke's (sv6_64) Wellspring Mask Ogerpon ex.
+BananaHammer33's (sv6-5_38) Fezandipiti ex was Knocked Out!
+FrunkUke took 2 Prize cards.
+(me1_131) Ultra Ball was added to FrunkUke's hand.
+(sv7_135) Glass Trumpet was added to FrunkUke's hand.
+BananaHammer33's (sv6_129) Drakloak is now in the Active Spot.
+
+BananaHammer33's Turn
+BananaHammer33 drew a card.
+BananaHammer33 attached (mee_2) Basic Fire Energy to (sv6_129) Drakloak in the Active Spot.
+BananaHammer33's (sv6_129) Drakloak used Recon Directive.
+- BananaHammer33 drew a card.
+BananaHammer33's (sv6_129) Drakloak used Recon Directive.
+- BananaHammer33 drew a card.
+BananaHammer33 played (sv5_144) Buddy-Buddy Poffin.
+- BananaHammer33 drew (sv6_128) Dreepy and played it to the Bench.
+- BananaHammer33 shuffled their deck.
+BananaHammer33 played (me2_87) Dawn.
+- BananaHammer33 drew 3 cards.
+   • (sv6_95) Munkidori, (sv6-5_19) Dusclops, (sv6_130) Dragapult ex
+- BananaHammer33 shuffled their deck.
+BananaHammer33 played (sv6-5_61) Night Stretcher.
+- BananaHammer33 moved BananaHammer33's (sv6_129) Drakloak to their hand.
+BananaHammer33 evolved (sv6_128) Dreepy to (sv6_129) Drakloak on the Bench.
+BananaHammer33 evolved (sv6-5_18) Duskull to (sv6-5_19) Dusclops on the Bench.
+BananaHammer33's (sv6_129) Drakloak used Recon Directive.
+- BananaHammer33 drew a card.
+BananaHammer33 evolved (sv6_129) Drakloak to (sv6_130) Dragapult ex in the Active Spot.
+BananaHammer33 played (me3_81) Poké Pad.
+- BananaHammer33 drew (sv6_129) Drakloak.
+- BananaHammer33 shuffled their deck.
+BananaHammer33's (sv6_130) Dragapult ex used Phantom Dive on FrunkUke’s (sv5_123) Raging Bolt ex for 200 damage.
+- BananaHammer33 put a damage counter on BananaHammer33's (sv6_64) Wellspring Mask Ogerpon ex.
+- BananaHammer33 put 5 damage counters on BananaHammer33's (me3_62) Meowth ex.
+
+FrunkUke's Turn
+FrunkUke drew (sv5_123) Raging Bolt ex.
+FrunkUke played (sv7_135) Glass Trumpet.
+- FrunkUke attached (mee_1) Basic Grass Energy to (me3_62) Meowth ex on the Bench.
+- FrunkUke attached (mee_3) Basic Water Energy to (me1_104) Mega Kangaskhan ex on the Bench.
+FrunkUke ended their turn.
+
+BananaHammer33's Turn
+BananaHammer33 drew a card.
+BananaHammer33 evolved (sv6-5_19) Dusclops to (sv6-5_20) Dusknoir on the Bench.
+BananaHammer33 played (me1_114) Boss's Orders.
+- FrunkUke's (sv6_64) Wellspring Mask Ogerpon ex was switched with FrunkUke's (sv5_123) Raging Bolt ex to become the Active Pokémon.
+FrunkUke's (sv6_64) Wellspring Mask Ogerpon ex is now in the Active Spot.
+BananaHammer33's (sv6-5_20) Dusknoir used Cursed Blast.
+- BananaHammer33 put 13 damage counters on BananaHammer33's (me3_62) Meowth ex.
+FrunkUke's (me3_62) Meowth ex was Knocked Out!
+(mee_1) Basic Grass Energy was discarded from FrunkUke's (me3_62) Meowth ex.
+BananaHammer33's (sv6-5_20) Dusknoir was Knocked Out!
+- 2 cards were discarded from BananaHammer33's (sv6-5_20) Dusknoir.
+   • (sv6-5_19) Dusclops, (sv6-5_18) Duskull
+FrunkUke took a Prize card.
+(sv6_25) Teal Mask Ogerpon ex was added to FrunkUke's hand.
+BananaHammer33 took 2 Prize cards.
+A card was added to BananaHammer33's hand.
+A card was added to BananaHammer33's hand.
+BananaHammer33's (sv6_130) Dragapult ex used Phantom Dive on FrunkUke’s (sv6_64) Wellspring Mask Ogerpon ex for 200 damage.
+- BananaHammer33 put 6 damage counters on BananaHammer33's (sv5_123) Raging Bolt ex.
+FrunkUke's (sv6_64) Wellspring Mask Ogerpon ex was Knocked Out!
+FrunkUke's (sv5_123) Raging Bolt ex was Knocked Out!
+BananaHammer33 took 4 Prize cards.
+A card was added to BananaHammer33's hand.
+A card was added to BananaHammer33's hand.
+A card was added to BananaHammer33's hand.
+A card was added to BananaHammer33's hand.
+Opponent took all of their Prize cards. BananaHammer33 wins.

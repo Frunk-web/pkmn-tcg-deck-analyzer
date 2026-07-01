@@ -28,6 +28,7 @@ except Exception:
     pass
 
 from src.turn1_access_page import render_turn1_access_tab
+from src.game_log_replay_page import render_game_log_replay_tab
 
 from src.analysis import analyze_deck_opening_hand, format_probability_table
 from src.charts import (
@@ -1456,6 +1457,21 @@ def main() -> None:
     apply_custom_css()
     init_session_state()
     render_hero()
+
+    workspace = st.radio(
+        "Workspace",
+        options=["Game Review", "Deck Analyzer"],
+        index=0,
+        horizontal=True,
+        key="main_workspace_selector",
+        label_visibility="collapsed",
+    )
+
+    if workspace == "Game Review":
+        render_game_log_replay_tab()
+        return
+
+    st.markdown("---")
     deck_input_panel()
 
     if not st.session_state.has_analyzed or st.session_state.analysis_results is None:
