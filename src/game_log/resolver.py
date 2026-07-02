@@ -5,42 +5,35 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from .models import CardRef
 
+try:
+    from src.pokemon_api import BASIC_ENERGY_FALLBACK_IMAGES, infer_basic_energy_type
+except Exception:
+    BASIC_ENERGY_FALLBACK_IMAGES = {
+        "grass": ("sve-1", "https://images.pokemontcg.io/sve/1.png", "https://images.pokemontcg.io/sve/1_hires.png"),
+        "fire": ("sve-2", "https://images.pokemontcg.io/sve/2.png", "https://images.pokemontcg.io/sve/2_hires.png"),
+        "water": ("sve-3", "https://images.pokemontcg.io/sve/3.png", "https://images.pokemontcg.io/sve/3_hires.png"),
+        "lightning": ("sve-4", "https://images.pokemontcg.io/sve/4.png", "https://images.pokemontcg.io/sve/4_hires.png"),
+        "psychic": ("sve-5", "https://images.pokemontcg.io/sve/5.png", "https://images.pokemontcg.io/sve/5_hires.png"),
+        "fighting": ("sve-6", "https://images.pokemontcg.io/sve/6.png", "https://images.pokemontcg.io/sve/6_hires.png"),
+        "darkness": ("sve-7", "https://images.pokemontcg.io/sve/7.png", "https://images.pokemontcg.io/sve/7_hires.png"),
+        "metal": ("sve-8", "https://images.pokemontcg.io/sve/8.png", "https://images.pokemontcg.io/sve/8_hires.png"),
+    }
 
-_LIVE_SET_ID_TO_API_SET_ID = {
-    # PTCG Live exports special sets with hyphen notation; the public API uses pt notation.
+    def infer_basic_energy_type(card_name: str) -> str | None:
+        lowered = str(card_name or "").lower()
+        for energy_type in BASIC_ENERGY_FALLBACK_IMAGES:
+            if energy_type in lowered:
+                return energy_type
+        return None
+
+
+_SPECIAL_SET_ID_OVERRIDES = {
     "sv6-5": "sv6pt5",
     "sv8-5": "sv8pt5",
-}
-
-
-_BASIC_ENERGY_NAME_FALLBACKS = {
-    "basic grass energy": [
-        "https://images.pokemontcg.io/sv2/278.png",
-        "https://images.pokemontcg.io/sv2/278_hires.png",
-    ],
-    "basic fire energy": [
-        "https://images.pokemontcg.io/sv3/230.png",
-        "https://images.pokemontcg.io/sv3/230_hires.png",
-    ],
-    "basic water energy": [
-        "https://images.pokemontcg.io/sv2/279.png",
-        "https://images.pokemontcg.io/sv2/279_hires.png",
-    ],
-    "basic lightning energy": [
-        "https://images.pokemontcg.io/sv1/257.png",
-        "https://images.pokemontcg.io/sv1/257_hires.png",
-    ],
-    "basic psychic energy": [
-        "https://images.pokemontcg.io/sv3pt5/207.png",
-        "https://images.pokemontcg.io/sv3pt5/207_hires.png",
-    ],
-    "basic fighting energy": [
-        "https://images.pokemontcg.io/sv1/258.png",
-        "https://images.pokemontcg.io/sv1/258_hires.png",
-    ],
 }
 
 
@@ -48,21 +41,21 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
-def _clean(value: object) -> str:
+def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _norm_key(value: object) -> str:
+def _norm(value: Any) -> str:
     return _clean(value).lower()
 
 
-def _norm_col(value: object) -> str:
-    return re.sub(r"[^a-z0-9]+", "", _clean(value).lower())
+def _norm_col(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _norm(value))
 
 
 def _dedupe_keep_order(values: list[str]) -> list[str]:
-    seen = set()
-    out = []
+    seen: set[str] = set()
+    out: list[str] = []
 
     for value in values:
         clean = _clean(value)
@@ -85,14 +78,20 @@ def _split_exported_id(exported_id: str) -> tuple[str, str]:
 
 def _api_set_id_for_live_set_id(set_id: str) -> str:
     clean = _clean(set_id)
-    mapped = _LIVE_SET_ID_TO_API_SET_ID.get(clean)
-    if mapped:
-        return mapped
+    if not clean:
+        return ""
 
-    # Generic special-set normalization, e.g. sv6-5 -> sv6pt5.
-    m = re.fullmatch(r"(sv\d+)-(\d+)", clean)
-    if m:
-        return f"{m.group(1)}pt{m.group(2)}"
+    if clean in _SPECIAL_SET_ID_OVERRIDES:
+        return _SPECIAL_SET_ID_OVERRIDES[clean]
+
+    # Generic PTCGL special-set normalization:
+    #   sv6-5  -> sv6pt5
+    #   sv8-5  -> sv8pt5
+    #   me2-5  -> me2pt5
+    #   zsv10-5 -> zsv10pt5
+    match = re.fullmatch(r"([a-z]+\d+)-(\d+)", clean, flags=re.IGNORECASE)
+    if match:
+        return f"{match.group(1)}pt{match.group(2)}"
 
     return clean
 
@@ -115,9 +114,53 @@ def exported_id_to_image_url(exported_id: str, *, hires: bool = False) -> str:
     return f"https://images.pokemontcg.io/{api_set_id}/{number}{suffix}.png"
 
 
-def _looks_like_image_url(value: object) -> bool:
+def _id_variants(raw_id: str) -> list[str]:
+    raw = _clean(raw_id)
+    if not raw:
+        return []
+
+    variants = [raw, raw.replace("_", "-")]
+
+    if "_" in raw:
+        set_id, number = _split_exported_id(raw)
+        api_set_id = _api_set_id_for_live_set_id(set_id)
+
+        if set_id and number:
+            variants.extend(
+                [
+                    f"{set_id}-{number}",
+                    f"{set_id}_{number}",
+                    f"{api_set_id}-{number}",
+                    f"{api_set_id}_{number}",
+                ]
+            )
+
+    if "-" in raw:
+        parts = raw.rsplit("-", 1)
+        if len(parts) == 2:
+            set_id, number = parts
+            api_set_id = _api_set_id_for_live_set_id(set_id)
+
+            variants.extend(
+                [
+                    f"{set_id}-{number}",
+                    f"{set_id}_{number}",
+                    f"{api_set_id}-{number}",
+                    f"{api_set_id}_{number}",
+                ]
+            )
+
+            if "pt" in set_id:
+                variants.append(f"{set_id.replace('pt', '-')}-{number}")
+                variants.append(f"{set_id.replace('pt', '-')}_{number}")
+
+    return _dedupe_keep_order([_norm(v) for v in variants])
+
+
+def _looks_like_image_url(value: Any) -> bool:
     raw = _clean(value)
     lowered = raw.lower()
+
     return lowered.startswith("http") and (
         ".png" in lowered
         or ".jpg" in lowered
@@ -127,7 +170,7 @@ def _looks_like_image_url(value: object) -> bool:
     )
 
 
-def _extract_urls_from_value(value: object) -> list[str]:
+def _extract_urls_from_value(value: Any) -> list[str]:
     raw = _clean(value)
     if not raw:
         return []
@@ -137,7 +180,6 @@ def _extract_urls_from_value(value: object) -> list[str]:
     if _looks_like_image_url(raw):
         urls.append(raw)
 
-    # Some CSV exports store image payloads as JSON-ish strings.
     if raw.startswith("{") and raw.endswith("}"):
         try:
             payload = json.loads(raw)
@@ -145,11 +187,11 @@ def _extract_urls_from_value(value: object) -> list[str]:
             payload = None
 
         if isinstance(payload, dict):
-            for key in ("small", "large", "url", "image", "image_url"):
-                if _looks_like_image_url(payload.get(key)):
-                    urls.append(_clean(payload.get(key)))
+            images = payload.get("images") if isinstance(payload.get("images"), dict) else payload
+            for key in ("large", "small", "image_large_url", "image_url", "url"):
+                if _looks_like_image_url(images.get(key)):
+                    urls.append(_clean(images.get(key)))
 
-    # Last-resort URL extraction from a string blob.
     for found in re.findall(r"https?://[^\s,'\"\]\}]+", raw):
         if _looks_like_image_url(found):
             urls.append(found)
@@ -157,10 +199,14 @@ def _extract_urls_from_value(value: object) -> list[str]:
     return _dedupe_keep_order(urls)
 
 
-def _extract_image_urls_from_row(row: dict[str, str]) -> list[str]:
-    small_urls: list[str] = []
+def _extract_image_urls_from_row(row: dict[str, Any]) -> list[str]:
     large_urls: list[str] = []
+    small_urls: list[str] = []
     other_urls: list[str] = []
+
+    raw_json = row.get("raw_json") or row.get("raw") or row.get("json")
+    if raw_json:
+        large_urls.extend(_extract_urls_from_value(raw_json))
 
     for col, value in row.items():
         col_norm = _norm_col(col)
@@ -168,35 +214,31 @@ def _extract_image_urls_from_row(row: dict[str, str]) -> list[str]:
         if not urls:
             continue
 
-        if "small" in col_norm:
-            small_urls.extend(urls)
-        elif "large" in col_norm or "hires" in col_norm or "highres" in col_norm:
+        if "large" in col_norm or "hires" in col_norm or "highres" in col_norm:
             large_urls.extend(urls)
+        elif "small" in col_norm:
+            small_urls.extend(urls)
         elif "image" in col_norm or "url" in col_norm:
             other_urls.extend(urls)
 
-    # Prefer smaller images for replay performance; browser can still fall back.
-    return _dedupe_keep_order(small_urls + large_urls + other_urls)
+    # Card Gallery prefers large image, then small image.
+    return _dedupe_keep_order(large_urls + small_urls + other_urls)
 
 
 @lru_cache(maxsize=1)
-def _local_gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """
-    Build an image lookup from local card/gallery data.
-
-    This is global and data-driven. It avoids hard-coding one set like ME3.
-    """
+def _gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     root = _repo_root()
     data_dir = root / "data"
 
     candidate_files: list[Path] = []
-    preferred = [
+
+    preferred_files = [
         data_dir / "all_cards.csv",
         data_dir / "cards.csv",
         data_dir / "card_index.csv",
     ]
 
-    for path in preferred:
+    for path in preferred_files:
         if path.exists():
             candidate_files.append(path)
 
@@ -210,8 +252,8 @@ def _local_gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[
 
     for path in candidate_files:
         try:
-            with path.open("r", encoding="utf-8-sig", newline="") as f:
-                reader = csv.DictReader(f)
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
                 if not reader.fieldnames:
                     continue
 
@@ -219,15 +261,27 @@ def _local_gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[
 
                 id_cols = [
                     col
-                    for norm, col in norm_to_col.items()
-                    if norm in {"id", "cardid", "representativecardid"}
-                    or norm.endswith("cardid")
+                    for norm_col, col in norm_to_col.items()
+                    if norm_col in {"id", "cardid", "representativecardid"}
+                    or norm_col.endswith("cardid")
                 ]
 
                 name_cols = [
                     col
-                    for norm, col in norm_to_col.items()
-                    if norm in {"name", "cardname"}
+                    for norm_col, col in norm_to_col.items()
+                    if norm_col in {"name", "cardname"}
+                ]
+
+                set_cols = [
+                    col
+                    for norm_col, col in norm_to_col.items()
+                    if norm_col in {"setid", "set"}
+                ]
+
+                number_cols = [
+                    col
+                    for norm_col, col in norm_to_col.items()
+                    if norm_col in {"number", "cardnumber", "collectornumber"}
                 ]
 
                 for row in reader:
@@ -235,15 +289,29 @@ def _local_gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[
                     if not urls:
                         continue
 
+                    row_id_values: list[str] = []
+
                     for col in id_cols:
-                        key = _norm_key(row.get(col))
-                        if key and key != "nan":
+                        row_id_values.append(_clean(row.get(col)))
+
+                    for set_col in set_cols:
+                        for number_col in number_cols:
+                            set_id = _clean(row.get(set_col))
+                            number = _clean(row.get(number_col))
+                            if set_id and number:
+                                row_id_values.append(f"{set_id}-{number}")
+                                row_id_values.append(f"{set_id}_{number}")
+                                row_id_values.append(f"{_api_set_id_for_live_set_id(set_id)}-{number}")
+                                row_id_values.append(f"{_api_set_id_for_live_set_id(set_id)}_{number}")
+
+                    for raw_id in row_id_values:
+                        for key in _id_variants(raw_id):
                             by_id[key] = _dedupe_keep_order(by_id.get(key, []) + urls)
 
                     for col in name_cols:
-                        key = _norm_key(row.get(col))
-                        if key and key != "nan":
-                            by_name[key] = _dedupe_keep_order(by_name.get(key, []) + urls)
+                        name_key = _norm(row.get(col))
+                        if name_key and name_key != "nan":
+                            by_name[name_key] = _dedupe_keep_order(by_name.get(name_key, []) + urls)
 
         except Exception:
             continue
@@ -251,27 +319,40 @@ def _local_gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[
     return by_id, by_name
 
 
-def _scrydex_candidates(api_card_id: str) -> list[str]:
-    clean = _clean(api_card_id)
-    if not clean or "-" not in clean:
+def _basic_energy_urls_by_name(card_name: str) -> list[str]:
+    energy_type = infer_basic_energy_type(card_name)
+    if not energy_type:
         return []
 
-    return [
-        f"https://images.scrydex.com/pokemon/{clean}/small",
-        f"https://images.scrydex.com/pokemon/{clean}/large",
-    ]
-
-
-def _pokemontcg_candidates(set_id: str, number: str) -> list[str]:
-    clean_set = _clean(set_id)
-    clean_number = _clean(number)
-    if not clean_set or not clean_number:
+    fallback = BASIC_ENERGY_FALLBACK_IMAGES.get(energy_type)
+    if not fallback:
         return []
 
-    return [
-        f"https://images.pokemontcg.io/{clean_set}/{clean_number}.png",
-        f"https://images.pokemontcg.io/{clean_set}/{clean_number}_hires.png",
+    _, small_url, large_url = fallback
+    return _dedupe_keep_order([large_url, small_url])
+
+
+def _pokemon_tcg_convention_urls(exported_id: str) -> list[str]:
+    set_id, number = _split_exported_id(exported_id)
+    if not set_id or not number:
+        return []
+
+    api_set_id = _api_set_id_for_live_set_id(set_id)
+
+    urls = [
+        f"https://images.pokemontcg.io/{api_set_id}/{number}_hires.png",
+        f"https://images.pokemontcg.io/{api_set_id}/{number}.png",
     ]
+
+    if api_set_id != set_id:
+        urls.extend(
+            [
+                f"https://images.pokemontcg.io/{set_id}/{number}_hires.png",
+                f"https://images.pokemontcg.io/{set_id}/{number}.png",
+            ]
+        )
+
+    return _dedupe_keep_order(urls)
 
 
 def candidate_image_urls_for_card_ref(card: CardRef | None) -> list[str]:
@@ -281,41 +362,27 @@ def candidate_image_urls_for_card_ref(card: CardRef | None) -> list[str]:
     exported_id = _clean(getattr(card, "exported_id", ""))
     name = _clean(getattr(card, "name", ""))
 
-    set_id, number = _split_exported_id(exported_id)
-    api_set_id = _api_set_id_for_live_set_id(set_id) if set_id else ""
-    api_card_id = f"{api_set_id}-{number}" if api_set_id and number else ""
-
-    by_id, by_name = _local_gallery_image_lookup()
-
     urls: list[str] = []
 
-    # 1. ScryDex first for all normal card IDs.
-    # Reason: pokemontcg.io can return a card-back placeholder with HTTP 200,
-    # which means browser onerror never fires. This is not set-specific.
-    if api_card_id and not api_card_id.startswith("mee-"):
-        urls.extend(_scrydex_candidates(api_card_id))
+    # Same Basic Energy behavior as the gallery metadata path.
+    energy_urls = _basic_energy_urls_by_name(name)
+    if energy_urls:
+        return energy_urls
 
-    # 2. Local/gallery data, globally by exact IDs and names.
-    for key in _dedupe_keep_order([exported_id, exported_id.replace("_", "-"), api_card_id]):
-        urls.extend(by_id.get(_norm_key(key), []))
+    by_id, by_name = _gallery_image_lookup()
+
+    for key in _id_variants(exported_id):
+        urls.extend(by_id.get(key, []))
+
+    api_card_id = exported_id_to_api_card_id(exported_id)
+    for key in _id_variants(api_card_id):
+        urls.extend(by_id.get(key, []))
 
     if name:
-        urls.extend(by_name.get(_norm_key(name), []))
+        urls.extend(by_name.get(_norm(name), []))
 
-    # 3. Semantic fallback for PTCGL's non-public basic-energy export IDs.
-    if name:
-        urls.extend(_BASIC_ENERGY_NAME_FALLBACKS.get(_norm_key(name), []))
-
-    # 4. PokémonTCG convention fallbacks.
-    if api_set_id and number:
-        urls.extend(_pokemontcg_candidates(api_set_id, number))
-
-    if set_id and number and api_set_id != set_id:
-        urls.extend(_pokemontcg_candidates(set_id, number))
-
-    # 5. ScryDex fallback again after convention in case something was skipped.
-    if api_card_id and not api_card_id.startswith("mee-"):
-        urls.extend(_scrydex_candidates(api_card_id))
+    # Only after gallery/local metadata fails do we use deterministic convention URLs.
+    urls.extend(_pokemon_tcg_convention_urls(exported_id))
 
     return _dedupe_keep_order(urls)
 
