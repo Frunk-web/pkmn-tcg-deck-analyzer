@@ -105,19 +105,27 @@ def candidate_image_urls_for_card_ref(card: CardRef | None) -> list[str]:
         api_set_id = _api_set_id_for_live_set_id(set_id)
         api_card_id = f"{api_set_id}-{number}"
 
-        # 2. PokémonTCG image convention.
-        # Prefer hires first for newer/cached gallery-style card images.
-        urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}_hires.png")
-        urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}.png")
+        # ME3 currently returns card-back/placeholder images from pokemontcg.io
+        # for some cards on deployed browsers. ScryDex has the actual fronts.
+        if api_set_id.lower() == "me3":
+            urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/small")
+            urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/large")
+            urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}.png")
+            urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}_hires.png")
+        else:
+            # PokémonTCG image convention.
+            # Prefer normal image first because some hires URLs lag on newer sets.
+            urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}.png")
+            urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}_hires.png")
 
-        # 3. Original live set ID convention, useful if a weird set ID exists as-is.
-        if api_set_id != set_id:
-            urls.append(f"https://images.pokemontcg.io/{set_id}/{number}_hires.png")
-            urls.append(f"https://images.pokemontcg.io/{set_id}/{number}.png")
+            # Original live set ID convention, useful if a weird set ID exists as-is.
+            if api_set_id != set_id:
+                urls.append(f"https://images.pokemontcg.io/{set_id}/{number}.png")
+                urls.append(f"https://images.pokemontcg.io/{set_id}/{number}_hires.png")
 
-        # 4. ScryDex fallback for newer or weird ME cards.
-        urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/large")
-        urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/small")
+            # ScryDex fallback for newer or weird cards.
+            urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/small")
+            urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/large")
 
     return _dedupe_keep_order(urls)
 
