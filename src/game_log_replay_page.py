@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import html
+import json
 import textwrap
 import time
 from collections import Counter
@@ -13,7 +14,7 @@ import streamlit as st
 from src.game_log.models import CardRef, GameState, PlayerState, PokemonInPlay
 from src.game_log.parser import parse_battle_log, parse_card_refs
 from src.game_log.reducer import build_replay_frames
-from src.game_log.resolver import exported_id_to_api_card_id, image_url_for_card_ref
+from src.game_log.resolver import candidate_image_urls_for_card_ref, exported_id_to_api_card_id, image_url_for_card_ref
 
 
 def _render_raw_html(raw_html: str) -> None:
@@ -46,13 +47,36 @@ def _card_html(card: CardRef | None, *, small: bool = False) -> str:
 
     label = html.escape(_card_label(card))
     short_label = html.escape(_short_card_label(card))
-    img = image_url_for_card_ref(card)
+    urls = candidate_image_urls_for_card_ref(card)
     cls = "glr-card glr-card-small" if small else "glr-card"
 
-    if img:
+    if urls:
+        src = html.escape(urls[0], quote=True)
+        fallbacks = html.escape(json.dumps(urls[1:]), quote=True)
+        onerror = html.escape(
+            (
+                "const f=JSON.parse(this.dataset.fallbacks||'[]');"
+                "const i=Number(this.dataset.fallbackIndex||0);"
+                "if(i<f.length){"
+                "this.dataset.fallbackIndex=String(i+1);"
+                "this.src=f[i];"
+                "}else{"
+                "this.style.display='none';"
+                "this.closest('.glr-card')?.classList.add('glr-missing-image');"
+                "}"
+            ),
+            quote=True,
+        )
+
         return f"""
         <div class="{cls}" title="{label}">
-          <img src="{html.escape(img)}" alt="{label}">
+          <img
+            src="{src}"
+            alt="{label}"
+            data-fallback-index="0"
+            data-fallbacks="{fallbacks}"
+            onerror="{onerror}"
+          >
           <div class="glr-card-name">{short_label}</div>
         </div>
         """
@@ -63,7 +87,6 @@ def _card_html(card: CardRef | None, *, small: bool = False) -> str:
       <div class="glr-card-name">{short_label}</div>
     </div>
     """
-
 
 def _pokemon_html(pokemon: PokemonInPlay | None) -> str:
     if pokemon is None:
