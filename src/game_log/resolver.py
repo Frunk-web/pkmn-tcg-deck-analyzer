@@ -277,10 +277,16 @@ def _image_url_exists(url: str) -> bool:
 
 
 def best_image_url_for_card_ref(card: CardRef | None) -> str:
-    for url in candidate_image_urls_for_card_ref(card):
-        if _image_url_exists(url):
-            return url
-    return ""
+    """
+    Return the best known image URL without server-side rejection.
+
+    Important: the Card Gallery succeeds by letting the browser load known image
+    URLs directly. Server-side HEAD/GET checks can fail on deployed hosts even
+    when the image works in the browser, so Game Review should use the same
+    gallery-style behavior.
+    """
+    urls = candidate_image_urls_for_card_ref(card)
+    return urls[0] if urls else ""
 
 
 def image_url_for_card_ref(card: CardRef | None) -> str:

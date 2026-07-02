@@ -155,6 +155,70 @@ def _card_counter_html(cards: list[CardRef], *, limit: int = 10) -> str:
     return "<div class='glr-chip-row'>" + "".join(chips) + "</div>"
 
 
+def _event_action_title(event) -> str:
+    if event is None:
+        return "Before game"
+
+    labels = {
+        "opening_hand": "Opening hand",
+        "turn_start": "Turn start",
+        "draw_hidden": "Draw",
+        "draw_revealed": "Draw",
+        "draw_count": "Draw",
+        "draw_and_play_to_bench": "Search and bench",
+        "play_to_active": "Play to Active",
+        "play_to_bench": "Play to Bench",
+        "play_stadium": "Play Stadium",
+        "play_card": "Play card",
+        "attach_energy": "Attach Energy",
+        "ability_or_attack": "Ability / attack",
+        "attack": "Attack",
+        "place_damage_counters": "Place damage counters",
+        "evolve": "Evolve",
+        "knockout": "Knock Out",
+        "promote_active": "Promote Active",
+        "take_prize": "Take Prize",
+        "add_to_hand_revealed": "Prize revealed",
+        "add_to_hand_hidden": "Prize to hand",
+        "discard_count": "Discard",
+        "discard_from_play": "Discard from play",
+        "move_card": "Move card",
+        "game_end": "Game end",
+    }
+
+    return labels.get(getattr(event, "event_type", ""), getattr(event, "event_type", "Action"))
+
+
+def _event_focus_html(event) -> str:
+    if event is None:
+        return """
+        <div class="glr-action-panel">
+          <div class="glr-zone-label">Current Action</div>
+          <div class="glr-action-title">Before game</div>
+          <div class="glr-action-text">Replay has not started yet.</div>
+        </div>
+        """
+
+    cards = list(getattr(event, "cards", []) or [])[:4]
+    card_strip = "".join(_card_html(card, small=True) for card in cards)
+
+    raw = html.escape(getattr(event, "raw", "") or "")
+    title = html.escape(_event_action_title(event))
+    actor = html.escape(getattr(event, "actor", "") or "")
+
+    actor_html = f'<div class="glr-action-actor">{actor}</div>' if actor else ""
+
+    return f"""
+    <div class="glr-action-panel">
+      <div class="glr-zone-label">Current Action</div>
+      <div class="glr-action-title">{title}</div>
+      {actor_html}
+      <div class="glr-action-cards">{card_strip}</div>
+      <div class="glr-action-text">{raw}</div>
+    </div>
+    """
+
+
 def _side_html(player: PlayerState, *, opponent: bool) -> str:
     bench = f"""
     <div>
@@ -532,6 +596,169 @@ def _board_css() -> str:
           width: min(190px, 100%);
         }
       }
+
+      /* Compact board + current action panel */
+      .glr-board {
+        gap: 8px;
+        padding: 10px;
+      }
+
+      .glr-side {
+        padding: 9px;
+        border-radius: 16px;
+      }
+
+      .glr-player-header {
+        margin-bottom: 4px;
+      }
+
+      .glr-player-header h3 {
+        font-size: 0.92rem;
+      }
+
+      .glr-side-grid {
+        grid-template-columns: minmax(0, 1fr) 185px;
+        gap: 8px;
+      }
+
+      .glr-play-area {
+        gap: 5px;
+      }
+
+      .glr-bench-row {
+        gap: 5px;
+      }
+
+      .glr-active-wrap {
+        width: 126px;
+      }
+
+      .glr-pokemon {
+        min-height: 106px;
+        padding: 4px;
+        border-radius: 12px;
+      }
+
+      .glr-card img {
+        max-height: 88px;
+      }
+
+      .glr-card-name {
+        padding: 2px;
+        font-size: 0.55rem;
+        line-height: 1.08;
+      }
+
+      .glr-card-small {
+        width: 42px;
+        margin: 1px;
+      }
+
+      .glr-card-small img {
+        max-height: 54px;
+      }
+
+      .glr-pokemon-meta {
+        margin-top: 2px;
+        font-size: 0.56rem;
+      }
+
+      .glr-zone-label {
+        margin: 2px 0 4px;
+        font-size: 0.57rem;
+        letter-spacing: 0.08em;
+      }
+
+      .glr-stats span,
+      .glr-chip {
+        padding: 2px 6px;
+        font-size: 0.58rem;
+      }
+
+      .glr-prize-grid {
+        gap: 4px;
+      }
+
+      .glr-prize {
+        min-height: 30px;
+        padding: 4px;
+        font-size: 0.55rem;
+      }
+
+      .glr-chip-row {
+        max-height: 64px;
+        overflow-y: auto;
+        padding-right: 2px;
+      }
+
+      .glr-middle-row {
+        grid-template-columns: 0.7fr 1.6fr 0.7fr;
+        gap: 8px;
+      }
+
+      .glr-middle-chip,
+      .glr-stadium {
+        padding: 8px;
+        border-radius: 12px;
+        font-size: 0.76rem;
+      }
+
+      .glr-action-panel {
+        border: 1px solid rgba(226,232,240,0.55);
+        border-radius: 14px;
+        padding: 8px;
+        min-height: 82px;
+        color: #e2e8f0;
+        background:
+          radial-gradient(circle at top left, rgba(59,130,246,0.25), transparent 30%),
+          rgba(15,23,42,0.62);
+        text-align: center;
+      }
+
+      .glr-action-title {
+        color: #ffffff;
+        font-weight: 950;
+        font-size: 0.86rem;
+        margin-bottom: 2px;
+      }
+
+      .glr-action-actor {
+        color: #bae6fd;
+        font-weight: 800;
+        font-size: 0.68rem;
+        margin-bottom: 3px;
+      }
+
+      .glr-action-cards {
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        gap: 3px;
+        min-height: 16px;
+        margin: 2px 0;
+      }
+
+      .glr-action-text {
+        color: #cbd5e1;
+        font-size: 0.62rem;
+        line-height: 1.18;
+        max-height: 34px;
+        overflow-y: auto;
+      }
+
+      .glr-instance-badge {
+        font-size: 0.52rem;
+        padding: 2px 5px;
+      }
+
+      .glr-damage-counter {
+        width: 34px;
+        height: 34px;
+        font-size: 0.76rem;
+        right: -7px;
+        top: -7px;
+      }
+
     </style>
     """
 
@@ -556,15 +783,17 @@ def _render_board_visual(state: GameState) -> None:
     if top is not None:
         parts.append(_side_html(top, opponent=True))
 
+    action_panel = _event_focus_html(state.last_event)
+
     parts.append(
         f"""
         <div class="glr-middle-row">
           <div class="glr-middle-chip">Turn: <strong>{html.escape(turn_player)}</strong></div>
+          {action_panel}
           <div class="glr-stadium">
             <div class="glr-zone-label">Stadium</div>
             <strong>{html.escape(stadium)}</strong>
           </div>
-          <div class="glr-middle-chip">Visible board state</div>
         </div>
         """
     )
@@ -798,20 +1027,24 @@ def render_game_log_replay_tab() -> None:
             """
         )
 
-    raw_log = st.text_area(
-        "Battle log",
-        height=245,
-        key="game_log_replay_text",
-        placeholder="Paste exported battle log here...",
-    )
+    existing_log = str(st.session_state.get("game_log_replay_text", "") or "")
+    input_expanded = not existing_log.strip()
 
-    known_prizes_text = st.text_area(
-        "Optional remembered prizes",
-        height=100,
-        key="game_log_known_prizes_text",
-        placeholder="FrunkUke:\n(sv5_145) Ciphermaniac's Codebreaking\n(me1_131) Ultra Ball",
-        help="Log-revealed prizes override remembered prizes if they disagree.",
-    )
+    with st.expander("Battle log input", expanded=input_expanded):
+        raw_log = st.text_area(
+            "Battle log",
+            height=180,
+            key="game_log_replay_text",
+            placeholder="Paste exported battle log here...",
+        )
+
+        known_prizes_text = st.text_area(
+            "Optional remembered prizes",
+            height=80,
+            key="game_log_known_prizes_text",
+            placeholder="FrunkUke:\n(sv5_145) Ciphermaniac's Codebreaking\n(me1_131) Ultra Ball",
+            help="Log-revealed prizes override remembered prizes if they disagree.",
+        )
 
     if not raw_log.strip():
         st.info("Paste a battle log to begin.")
