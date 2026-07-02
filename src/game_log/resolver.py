@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,17 @@ except Exception:
             if energy_type in lowered:
                 return energy_type
         return None
+
+
+@dataclass(frozen=True)
+class ResolvedCardMetadata:
+    card_id: str = ""
+    name: str = ""
+    supertype: str = ""
+    subtypes: tuple[str, ...] = ()
+    types: tuple[str, ...] = ()
+    image_url: str = ""
+    image_large_url: str = ""
 
 
 _SPECIAL_SET_ID_OVERRIDES = {
@@ -84,11 +96,6 @@ def _api_set_id_for_live_set_id(set_id: str) -> str:
     if clean in _SPECIAL_SET_ID_OVERRIDES:
         return _SPECIAL_SET_ID_OVERRIDES[clean]
 
-    # Generic PTCGL special-set normalization:
-    #   sv6-5  -> sv6pt5
-    #   sv8-5  -> sv8pt5
-    #   me2-5  -> me2pt5
-    #   zsv10-5 -> zsv10pt5
     match = re.fullmatch(r"([a-z]+\d+)-(\d+)", clean, flags=re.IGNORECASE)
     if match:
         return f"{match.group(1)}pt{match.group(2)}"
@@ -124,7 +131,6 @@ def _id_variants(raw_id: str) -> list[str]:
     if "_" in raw:
         set_id, number = _split_exported_id(raw)
         api_set_id = _api_set_id_for_live_set_id(set_id)
-
         if set_id and number:
             variants.extend(
                 [
@@ -136,11 +142,9 @@ def _id_variants(raw_id: str) -> list[str]:
             )
 
     if "-" in raw:
-        parts = raw.rsplit("-", 1)
-        if len(parts) == 2:
-            set_id, number = parts
-            api_set_id = _api_set_id_for_live_set_id(set_id)
-
+        set_id, number = raw.rsplit("-", 1)
+        api_set_id = _api_set_id_for_live_set_id(set_id)
+        if set_id and number:
             variants.extend(
                 [
                     f"{set_id}-{number}",
@@ -151,82 +155,106 @@ def _id_variants(raw_id: str) -> list[str]:
             )
 
             if "pt" in set_id:
-                variants.append(f"{set_id.replace('pt', '-')}-{number}")
-                variants.append(f"{set_id.replace('pt', '-')}_{number}")
+                live_style = re.sub(r"([a-z]+\d+)pt(\d+)$", r"\1-\2", set_id, flags=re.IGNORECASE)
+                variants.extend([f"{live_style}-{number}", f"{live_style}_{number}"])
 
     return _dedupe_keep_order([_norm(v) for v in variants])
 
 
-def _looks_like_image_url(value: Any) -> bool:
+def _parse_listish(value: Any) -> tuple[str, ...]:
     raw = _clean(value)
-    lowered = raw.lower()
+    if not raw or raw.lower() == "nan":
+        return ()
 
-    return lowered.startswith("http") and (
-        ".png" in lowered
-        or ".jpg" in lowered
-        or ".jpeg" in lowered
-        or ".webp" in lowered
-        or "images." in lowered
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            parsed = json.loads(raw.replace("'", '"'))
+            if isinstance(parsed, list):
+                return tuple(_clean(x) for x in parsed if _clean(x))
+        except Exception:
+            pass
+
+    pieces = re.split(r"[|,;/]", raw)
+    return tuple(_clean(x) for x in pieces if _clean(x))
+
+
+def _raw_json_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    for key in ("raw_json", "raw", "json"):
+        raw = _clean(row.get(key))
+        if not raw or not raw.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _first_nonempty(row: dict[str, Any], keys: tuple[str, ...]) -> str:
+    norm_to_key = {_norm_col(k): k for k in row.keys()}
+
+    for key in keys:
+        real_key = norm_to_key.get(_norm_col(key))
+        if real_key is None:
+            continue
+
+        value = _clean(row.get(real_key))
+        if value and value.lower() != "nan":
+            return value
+
+    return ""
+
+
+def _metadata_from_row(row: dict[str, Any]) -> ResolvedCardMetadata:
+    raw = _raw_json_from_row(row)
+    raw_set = raw.get("set") if isinstance(raw.get("set"), dict) else {}
+    raw_images = raw.get("images") if isinstance(raw.get("images"), dict) else {}
+
+    card_id = (
+        _first_nonempty(row, ("card_id", "id", "representative_card_id"))
+        or _clean(raw.get("id"))
+    )
+
+    name = _first_nonempty(row, ("name", "card_name")) or _clean(raw.get("name"))
+
+    supertype = _first_nonempty(row, ("supertype", "card_supertype")) or _clean(raw.get("supertype"))
+
+    subtypes_raw = (
+        _first_nonempty(row, ("subtypes", "subtype"))
+        or raw.get("subtypes")
+    )
+
+    types_raw = (
+        _first_nonempty(row, ("types", "type", "pokemon_types"))
+        or raw.get("types")
+    )
+
+    image_url = (
+        _first_nonempty(row, ("image_url", "image_small", "images_small", "small_image_url"))
+        or _clean(raw_images.get("small"))
+    )
+
+    image_large_url = (
+        _first_nonempty(row, ("image_large_url", "image_large", "images_large", "large_image_url"))
+        or _clean(raw_images.get("large"))
+        or image_url
+    )
+
+    return ResolvedCardMetadata(
+        card_id=card_id,
+        name=name,
+        supertype=supertype,
+        subtypes=_parse_listish(subtypes_raw),
+        types=_parse_listish(types_raw),
+        image_url=image_url,
+        image_large_url=image_large_url,
     )
 
 
-def _extract_urls_from_value(value: Any) -> list[str]:
-    raw = _clean(value)
-    if not raw:
-        return []
-
-    urls: list[str] = []
-
-    if _looks_like_image_url(raw):
-        urls.append(raw)
-
-    if raw.startswith("{") and raw.endswith("}"):
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            payload = None
-
-        if isinstance(payload, dict):
-            images = payload.get("images") if isinstance(payload.get("images"), dict) else payload
-            for key in ("large", "small", "image_large_url", "image_url", "url"):
-                if _looks_like_image_url(images.get(key)):
-                    urls.append(_clean(images.get(key)))
-
-    for found in re.findall(r"https?://[^\s,'\"\]\}]+", raw):
-        if _looks_like_image_url(found):
-            urls.append(found)
-
-    return _dedupe_keep_order(urls)
-
-
-def _extract_image_urls_from_row(row: dict[str, Any]) -> list[str]:
-    large_urls: list[str] = []
-    small_urls: list[str] = []
-    other_urls: list[str] = []
-
-    raw_json = row.get("raw_json") or row.get("raw") or row.get("json")
-    if raw_json:
-        large_urls.extend(_extract_urls_from_value(raw_json))
-
-    for col, value in row.items():
-        col_norm = _norm_col(col)
-        urls = _extract_urls_from_value(value)
-        if not urls:
-            continue
-
-        if "large" in col_norm or "hires" in col_norm or "highres" in col_norm:
-            large_urls.extend(urls)
-        elif "small" in col_norm:
-            small_urls.extend(urls)
-        elif "image" in col_norm or "url" in col_norm:
-            other_urls.extend(urls)
-
-    # Card Gallery prefers large image, then small image.
-    return _dedupe_keep_order(large_urls + small_urls + other_urls)
-
-
 @lru_cache(maxsize=1)
-def _gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+def _metadata_lookup() -> tuple[dict[str, ResolvedCardMetadata], dict[str, list[ResolvedCardMetadata]]]:
     root = _repo_root()
     data_dir = root / "data"
 
@@ -247,8 +275,8 @@ def _gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[str]]]
             if path not in candidate_files:
                 candidate_files.append(path)
 
-    by_id: dict[str, list[str]] = {}
-    by_name: dict[str, list[str]] = {}
+    by_id: dict[str, ResolvedCardMetadata] = {}
+    by_name: dict[str, list[ResolvedCardMetadata]] = {}
 
     for path in candidate_files:
         try:
@@ -257,61 +285,46 @@ def _gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[str]]]
                 if not reader.fieldnames:
                     continue
 
-                norm_to_col = {_norm_col(col): col for col in reader.fieldnames}
-
-                id_cols = [
-                    col
-                    for norm_col, col in norm_to_col.items()
-                    if norm_col in {"id", "cardid", "representativecardid"}
-                    or norm_col.endswith("cardid")
-                ]
-
-                name_cols = [
-                    col
-                    for norm_col, col in norm_to_col.items()
-                    if norm_col in {"name", "cardname"}
-                ]
-
-                set_cols = [
-                    col
-                    for norm_col, col in norm_to_col.items()
-                    if norm_col in {"setid", "set"}
-                ]
-
-                number_cols = [
-                    col
-                    for norm_col, col in norm_to_col.items()
-                    if norm_col in {"number", "cardnumber", "collectornumber"}
-                ]
-
                 for row in reader:
-                    urls = _extract_image_urls_from_row(row)
-                    if not urls:
+                    metadata = _metadata_from_row(row)
+                    if not metadata.card_id and not metadata.name:
                         continue
 
-                    row_id_values: list[str] = []
+                    id_values = [metadata.card_id]
 
-                    for col in id_cols:
-                        row_id_values.append(_clean(row.get(col)))
+                    set_id = _first_nonempty(row, ("set_id", "set"))
+                    number = _first_nonempty(row, ("number", "card_number", "collector_number"))
 
-                    for set_col in set_cols:
-                        for number_col in number_cols:
-                            set_id = _clean(row.get(set_col))
-                            number = _clean(row.get(number_col))
-                            if set_id and number:
-                                row_id_values.append(f"{set_id}-{number}")
-                                row_id_values.append(f"{set_id}_{number}")
-                                row_id_values.append(f"{_api_set_id_for_live_set_id(set_id)}-{number}")
-                                row_id_values.append(f"{_api_set_id_for_live_set_id(set_id)}_{number}")
+                    if not set_id:
+                        raw = _raw_json_from_row(row)
+                        raw_set = raw.get("set") if isinstance(raw.get("set"), dict) else {}
+                        set_id = _clean(raw_set.get("id"))
 
-                    for raw_id in row_id_values:
+                    if set_id and number:
+                        api_set = _api_set_id_for_live_set_id(set_id)
+                        id_values.extend(
+                            [
+                                f"{set_id}-{number}",
+                                f"{set_id}_{number}",
+                                f"{api_set}-{number}",
+                                f"{api_set}_{number}",
+                            ]
+                        )
+
+                    for raw_id in id_values:
                         for key in _id_variants(raw_id):
-                            by_id[key] = _dedupe_keep_order(by_id.get(key, []) + urls)
+                            existing = by_id.get(key)
 
-                    for col in name_cols:
-                        name_key = _norm(row.get(col))
-                        if name_key and name_key != "nan":
-                            by_name[name_key] = _dedupe_keep_order(by_name.get(name_key, []) + urls)
+                            # Prefer exact records with images, matching gallery behavior.
+                            if existing is None:
+                                by_id[key] = metadata
+                            elif not (existing.image_url or existing.image_large_url) and (
+                                metadata.image_url or metadata.image_large_url
+                            ):
+                                by_id[key] = metadata
+
+                    if metadata.name:
+                        by_name.setdefault(_norm(metadata.name), []).append(metadata)
 
         except Exception:
             continue
@@ -319,96 +332,70 @@ def _gallery_image_lookup() -> tuple[dict[str, list[str]], dict[str, list[str]]]
     return by_id, by_name
 
 
-def _basic_energy_urls_by_name(card_name: str) -> list[str]:
+def _basic_energy_metadata(card_name: str) -> ResolvedCardMetadata | None:
     energy_type = infer_basic_energy_type(card_name)
     if not energy_type:
-        return []
+        return None
 
     fallback = BASIC_ENERGY_FALLBACK_IMAGES.get(energy_type)
     if not fallback:
-        return []
+        return None
 
-    _, small_url, large_url = fallback
-    return _dedupe_keep_order([large_url, small_url])
+    card_id, small_url, large_url = fallback
 
-
-
-def _scrydex_convention_urls(exported_id: str) -> list[str]:
-    api_card_id = exported_id_to_api_card_id(exported_id)
-    if not api_card_id or "-" not in api_card_id:
-        return []
-
-    return [
-        f"https://images.scrydex.com/pokemon/{api_card_id}/large",
-        f"https://images.scrydex.com/pokemon/{api_card_id}/small",
-    ]
+    return ResolvedCardMetadata(
+        card_id=card_id,
+        name=f"Basic {energy_type.title()} Energy",
+        supertype="Energy",
+        subtypes=("Basic",),
+        types=(),
+        image_url=small_url,
+        image_large_url=large_url or small_url,
+    )
 
 
-def _pokemon_tcg_convention_urls(exported_id: str) -> list[str]:
-    set_id, number = _split_exported_id(exported_id)
-    if not set_id or not number:
-        return []
+def resolve_card_metadata(card: CardRef | None) -> ResolvedCardMetadata | None:
+    if card is None or getattr(card, "unknown", False):
+        return None
 
-    api_set_id = _api_set_id_for_live_set_id(set_id)
+    name = _clean(getattr(card, "name", ""))
+    exported_id = _clean(getattr(card, "exported_id", ""))
 
-    urls = [
-        f"https://images.pokemontcg.io/{api_set_id}/{number}_hires.png",
-        f"https://images.pokemontcg.io/{api_set_id}/{number}.png",
-    ]
+    energy_metadata = _basic_energy_metadata(name)
+    if energy_metadata is not None:
+        return energy_metadata
 
-    if api_set_id != set_id:
-        urls.extend(
-            [
-                f"https://images.pokemontcg.io/{set_id}/{number}_hires.png",
-                f"https://images.pokemontcg.io/{set_id}/{number}.png",
-            ]
-        )
+    by_id, by_name = _metadata_lookup()
 
-    return _dedupe_keep_order(urls)
+    exact_keys: list[str] = []
+
+    exact_keys.extend(_id_variants(exported_id))
+    exact_keys.extend(_id_variants(exported_id_to_api_card_id(exported_id)))
+
+    for key in exact_keys:
+        metadata = by_id.get(key)
+        if metadata is not None:
+            return metadata
+
+    # Final fallback only when exact log identity does not exist in local/API metadata.
+    # Keep this after exact-ID resolution so alternate prints do not outrank logs.
+    if name:
+        candidates = by_name.get(_norm(name), [])
+        image_matches = [x for x in candidates if x.image_url or x.image_large_url]
+        if image_matches:
+            return image_matches[0]
+        if candidates:
+            return candidates[0]
+
+    return None
 
 
 def candidate_image_urls_for_card_ref(card: CardRef | None) -> list[str]:
-    if card is None or getattr(card, "unknown", False):
+    metadata = resolve_card_metadata(card)
+    if metadata is None:
         return []
 
-    exported_id = _clean(getattr(card, "exported_id", ""))
-    name = _clean(getattr(card, "name", ""))
-
-    # Same Basic Energy behavior as the gallery metadata path.
-    # Basic Energy export IDs in PTCG Live can be pseudo IDs like ec_15 / mee_1,
-    # so card name is the canonical identity for these.
-    energy_urls = _basic_energy_urls_by_name(name)
-    if energy_urls:
-        return energy_urls
-
-    by_id, by_name = _gallery_image_lookup()
-
-    api_card_id = exported_id_to_api_card_id(exported_id)
-
-    exact_urls: list[str] = []
-
-    # Exact identity from the log must win over same-name matches.
-    # Example: sv6_129 must resolve as sv6-129 Drakloak, not another Drakloak print.
-    for key in _id_variants(exported_id):
-        exact_urls.extend(by_id.get(key, []))
-
-    for key in _id_variants(api_card_id):
-        exact_urls.extend(by_id.get(key, []))
-
-    exact_urls.extend(_scrydex_convention_urls(exported_id))
-    exact_urls.extend(_pokemon_tcg_convention_urls(exported_id))
-    exact_urls = _dedupe_keep_order(exact_urls)
-
-    if exact_urls:
-        return exact_urls
-
-    # Last-resort fallback only when the log has no resolvable exact card ID.
-    # This can pick a same-name print, so it must never outrank exact identity.
-    name_urls: list[str] = []
-    if name:
-        name_urls.extend(by_name.get(_norm(name), []))
-
-    return _dedupe_keep_order(name_urls)
+    return _dedupe_keep_order([metadata.image_large_url, metadata.image_url])
 
 
 def best_image_url_for_card_ref(card: CardRef | None) -> str:
@@ -418,3 +405,10 @@ def best_image_url_for_card_ref(card: CardRef | None) -> str:
 
 def image_url_for_card_ref(card: CardRef | None) -> str:
     return best_image_url_for_card_ref(card)
+
+
+def types_for_card_ref(card: CardRef | None) -> tuple[str, ...]:
+    metadata = resolve_card_metadata(card)
+    if metadata is None:
+        return ()
+    return metadata.types
