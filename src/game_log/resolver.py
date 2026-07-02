@@ -332,6 +332,18 @@ def _basic_energy_urls_by_name(card_name: str) -> list[str]:
     return _dedupe_keep_order([large_url, small_url])
 
 
+
+def _scrydex_convention_urls(exported_id: str) -> list[str]:
+    api_card_id = exported_id_to_api_card_id(exported_id)
+    if not api_card_id or "-" not in api_card_id:
+        return []
+
+    return [
+        f"https://images.scrydex.com/pokemon/{api_card_id}/large",
+        f"https://images.scrydex.com/pokemon/{api_card_id}/small",
+    ]
+
+
 def _pokemon_tcg_convention_urls(exported_id: str) -> list[str]:
     set_id, number = _split_exported_id(exported_id)
     if not set_id or not number:
@@ -362,29 +374,41 @@ def candidate_image_urls_for_card_ref(card: CardRef | None) -> list[str]:
     exported_id = _clean(getattr(card, "exported_id", ""))
     name = _clean(getattr(card, "name", ""))
 
-    urls: list[str] = []
-
     # Same Basic Energy behavior as the gallery metadata path.
+    # Basic Energy export IDs in PTCG Live can be pseudo IDs like ec_15 / mee_1,
+    # so card name is the canonical identity for these.
     energy_urls = _basic_energy_urls_by_name(name)
     if energy_urls:
         return energy_urls
 
     by_id, by_name = _gallery_image_lookup()
 
-    for key in _id_variants(exported_id):
-        urls.extend(by_id.get(key, []))
-
     api_card_id = exported_id_to_api_card_id(exported_id)
+
+    exact_urls: list[str] = []
+
+    # Exact identity from the log must win over same-name matches.
+    # Example: sv6_129 must resolve as sv6-129 Drakloak, not another Drakloak print.
+    for key in _id_variants(exported_id):
+        exact_urls.extend(by_id.get(key, []))
+
     for key in _id_variants(api_card_id):
-        urls.extend(by_id.get(key, []))
+        exact_urls.extend(by_id.get(key, []))
 
+    exact_urls.extend(_scrydex_convention_urls(exported_id))
+    exact_urls.extend(_pokemon_tcg_convention_urls(exported_id))
+    exact_urls = _dedupe_keep_order(exact_urls)
+
+    if exact_urls:
+        return exact_urls
+
+    # Last-resort fallback only when the log has no resolvable exact card ID.
+    # This can pick a same-name print, so it must never outrank exact identity.
+    name_urls: list[str] = []
     if name:
-        urls.extend(by_name.get(_norm(name), []))
+        name_urls.extend(by_name.get(_norm(name), []))
 
-    # Only after gallery/local metadata fails do we use deterministic convention URLs.
-    urls.extend(_pokemon_tcg_convention_urls(exported_id))
-
-    return _dedupe_keep_order(urls)
+    return _dedupe_keep_order(name_urls)
 
 
 def best_image_url_for_card_ref(card: CardRef | None) -> str:
