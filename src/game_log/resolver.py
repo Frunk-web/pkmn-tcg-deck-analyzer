@@ -1,46 +1,70 @@
-﻿from __future__ import annotations
-
-from functools import lru_cache
-from pathlib import Path
-import re
-import urllib.request
-from typing import Any
+from __future__ import annotations
 
 from .models import CardRef
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+_LIVE_SET_ID_TO_API_SET_ID = {
+    "sv6-5": "sv6pt5",
+    "sv8-5": "sv8pt5",
+}
+
+
+# These PTCG Live energy IDs are not normal PokémonTCG API card IDs.
+# Use stable public Energy print images that work in normal browser rendering.
+_EXPORTED_ID_IMAGE_OVERRIDES = {
+    "mee_1": [
+        "https://images.pokemontcg.io/sv2/278.png",
+        "https://images.pokemontcg.io/sv2/278_hires.png",
+    ],
+    "mee_2": [
+        "https://images.pokemontcg.io/sv3/230.png",
+        "https://images.pokemontcg.io/sv3/230_hires.png",
+    ],
+    "mee_3": [
+        "https://images.pokemontcg.io/sv2/279.png",
+        "https://images.pokemontcg.io/sv2/279_hires.png",
+    ],
+    "mee_4": [
+        "https://images.pokemontcg.io/sv1/257.png",
+        "https://images.pokemontcg.io/sv1/257_hires.png",
+    ],
+    "mee_5": [
+        "https://images.pokemontcg.io/sv3pt5/207.png",
+        "https://images.pokemontcg.io/sv3pt5/207_hires.png",
+    ],
+    "mee_6": [
+        "https://images.pokemontcg.io/sv1/258.png",
+        "https://images.pokemontcg.io/sv1/258_hires.png",
+    ],
+}
+
+
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen = set()
+    out = []
+
+    for value in values:
+        clean = str(value or "").strip()
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        out.append(clean)
+
+    return out
 
 
 def _split_exported_id(exported_id: str) -> tuple[str, str]:
     raw = str(exported_id or "").strip()
     if "_" not in raw:
         return raw, ""
+
     set_id, number = raw.rsplit("_", 1)
     return set_id.strip(), number.strip()
 
 
-def ptcgl_set_id_to_public_set_id(set_id: str) -> str:
-    """
-    Convert PTCG Live export set IDs to public Pokémon TCG API-style set IDs
-    when the naming convention differs.
-
-    Example:
-      sv6-5 -> sv6pt5
-      sv8-5 -> sv8pt5
-    """
-    raw = str(set_id or "").strip()
-
-    m = re.fullmatch(r"(sv\d+)-5", raw)
-    if m:
-        return f"{m.group(1)}pt5"
-
-    m = re.fullmatch(r"(swsh\d+)-5", raw)
-    if m:
-        return f"{m.group(1)}pt5"
-
-    return raw
+def _api_set_id_for_live_set_id(set_id: str) -> str:
+    clean = str(set_id or "").strip()
+    return _LIVE_SET_ID_TO_API_SET_ID.get(clean, clean)
 
 
 def exported_id_to_api_card_id(exported_id: str) -> str:
@@ -48,243 +72,57 @@ def exported_id_to_api_card_id(exported_id: str) -> str:
     if not set_id or not number:
         return str(exported_id or "").strip()
 
-    public_set_id = ptcgl_set_id_to_public_set_id(set_id)
-    return f"{public_set_id}-{number}"
+    return f"{_api_set_id_for_live_set_id(set_id)}-{number}"
 
 
-def _candidate_set_ids(set_id: str) -> list[str]:
-    mapped = ptcgl_set_id_to_public_set_id(set_id)
-
-    out = []
-    for value in [mapped, set_id]:
-        if value and value not in out:
-            out.append(value)
-
-    return out
-
-
-def candidate_image_urls_for_exported_id(exported_id: str, *, hires: bool = True) -> list[str]:
+def exported_id_to_image_url(exported_id: str, *, hires: bool = False) -> str:
     set_id, number = _split_exported_id(exported_id)
     if not set_id or not number:
-        return []
+        return ""
 
+    api_set_id = _api_set_id_for_live_set_id(set_id)
     suffix = "_hires" if hires else ""
-
-    urls = []
-    for public_set_id in _candidate_set_ids(set_id):
-        urls.append(f"https://images.pokemontcg.io/{public_set_id}/{number}{suffix}.png")
-
-    return urls
-
-
-def exported_id_to_image_url(exported_id: str, *, hires: bool = True) -> str:
-    urls = candidate_image_urls_for_exported_id(exported_id, hires=hires)
-    return urls[0] if urls else ""
-
-
-def _normalize_text(value: Any) -> str:
-    return str(value or "").strip().lower()
-
-
-def _possible_local_card_files() -> list[Path]:
-    root = _repo_root()
-    return [
-        root / "data" / "all_cards.csv",
-        root / "data" / "cards.csv",
-        root / "data" / "card_index.csv",
-    ]
-
-
-@lru_cache(maxsize=1)
-def _local_card_rows() -> list[dict[str, Any]]:
-    try:
-        import pandas as pd
-    except Exception:
-        return []
-
-    for path in _possible_local_card_files():
-        if not path.exists():
-            continue
-
-        try:
-            df = pd.read_csv(path)
-        except Exception:
-            continue
-
-        rows = []
-        for row in df.to_dict("records"):
-            rows.append({str(k): v for k, v in row.items()})
-        return rows
-
-    return []
-
-
-def _row_value(row: dict[str, Any], candidates: list[str]) -> str:
-    lower_map = {k.lower(): k for k in row.keys()}
-
-    for candidate in candidates:
-        key = lower_map.get(candidate.lower())
-        if key is not None:
-            val = row.get(key)
-            if val is not None and str(val).strip() and str(val).lower() != "nan":
-                return str(val).strip()
-
-    return ""
-
-
-def _row_image_url(row: dict[str, Any]) -> str:
-    preferred = [
-        "image_large_url",
-        "images.large",
-        "images_large",
-        "large_image_url",
-        "image_url",
-        "images.small",
-        "images_small",
-        "small_image_url",
-    ]
-
-    direct = _row_value(row, preferred)
-    if direct.startswith("http"):
-        return direct
-
-    for key, value in row.items():
-        key_l = str(key).lower()
-        val = str(value or "").strip()
-        if "image" in key_l and val.startswith("http"):
-            return val
-
-    return ""
-
-
-def _local_image_url_for_card(card: CardRef) -> str:
-    if card is None or card.unknown:
-        return ""
-
-    set_id, number = _split_exported_id(card.exported_id)
-    api_ids = []
-
-    if set_id and number:
-        api_ids.append(f"{ptcgl_set_id_to_public_set_id(set_id)}-{number}")
-        api_ids.append(f"{set_id}-{number}")
-
-    api_ids = [x.lower() for x in dict.fromkeys(api_ids)]
-
-    card_name = _normalize_text(card.name)
-
-    rows = _local_card_rows()
-    if not rows:
-        return ""
-
-    id_cols = ["id", "card_id", "representative_card_id"]
-    set_cols = ["set.id", "set_id", "set"]
-    number_cols = ["number", "collector_number"]
-    name_cols = ["name", "card_name"]
-
-    # Best: exact local card ID match.
-    for row in rows:
-        row_id = _normalize_text(_row_value(row, id_cols))
-        if row_id and row_id in api_ids:
-            img = _row_image_url(row)
-            if img:
-                return img
-
-    # Good: same set + number + name.
-    public_set_id = ptcgl_set_id_to_public_set_id(set_id)
-    for row in rows:
-        row_set = _normalize_text(_row_value(row, set_cols))
-        row_number = _normalize_text(_row_value(row, number_cols))
-        row_name = _normalize_text(_row_value(row, name_cols))
-
-        if (
-            row_name == card_name
-            and row_number == _normalize_text(number)
-            and row_set in {_normalize_text(set_id), _normalize_text(public_set_id)}
-        ):
-            img = _row_image_url(row)
-            if img:
-                return img
-
-    # Fallback: exact name match. This may pick a different printing, but it is
-    # better than showing a card back for cards missing from public image paths.
-    for row in rows:
-        row_name = _normalize_text(_row_value(row, name_cols))
-        if row_name == card_name:
-            img = _row_image_url(row)
-            if img:
-                return img
-
-    return ""
+    return f"https://images.pokemontcg.io/{api_set_id}/{number}{suffix}.png"
 
 
 def candidate_image_urls_for_card_ref(card: CardRef | None) -> list[str]:
-    if card is None or card.unknown or not card.exported_id:
+    if card is None or getattr(card, "unknown", False):
         return []
 
-    out: list[str] = []
+    exported_id = str(getattr(card, "exported_id", "") or "").strip()
+    if not exported_id:
+        return []
 
-    local = _local_image_url_for_card(card)
-    if local:
-        out.append(local)
+    exported_key = exported_id.lower()
+    set_id, number = _split_exported_id(exported_id)
 
-    for url in candidate_image_urls_for_exported_id(card.exported_id):
-        if url not in out:
-            out.append(url)
+    urls: list[str] = []
 
-    return out
+    # 1. Explicit known-good overrides first.
+    urls.extend(_EXPORTED_ID_IMAGE_OVERRIDES.get(exported_key, []))
 
+    if set_id and number:
+        api_set_id = _api_set_id_for_live_set_id(set_id)
+        api_card_id = f"{api_set_id}-{number}"
 
-@lru_cache(maxsize=4096)
-def _image_url_exists(url: str) -> bool:
-    """
-    Return True when an image URL appears loadable.
+        # 2. PokémonTCG image convention.
+        # Prefer hires first for newer/cached gallery-style card images.
+        urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}_hires.png")
+        urls.append(f"https://images.pokemontcg.io/{api_set_id}/{number}.png")
 
-    This avoids rendering broken first-choice URLs and showing blank/card-back
-    placeholders when a later fallback URL would have worked.
-    """
-    raw = str(url or "").strip()
-    if not raw.startswith("http"):
-        return False
+        # 3. Original live set ID convention, useful if a weird set ID exists as-is.
+        if api_set_id != set_id:
+            urls.append(f"https://images.pokemontcg.io/{set_id}/{number}_hires.png")
+            urls.append(f"https://images.pokemontcg.io/{set_id}/{number}.png")
 
-    try:
-        req = urllib.request.Request(
-            raw,
-            method="HEAD",
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        with urllib.request.urlopen(req, timeout=4) as response:
-            status = getattr(response, "status", 200)
-            content_type = response.headers.get("content-type", "")
-            return 200 <= int(status) < 400 and "image" in content_type.lower()
-    except Exception:
-        pass
+        # 4. ScryDex fallback for newer or weird ME cards.
+        urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/large")
+        urls.append(f"https://images.scrydex.com/pokemon/{api_card_id}/small")
 
-    # Some image hosts reject HEAD. Fall back to a tiny GET.
-    try:
-        req = urllib.request.Request(
-            raw,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Range": "bytes=0-128",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=4) as response:
-            status = getattr(response, "status", 200)
-            content_type = response.headers.get("content-type", "")
-            return 200 <= int(status) < 400 and "image" in content_type.lower()
-    except Exception:
-        return False
+    return _dedupe_keep_order(urls)
 
 
 def best_image_url_for_card_ref(card: CardRef | None) -> str:
-    """
-    Return the best known image URL without server-side rejection.
-
-    Important: the Card Gallery succeeds by letting the browser load known image
-    URLs directly. Server-side HEAD/GET checks can fail on deployed hosts even
-    when the image works in the browser, so Game Review should use the same
-    gallery-style behavior.
-    """
     urls = candidate_image_urls_for_card_ref(card)
     return urls[0] if urls else ""
 
