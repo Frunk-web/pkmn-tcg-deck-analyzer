@@ -14,7 +14,7 @@ import streamlit as st
 from src.game_log.models import CardRef, GameState, PlayerState, PokemonInPlay
 from src.game_log.parser import parse_battle_log, parse_card_refs
 from src.game_log.reducer import build_replay_frames
-from src.game_log.resolver import candidate_image_urls_for_card_ref, exported_id_to_api_card_id, image_url_for_card_ref
+from src.game_log.resolver import candidate_image_urls_for_card_ref, exported_id_to_api_card_id, image_url_for_card_ref, types_for_card_ref
 
 
 def _render_raw_html(raw_html: str) -> None:
@@ -432,31 +432,10 @@ def _active_pokemon_type(player: PlayerState) -> str:
     if card is None:
         return "neutral"
 
-    lookup = _game_review_card_type_lookup()
-
-    exported_id = str(getattr(card, "exported_id", "") or "").strip()
-    name = str(getattr(card, "name", "") or "").strip()
-
-    keys = []
-    if exported_id:
-        keys.append(exported_id.lower())
-        keys.append(exported_id.replace("_", "-").lower())
-        try:
-            keys.append(exported_id_to_api_card_id(exported_id).lower())
-        except Exception:
-            pass
-
-    if name:
-        keys.append(name.lower())
-
-    for key in keys:
-        if key in lookup:
-            return lookup[key]
-
-    lowered_name = name.lower()
-    for name_piece, fallback_type in _FALLBACK_ACTIVE_TYPE_BY_NAME.items():
-        if name_piece in lowered_name:
-            return fallback_type
+    for raw_type in types_for_card_ref(card):
+        token = _normalize_pokemon_type(raw_type)
+        if token:
+            return token
 
     return "neutral"
 
