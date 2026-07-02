@@ -261,6 +261,7 @@ def _metadata_lookup() -> tuple[dict[str, ResolvedCardMetadata], dict[str, list[
     candidate_files: list[Path] = []
 
     preferred_files = [
+        data_dir / "game_review_card_metadata.csv",
         data_dir / "all_cards.csv",
         data_dir / "cards.csv",
         data_dir / "card_index.csv",
